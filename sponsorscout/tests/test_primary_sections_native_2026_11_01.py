@@ -20,8 +20,10 @@ def test_real_requisition_wins_over_category_words(title):
     assert not nonposting_record(url,title)
     assert posting_candidate(url,title,lambda _:True)
 
-def test_open_application_policy_unchanged():
-    assert posting_candidate('https://board.fixture.invalid/jobs/open-application','Unsolicited Application')
+def test_open_application_policy_reversed_2026_11_09():
+    # User decision 2026-11-09: generic applications are noise, not
+    # vacancies - even on an explicit-detail-shaped URL.
+    assert not posting_candidate('https://board.fixture.invalid/jobs/open-application','Unsolicited Application')
 
 @pytest.fixture
 def page():

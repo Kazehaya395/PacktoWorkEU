@@ -33,6 +33,15 @@ SELF_CHECK_BROWSER_FLAG = "--self-check-browser"
 
 def _self_check_write(msg: str) -> None:
     """Print a self-check line, safely, even in a console-less windowed build."""
+    log_target = os.environ.get("SPONSORSCOUT_SELF_CHECK_LOG", "").strip()
+    if log_target:
+        try:
+            log_path = Path(log_target)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(msg + "\n")
+        except Exception:
+            pass
     for stream in (
         getattr(sys, "stdout", None),
         getattr(sys, "__stdout__", None),
@@ -117,6 +126,9 @@ def main() -> None:
         result = purge_user_data()
         _self_check_write(json.dumps(result))
         raise SystemExit(1 if result['errors'] else 0)
+    if '--self-check-gui' in sys.argv:
+        from sponsorscout.scripts.packaging_smoke import gui_smoke
+        raise SystemExit(gui_smoke())
     if SELF_CHECK_FLAG in sys.argv or SELF_CHECK_BROWSER_FLAG in sys.argv:
         raise SystemExit(self_check(SELF_CHECK_BROWSER_FLAG in sys.argv))
     logging.basicConfig(

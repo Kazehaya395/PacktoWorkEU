@@ -26,10 +26,17 @@ def test_ui_labels_not_used_as_synthetic_postings(title):
     assert not posting_candidate(BASE+'/careers#job=placeholder',title,lambda _:True)
     assert posting_candidate(BASE+'/jobs/123456/engineer',title,lambda _:True)
 
-@pytest.mark.parametrize('title',['Google Tag Manager Specialist','Location Intelligence Engineer','Manufacturing Engineer','Job Type Systems Analyst','Talent Community','Software Engineer'])
+@pytest.mark.parametrize('title',['Google Tag Manager Specialist','Location Intelligence Engineer','Manufacturing Engineer','Job Type Systems Analyst','Software Engineer'])
 def test_real_role_controls_not_blacklisted(title):
     assert not metadata_title(title)
     assert posting_candidate(BASE+'/jobs/123456-engineer',title)
+
+
+def test_talent_community_is_not_a_posting():
+    # Removed from the role controls 2026-11-09: user decision treats
+    # talent-pool/community postings as generic-application noise.
+    assert not metadata_title('Talent Community')
+    assert not posting_candidate(BASE+'/jobs/123456-engineer','Talent Community')
 
 @pytest.mark.parametrize('html,expected',[('<h1>26 Möglichkeiten bei mitzumachen</h1>',26),('<h1>1.234 Stellenangebote</h1>',1234),('<h1>3 offene Stellen</h1>',3),('<p>26 Möglichkeiten zur Weiterbildung</p>',None),('<h1>2026 Career event</h1>',None)])
 def test_observed_totals(html,expected):assert stated_job_total(html)==expected

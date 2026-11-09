@@ -46,6 +46,13 @@ def test_debian_build_uses_local_venv_and_does_not_require_sudo():
     # the environment must be verified with a real "pip --version" probe.
     assert "venv_has_pip" in DEB
     assert '-m pip --version' in DEB
+    # 2026-11-09: `pip --version` alone is not enough - it never imports the
+    # install command, so a pip with a partially missing tree (user's
+    # deb-venv: "No module named 'pip._internal.operations.build'") passed
+    # the probe and crashed on install. `pip install --help` imports that
+    # machinery without installing anything; both Linux scripts pin this.
+    assert '-m pip install --help' in DEB
+    assert '-m pip install --help' in RPM
     assert "has no working pip - recreating it" in DEB
     # ensurepip repairs a half-bootstrapped venv before giving up.
     assert "-m ensurepip --upgrade" in DEB
@@ -94,8 +101,10 @@ def test_rpm_scriptlets_stop_the_gui_and_refresh_the_desktop_entry():
     preun = RPM.split("%preun", 1)[1].split("EOL", 1)[0]
     # The GUI is stopped on erase AND upgrade (mirrors the Debian prerm), but
     # the upgrade path must never touch user data.
-    assert 'pgrep -x "SponsorScout"' in preun
-    assert "kill -s" in preun
+    assert 'readlink "$entry"' in preun
+    assert '/opt/sponsorscout/SponsorScout (deleted)' in preun
+    assert 'Close the installed SponsorScout' in preun
+    assert 'kill -s' not in preun
     assert "purge_path" not in preun
     assert "SPONSORSCOUT_DATA_DIR" not in preun
     # %post mirrors Debian: desktop/icon caches only, never a browser download.
@@ -166,7 +175,9 @@ def test_rpm_collects_driver_without_browser_and_checks_dependencies():
     assert '"$APP_DIR/$APP_NAME" --self-check' in RPM
     assert 'SPONSORSCOUT_VALIDATE_BROWSER' in RPM
     assert '--self-check-browser' in RPM
-    assert '--additional-hooks-dir build_hooks' in RPM
+    assert 'SponsorScout.spec' in RPM
+    spec = (ROOT / 'SponsorScout.spec').read_text()
+    assert "hookspath=[str(Path(SPECPATH) / 'build_hooks')]" in spec
     assert "/usr/bin/sponsorscout" in RPM
     assert "/usr/share/applications/sponsorscout.desktop" in RPM
     assert "/opt/sponsorscout" in RPM
@@ -251,12 +262,8 @@ def test_debian_third_party_test_cleanup_is_not_a_no_op():
     that glob and the find removed nothing while still claiming a 5-20 MB
     saving. Only our own test package should be spared.
     """
-    guard = [ln for ln in DEB.splitlines()
-             if "-not -path" in ln and "test" in ln.lower()]
-    assert guard, "the third-party tests cleanup rule disappeared"
-    assert any("*/sponsorscout/tests" in g for g in guard), (
-        "the exclusion must target sponsorscout/tests specifically, not the "
-        "entire bundle")
-    assert not any('"*/sponsorscout/*"' in g for g in guard), (
-        "that glob matches every path under APP_DIR, so the rule is a no-op")
-
+    # Exclude application tests at collection time instead of recursively
+    # pruning arbitrary package directories after packaging.
+    spec = (ROOT / 'SponsorScout.spec').read_text()
+    assert "name.startswith('sponsorscout.tests.')" in spec
+    assert 'find "$APP_DIR" -type d' not in DEB

@@ -6051,6 +6051,7 @@ class CareerPortalScanner:
         "faq", "faqs", "careers faq", "careers faqs", "career faq",
         "career faqs", "job search", "search jobs", "search for jobs",
         "all jobs", "view all jobs", "see all jobs", "browse jobs",
+        "all open positions",
         "job alert", "job alerts", "create job alert", "open positions",
         "all openings", "see all openings", "current openings",
         "current vacancies", "our vacancies", "vacancies", "vacancy",
@@ -6210,11 +6211,12 @@ class CareerPortalScanner:
             return False
         if t.upper().endswith(' HQ') and not self.config.ROLE_WORD_PATTERN.search(t):
             return False
-        # Evergreen/pipeline vacancies are intentional accepted postings, not
-        # navigation. Require a plausible posting URL; generic join-us chrome
-        # does not become a job because it mentions a talent community.
-        if 3 <= len(t) <= 200 and evergreen_title(t) and url and self.is_valid_job_url(url):
-            return True
+        # Generic-application postings are NOT vacancies (user decision
+        # 2026-11-09): proactive/initiative/unsolicited/speculative/open/
+        # general applications and talent pools are rejected as titles no
+        # matter how detail-shaped the URL is.
+        if evergreen_title(t):
+            return False
         # FIX P66 (B4) -- a post date + byline is not a vacancy.
         if self._DATE_BYLINE_TITLE_RE.match(t):
             return False
@@ -13253,7 +13255,13 @@ class CareerPortalScanner:
                 context = str(job.get("card_context") or "").strip()
                 method = str(job.get("extraction_method") or "dom_heuristic")
                 clean_url = self.clean_and_normalize_url(raw_url)
-                from sponsorscout.core.job_identity import nonposting_record
+                from sponsorscout.core.job_identity import nonposting_record, evergreen_title as _evergreen_title
+                # Generic-application postings are dropped silently (user
+                # decision 2026-11-09): not jobs, not quarantine, and no
+                # title-rescue/detail fetch is wasted on them.
+                if _evergreen_title(raw_title):
+                    stats['rejected_title'] += 1
+                    return False
                 if nonposting_record(clean_url,raw_title):
                     stats['rejected_title'] += 1
                     quarantine_job(raw_title,raw_url,raw_location,'nonvacancy_information_or_analytics',method)
@@ -13319,6 +13327,11 @@ class CareerPortalScanner:
                             clean_title = rescued
                             method = f"{method}+detail_title"
                     if not self.is_valid_job_title(clean_title, name, clean_url):
+                        # A rescued slug/detail title can itself be a generic
+                        # application; those drop silently, never quarantine.
+                        if _evergreen_title(clean_title):
+                            stats["rejected_title"] += 1
+                            return False
                         stats["rejected_title"] += 1
                         quarantine_job(raw_title, raw_url, raw_location, "invalid_generic_or_department_title", method)
                         return False

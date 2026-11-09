@@ -778,13 +778,15 @@ class InsightsTab(QWidget):
         self.refresh(auto_backfill=False)
         # Keep the completion message visible briefly, then retire the progress
         # row so a finished refresh does not look like an active one.
-        QTimer.singleShot(2500, lambda: self.insights_progress_row.hide()
+        # Receiver-bound singleShot: if this tab is destroyed first, Qt drops
+        # the call instead of running a lambda against deleted widgets.
+        QTimer.singleShot(2500, self, lambda: self.insights_progress_row.hide()
                           if self._insights_worker is None and not self._closing else None)
         rerun, force = self._refresh_pending, self._force_pending
         self._refresh_pending = self._force_pending = False
         if not error and not cancelled and not self._closing:
             if rerun and force:
-                QTimer.singleShot(0, lambda: self.refresh_from_sqlite(force_all=True))
+                QTimer.singleShot(0, self, lambda: self.refresh_from_sqlite(force_all=True))
             else:
                 self.request_auto_refresh()  # pending check is also off the GUI thread
 

@@ -444,7 +444,7 @@ def test_cleanup_excludes_local_ingestion_and_aborts_external_changes_not_in_bac
         assert restored.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]==3
 
 
-def test_complementary_api_target_configs_retain_spontaneous_jobs_without_scope_collapse(tmp_path,monkeypatch):
+def test_complementary_api_target_configs_drop_spontaneous_jobs_without_scope_collapse(tmp_path,monkeypatch):
     seed=tmp_path/'seed.csv';output=tmp_path/'career_jobs.csv'
     _seed_file(seed,[('Retail Fixture','https://fixture.example/careers/region/lazio','pam','region:Lazio','direct_employer','Italy','seed_url','',''),
                      ('Retail Fixture','https://fixture.example/careers/head-office','pam','sede','direct_employer','Italy','seed_url','','')])
@@ -463,8 +463,10 @@ def test_complementary_api_target_configs_retain_spontaneous_jobs_without_scope_
     monkeypatch.setattr(scanner,'_get_or_launch_worker_browser',lambda *a,**k:pytest.fail('Provider fixture needs no browser'))
     scanner.execute_crawler()
     rows=read_job_csv(output);logs=read_job_csv(tmp_path/'career_jobs_scan_log.csv')
-    assert len(rows)==3 and 'Candidatura Spontanea' in {r['Job Title'] for r in rows}
+    # 2026-11-09 user decision: 'Candidatura Spontanea' is a generic
+    # application, not a vacancy -> silently dropped (no quarantine).
+    assert len(rows)==2 and 'Candidatura Spontanea' not in {r['Job Title'] for r in rows}
     assert len(logs)==2 and {r['Seed URL'] for r in logs}=={r['careers_url'] for r in scanner.read_seed_file()}
-    assert sorted(int(r['Jobs Retained']) for r in logs)==[1,2]
+    assert sorted(int(r['Jobs Retained']) for r in logs)==[1,1]
     assert sum(int(r['Quarantined']) for r in logs)==0
     assert all(r['Status']=='ok' for r in logs)

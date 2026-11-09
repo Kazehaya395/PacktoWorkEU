@@ -303,6 +303,23 @@ CITY_TO_COUNTRY: dict[str, str] = {
     "padova": "Italy", "bergamo": "Italy", "brescia": "Italy",
     "modena": "Italy", "como": "Italy", "bari": "Italy",
     "catania": "Italy", "cagliari": "Italy",
+    # Italian regions (IT + EN exonyms). Without these, the GeoNames
+    # place-index fallback resolves "Lombardia" to Lombardia, Michoacán
+    # (Mexico) and leaves Piemonte/Puglia/Sardegna… unresolved (run
+    # 20261109T211510: 10 Esselunga Lombardia rows stamped Mexico).
+    "lombardia": "Italy", "lombardy": "Italy",
+    "piemonte": "Italy", "piedmont": "Italy",
+    "toscana": "Italy", "tuscany": "Italy",
+    "veneto": "Italy", "lazio": "Italy", "campania": "Italy",
+    "emilia-romagna": "Italy", "emilia romagna": "Italy",
+    "sicilia": "Italy", "sicily": "Italy",
+    "puglia": "Italy", "apulia": "Italy", "calabria": "Italy",
+    "sardegna": "Italy", "sardinia": "Italy", "liguria": "Italy",
+    "marche": "Italy", "abruzzo": "Italy", "umbria": "Italy",
+    "basilicata": "Italy", "molise": "Italy",
+    "friuli-venezia giulia": "Italy", "friuli venezia giulia": "Italy",
+    "trentino-alto adige": "Italy", "trentino alto adige": "Italy",
+    "valle d'aosta": "Italy", "aosta valley": "Italy",
 
     # Greece
     "athens": "Greece", "athen": "Greece", "thessaloniki": "Greece",

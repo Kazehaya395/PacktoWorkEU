@@ -1,5 +1,3 @@
-<img src="sponsorscout/data/sponsorscout.png" alt="SponsorScout" width="420">
-
 # SponsorScout
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
@@ -30,7 +28,6 @@ Insights to reach lower controls and charts.*
 - [Download](#-download)
 - [What It Does](#-what-it-does)
 - [Before You Start](#before-you-start)
-- [Known issues](issues.md)
 - [Scanning](#-scanning)
 - [More Help](#more-help)
 - [Where Your Data Lives](#-where-your-data-lives)
@@ -107,9 +104,9 @@ entry. Before scanning, use **Browser setup** as described below.
 
 ## ✨ What It Does
 
-- **Scans seeded job sources** — 10 ATS provider types (Ashby, Greenhouse,
+- **Scans seeded job sources** — 12 ATS provider types (Ashby, Greenhouse,
   Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday, Teamtailor,
-  BambooHR) through their public job feeds/APIs, plus employer and recruiter
+  BambooHR, Oracle, DigitalRecruiters) through their public job feeds/APIs, plus employer and recruiter
   career boards with a headless browser when needed. A centralised board may
   link to an external employer/aggregator detail page. Providers, access and
   extracted attributes can be incomplete; consult the recorded outcomes.
@@ -166,6 +163,9 @@ Running from source? See [Building From Source](#-building-from-source).
 ---
 
 ### Browser setup
+
+<a href="assets/browser_select.png"><img src="assets/browser_select.png" alt="Selected browser to be used for normal/Custom/Resume scans" width="860"></a>
+
 
 The same selected browser is used for normal/Custom/Resume scans and the visible
 **Assisted Ingestion** window. Open **Tools → Advanced maintenance and diagnostics →
@@ -377,7 +377,7 @@ listing collection** controls. Resume is limited to the saved scope and observed
 continuation evidence. Human-verification controls appear only when an active
 session requests them. You perform checks yourself; **Continue after verification**
 asks for fresh inspection, not a bypass. Some sites may remain inaccessible;
-see [Known issues](issues.md) for current limitations.
+see [Troubleshooting](#-troubleshooting) for current limitations.
 
 <img src="assets/assisted_ingestion.png" alt="Assisted Ingestion idle: company, source, URL, Collect / continue, Stop, Open website, collapsed Advanced and queue" width="860">
 
@@ -448,7 +448,11 @@ You complete any verification yourself in the app-controlled browser.
 
 While the session asks for verification, use **Show verification browser** to
 bring it forward and **Continue after verification** to request another check.
-Continue does not solve a challenge or guarantee access. Use **Save partial and
+Continue does not solve a challenge or guarantee access. If a job-detail
+verification page keeps resetting with nothing to solve, close that detail tab
+to skip just that posting: other postings on the same host are deferred for a
+later resume, postings on other hosts keep reading, and the skipped posting
+stays `Unknown`. Use **Save partial and
 close** or **Stop** if you want to end the session and keep committed work.
 **Open website** is a separate view-only action in your normal browser; it does
 not collect jobs or transfer that browser's session to the app.
@@ -552,8 +556,9 @@ version, require your own review. Do not use symlink/junction data locations.
 Missing permissions or unsafe records cause an incomplete-cleanup error, not a
 claim of success; package removal stops so you can repair permissions and retry.
 
-Windows packages are now **per-user**, installed normally without administrator
-rights under `%LOCALAPPDATA%\Programs\SponsorScout`. Uninstall cleans that
+Windows packages are now **per-user** under `%LOCALAPPDATA%\Programs\SponsorScout`
+(`PrivilegesRequired=lowest`): no administrator rights are required, and install
+and uninstall also work on full-access Administrator accounts. Uninstall cleans that
 account; it does not inspect other Windows users. An older machine-wide install
 is detected and the new installer stops: back up its data/custom locations before
 removing it, then install and restore your data. Do not treat that migration as an
@@ -602,8 +607,8 @@ rewrites your seed or upgrades its URLs behind your back.
 **Some companies returned no jobs.** Check that seed's scan log and errors
 CSV. `empty` is **not** proof that a portal has no jobs: the site may have
 served a different response, failed to render cards, or returned an explicit
-server error (reported as `error` when observed). See [Known issues](issues.md)
-for current limitations.
+server error (reported as `error` when observed). See
+[Troubleshooting](#-troubleshooting) for current limitations.
 Do not assume a verification wall from a failed page or bypass one.
 
 **The scan is slow.** The detail-page pass is the slow part, and it is bounded:
@@ -701,7 +706,10 @@ pip install -e ".[dev]"          # pytest, for the test suite
 run the app.
 
 Native builds collect the driver but no browser binaries. `--self-check` verifies
-dependencies/driver only. To explicitly test a previously configured browser in
+dependencies/driver only. Builds also run `--self-check-gui`: an isolated, offline
+eight-tab startup/close check, using temporary data and INI settings rather than
+your database or Windows registry. It is not a site-access or physical-desktop
+certification. To explicitly test a previously configured browser in
 both modes, set `SPONSORSCOUT_VALIDATE_BROWSER=1` before building; a display is
 required. No automatic download occurs in either mode.
 
@@ -709,7 +717,28 @@ required. No automatic download occurs in either mode.
 ```powershell
 .\build_exe.ps1               # -> dist\sponsorscout-<version>-setup.exe
 ```
-(requires Inno Setup 6/7; per-user, driver included, browser not bundled)
+Run this in PowerShell (standard user or Administrator). The script uses your active
+venv's Python as a bootstrap (or `-PythonExe C:\path\python.exe`), then installs
+build dependencies only in `.build/windows-venv`. It does not repair/uninstall
+packages in your application venv. Move an incomplete build venv aside and retry;
+the script never wildcard-deletes pip packages.
+
+Inno Setup 6/7 is required for the default installer build. To deliberately build
+only the application folder, use `.\build_exe.ps1 -BundleOnly`. Missing Inno or
+missing fresh installer output is an error, not a successful installer build.
+
+- `dist\sponsorscout-<version>-setup.exe` is the **compressed installer** (`PrivilegesRequired=lowest`, installing per-user under `%LOCALAPPDATA%\Programs\SponsorScout` on both standard and full-access Administrator accounts without requiring UAC elevation).
+- `dist\SponsorScout\SponsorScout.exe` opens the application **without installing**;
+  keep the entire folder, including `_internal`. The launcher size is not app size.
+- The script reports application/staged payload **MiB**, compressed installer MiB,
+  SHA256 and `sponsorscout-<version>-build-report.json`. Different measurements and
+  Windows/Linux payloads need not match. Only freshly built outputs are reported.
+- If the exact build-output app is open, close it and retry. No global force-kill
+  is performed. Installer uninstall likewise requires the installed app closed.
+
+All three builders consume `SponsorScout.spec`, filter application tests before
+collection, retain runtime metadata/Qt plugins, audit for accidentally bundled
+browsers and check the final payload. No browser is bundled or downloaded.
 
 **Linux package (Debian / Ubuntu):**
 ```bash
@@ -738,8 +767,8 @@ and let it create the isolated `.build/rpm-venv`. Requires `rpmbuild`
 Debian/Ubuntu/WSL, `sudo zypper install rpm-build` on openSUSE). It collects the
 Playwright driver, smoke-tests dependencies and never strips the bundled
 C-extensions — exactly like `build_deb.sh`. The payload compressor is probed
-on your machine (fast xz by default); for a smaller package where every
-target has rpm >= 4.14, use `RPM_COMPRESSION=zstd ./build_rpm.sh`. Like the
+on your machine (zstd is probed first, then xz, then gzip); to force one,
+set e.g. `RPM_COMPRESSION=w1.xzdio ./build_rpm.sh`. Like the
 other two scripts it leaves `dist/` alone apart from its own output, so the
 `.exe`, `.deb` and `.rpm` can be built side by side.
 
@@ -754,7 +783,7 @@ python -m pytest sponsorscout/tests
 
 ## More Help
 
-- [Known issues](issues.md) — current bugs and practical limitations.
+- [Troubleshooting](#-troubleshooting) — current bugs and practical limitations.
 - [Codebase Guide](SponsorScout_codebase_guide.md) — architecture, file formats,
   development and maintenance details.
 
@@ -792,7 +821,6 @@ Source and attribution details are included in `sponsorscout/data/location_place
 - [Scarica](#-scarica)
 - [Cosa Fa](#-cosa-fa)
 - [Prima di iniziare](#prima-di-iniziare)
-- [Problemi noti](issues.md)
 - [Scansione](#-scansione)
 - [Altre informazioni](#altre-informazioni)
 - [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati)
@@ -876,9 +904,9 @@ un'esecuzione mirata.
 
 ## ✨ Cosa Fa
 
-- **Scansiona le fonti configurate** — 10 tipi di provider ATS (Ashby,
+- **Scansiona le fonti configurate** — 12 tipi di provider ATS (Ashby,
   Greenhouse, Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday,
-  Teamtailor, BambooHR) tramite feed/API pubbliche, più le pagine carriera di
+  Teamtailor, BambooHR, Oracle, DigitalRecruiters) tramite feed/API pubbliche, più le pagine carriera di
   aziende e recruiter con un browser headless quando necessario. Un portale
   centralizzato può rimandare a una scheda lavoro su un altro sito.
 - **Analizza il testo disponibile** — sponsorizzazione, trasferimento, tipo di lavoro
@@ -934,6 +962,8 @@ Esegui dai sorgenti? Vedi [Compilare dai Sorgenti](#-compilare-dai-sorgenti).
 ---
 
 ### Configurazione browser
+
+<a href="assets/browser_select_it.png"><img src="assets/browser_select_it.png" alt="Selected browser to be used for normal/Custom/Resume scans" width="860"></a>
 
 Il browser scelto viene usato nelle scansioni normali/Personalizzate/Riprendi e
 nella finestra visibile di **Acquisizione Assistita**. Apri **Strumenti →
@@ -1142,8 +1172,8 @@ e riprese separate delle JD non lette e dell'elenco. La ripresa conserva l'ambit
 salvato e richiede evidenze di continuazione osservata. I comandi di verifica
 compaiono solo se richiesti dalla sessione attiva. Completi tu la verifica;
 Continua richiede una nuova ispezione, non risolve né aggira il controllo.
-Alcuni siti possono restare inaccessibili: consulta i [Problemi noti](issues.md)
-per i limiti attuali.
+Alcuni siti possono restare inaccessibili: consulta
+[Risoluzione Problemi](#-risoluzione-problemi) per i limiti attuali.
 
 <img src="assets/assisted_ingestion_it.png" alt="Acquisizione assistita inattiva: nome, tipo, URL, Raccogli / continua, Ferma, Apri sito web e coda" width="860">
 
@@ -1216,7 +1246,11 @@ Completi personalmente la verifica nel browser controllato dall'app.
 
 Durante l'attesa puoi mostrare il browser e continuare dopo la verifica per
 richiedere un nuovo controllo. Continua non risolve una challenge e non garantisce
-l'accesso. Usa il comando per salvare il parziale e chiudere oppure **Ferma** per
+l'accesso. Se una pagina di verifica di una singola offerta continua a ricaricarsi
+senza nulla da risolvere, chiudi quella scheda dettaglio per saltare solo
+quell'offerta: le altre offerte sullo stesso host vengono rinviate a una ripresa
+successiva, quelle su altri host continuano a essere lette e l'offerta saltata
+resta `Unknown`. Usa il comando per salvare il parziale e chiudere oppure **Ferma** per
 terminare conservando i dati già salvati. **Apri sito web** è solo consultazione
 nel browser normale: non raccoglie offerte e non trasferisce la sessione all'app.
 
@@ -1318,8 +1352,10 @@ con questa versione richiedono una verifica personale. Evita dati su symlink o j
 Permessi mancanti o record non sicuri fermano la rimozione con un errore: correggi
 il problema e riprova; non viene dichiarata una pulizia completa non riuscita.
 
-L’installer Windows ora è **per utente**, senza privilegi amministrativi, in
-`%LOCALAPPDATA%\Programs\SponsorScout`. Pulisce solo quell’account, non altri utenti
+L’installer Windows ora è **per utente** in
+`%LOCALAPPDATA%\Programs\SponsorScout` (`PrivilegesRequired=lowest`): non richiede
+privilegi amministrativi e installazione e disinstallazione funzionano anche con
+account Administrator con accesso completo. Pulisce solo quell’account, non altri utenti
 Windows. Se rileva una vecchia installazione per tutta la macchina, si ferma:
 salva dati e percorsi personalizzati prima di rimuoverla, poi installa e ripristina
 i dati. Non è un aggiornamento diretto. Gli aggiornamenti dello stesso nuovo
@@ -1371,7 +1407,7 @@ scansione non riscrive il seed e non cambia automaticamente gli URL.
 degli errori del seed. `empty` **non dimostra** che il portale sia senza
 posizioni: potrebbe aver restituito una risposta diversa, non aver mostrato le
 card o aver presentato un errore esplicito del server (se osservato, viene
-registrato come `error`). Per i limiti attuali consulta i [Problemi noti](issues.md). Non dedurre una protezione
+registrato come `error`). Per i limiti attuali consulta [Risoluzione Problemi](#-risoluzione-problemi). Non dedurre una protezione
 anti-bot da un caricamento fallito e non aggirare eventuali verifiche.
 
 **La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
@@ -1461,7 +1497,10 @@ pip install -e ".[dev]"          # pytest, per la suite di test
 ```
 
 Le build includono il driver, non i browser. `--self-check` verifica dipendenze e
-driver. Per provare esplicitamente il browser già configurato in entrambe le
+driver. Le build eseguono anche `--self-check-gui`: avvio e chiusura degli otto
+tab con dati temporanei e impostazioni INI, senza usare il database o il registro
+Windows personali, senza scansioni o browser. Non certifica siti o desktop fisici.
+Per provare esplicitamente il browser già configurato in entrambe le
 modalità, imposta `SPONSORSCOUT_VALIDATE_BROWSER=1` prima della build; serve un
 display. Nessun download automatico in entrambe le modalità.
 
@@ -1469,7 +1508,28 @@ display. Nessun download automatico in entrambe le modalità.
 ```powershell
 .\build_exe.ps1               # -> dist\sponsorscout-<versione>-setup.exe
 ```
-(richiede Inno Setup 6/7; per utente, driver incluso, browser non incluso)
+Usa PowerShell (utente standard o Administrator). Lo script usa il Python del venv
+attivo come punto di partenza (oppure `-PythonExe C:\percorso\python.exe`), ma
+installa le dipendenze di build solo in `.build/windows-venv`. Non ripara o rimuove
+pacchetti dal venv dell’app. Se il venv di build è incompleto, spostalo e riprova.
+
+Per l’installer predefinito serve Inno Setup 6/7. Per creare deliberatamente solo
+la cartella dell’app usa `.\build_exe.ps1 -BundleOnly`. Inno mancante o un nuovo
+installer mancante causano un errore, non un successo apparente.
+
+- `dist\sponsorscout-<versione>-setup.exe` è l’**installer compresso** (`PrivilegesRequired=lowest`, installazione per utente in `%LOCALAPPDATA%\Programs\SponsorScout` sia con account standard sia con account Administrator con accesso completo, senza richiedere elevazione UAC).
+- `dist\SponsorScout\SponsorScout.exe` apre l’app **senza installarla**: conserva
+  tutta la cartella, inclusa `_internal`. La dimensione del solo exe non è quella
+  dell’app completa.
+- Il riepilogo separa MiB della cartella/payload e dell’installer compresso,
+  SHA256 e `sponsorscout-<versione>-build-report.json`. Questi valori e i pacchetti
+  Windows/Linux non devono coincidere. Gli installer precedenti non sono nuovi output.
+- Chiudi l’app del percorso di build prima di ricompilare e l’app installata prima
+  di disinstallare. Non vengono terminati globalmente processi con lo stesso nome.
+
+I tre builder usano `SponsorScout.spec`, escludono i test durante la raccolta,
+conservano metadati/plugin Qt e controllano il payload finale senza includere o
+scaricare browser.
 
 **Pacchetto Linux (Debian / Ubuntu):**
 ```bash
@@ -1499,9 +1559,9 @@ Stesse regole del `.deb`: esegui lo script come utente normale (**non usare
 su Debian/Ubuntu/WSL, `sudo zypper install rpm-build` su openSUSE). Include il
 driver Playwright, verifica le dipendenze del binario e non modifica mai le
 estensioni C incluse — esattamente come `build_deb.sh`. Il compressore del
-payload viene sondato sulla macchina (di default xz veloce); per un pacchetto
-piu piccolo dove tutti i target hanno rpm >= 4.14 usa
-`RPM_COMPRESSION=zstd ./build_rpm.sh`. Anche questo script tocca `dist/` solo
+payload viene sondato sulla macchina (prima zstd, poi xz, poi gzip); per
+forzare un compressore specifico usa ad esempio
+`RPM_COMPRESSION=w1.xzdio ./build_rpm.sh`. Anche questo script tocca `dist/` solo
 con il proprio output, quindi `.exe`, `.deb` e `.rpm` possono convivere.
 
 **Test:**
@@ -1515,7 +1575,7 @@ python -m pytest sponsorscout/tests
 
 ## Altre informazioni
 
-- [Problemi noti](issues.md) — bug attuali e limiti pratici.
+- [Risoluzione Problemi](#-risoluzione-problemi) — bug attuali e limiti pratici.
 - [Guida al codice](SponsorScout_codebase_guide.md) — architettura, formati,
   sviluppo e manutenzione.
 

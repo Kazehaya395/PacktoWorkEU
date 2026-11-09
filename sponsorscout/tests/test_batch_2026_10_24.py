@@ -254,11 +254,53 @@ def test_metadata_or_cta_is_never_the_final_job_title(title):
     ('Proactive Application','https://careers.example/careers/proactive-application'),
     ('SAP SuccessFactors (Open Application)','https://careers.example/jobs/sap-open-application'),
     ('Candidatura Spontanea','https://careers.example/jobs/123459'),
+    ('Speculative application','https://jobs.example/en/sites/CX_1004/job/30001'),
+    ('Initiative Application','https://jobs.example/en/employees/jobs/jobdetail/3992/initiative-application'),
 ])
-def test_genuine_evergreen_or_pool_postings_are_accepted(title,url):
+def test_generic_application_postings_are_rejected(title,url):
+    # Reversed 2026-11-09 by user decision: evergreen/generic-application
+    # postings are noise. Title is rejected; URL shape alone stays valid,
+    # and even an explicit numbered detail URL cannot resurrect one.
+    from sponsorscout.core import job_identity as ji
     scanner=CareerPortalScanner(input_csv='__unused__.csv')
-    assert scanner.is_valid_job_title(title, 'Employer', url=url)
-    assert scanner.is_valid_job_url(url)
+    assert not scanner.is_valid_job_title(title, 'Employer', url=url)
+    assert ji.administrative_action(url, title)
+    assert not ji.posting_candidate(url, title)
+    assert ji.nonposting_record(url, title)
+
+
+def test_italian_regions_resolve_to_italy_not_geonames_homonyms():
+    # Run 20261109T211510: "Lombardia" resolved to Mexico (Lombardia,
+    # Michoacán in the GeoNames place index); 10 Esselunga rows stamped
+    # Job Country=Mexico from a Lombardia URL slug.
+    from sponsorscout.core.location_country import country_from_location
+    for region in ('Lombardia','Piemonte','Toscana','Puglia','Sardegna',
+                   'Campania','Sicilia','Marche','Basilicata',"Valle d'Aosta"):
+        assert country_from_location(region) == 'Italy', region
+
+
+def test_careers_info_pages_are_nonpostings():
+    # Run 20261109T211510: Eni welfare / fraud-alert / job-opportunities
+    # info pages shipped as jobs; they route to the existing
+    # nonvacancy_information_or_analytics quarantine, not the job table.
+    from sponsorscout.core import job_identity as ji
+    for url in ('https://www.eni.com/en-IT/careers/welfare.html',
+                'https://www.eni.com/en-IT/careers/job-offers-fraud.html',
+                'https://www.eni.com/en-IT/careers/job-opportunities.html'):
+        assert ji.nonposting_url(url), url
+        assert ji.administrative_action(url)
+    # A real vacancy under the same portal keeps working.
+    assert not ji.nonposting_url('https://www.eni.com/en-IT/careers/jobs/backend-engineer.html')
+
+
+def test_all_open_positions_is_a_nav_title_not_a_role():
+    # Run 20261109T211510: 34 HubSpot jobs shipped titled "All Open
+    # Positions" (the listing/nav heading) via detail-title rescue.
+    scanner=CareerPortalScanner(input_csv='__unused__.csv')
+    assert scanner._is_nav_title('All Open Positions')
+    assert not scanner.is_valid_job_title(
+        'All Open Positions', 'HubSpot',
+        'https://www.hubspot.com/careers/jobs/5986425')
 
 
 @pytest.mark.parametrize('url', [

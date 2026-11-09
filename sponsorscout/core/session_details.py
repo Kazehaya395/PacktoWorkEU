@@ -19,7 +19,7 @@ from sponsorscout.scanning.jd_support import normalize_jd_text
 from sponsorscout.scanning.response_evidence import challenge_reason,response_metadata,listing_block_message
 from sponsorscout.core.browser_evidence import inspect_page,public_snapshot,redact_url,redact_text,watch_page_responses
 
-FLOW_REVISION='20261101-bounded-finishing-no-paste-v5'
+FLOW_REVISION='20261109-skip-walled-origin-v6'
 MAX_JD_CHARS=60000
 
 
@@ -236,6 +236,10 @@ class SessionDetailEnricher:
         self.policy=_AssistedBudget(scanner.config)
         self.counts=Counter();self.cache=OrderedDict();self.samples=[];self.page=None
         self.preferred_origins=set();self.browser_closed=False
+        # Origins where a detail verification wall was left unresolved in
+        # this session. Only that origin is skipped afterwards; other
+        # origins keep reading. Never a clearance or bypass record.
+        self.walled_origins=set()
         self.control=control;self.gate_reason='';self.events=[];self.event_counts=Counter();self._started=time.monotonic()
         cfg=scanner.config
         self.max_tabs=recommended_workers('browser', requested=min(3,max(1,int(getattr(cfg,'ASSISTED_DETAIL_TABS',3)or 3))))
@@ -393,6 +397,7 @@ class SessionDetailEnricher:
             if index>=len(urls):break
             url=urls[index]
             if url in self._prefetched or url in self._prefetched_results:continue
+            if self._origin(url) in self.walled_origins:continue
             if not self._needs_browser(url):continue
             candidates.append(url)
         for url in candidates:
@@ -485,8 +490,14 @@ class SessionDetailEnricher:
         if self.browser_closed:return self._finish(url,self._deferred(url,'detail browser was closed; resume explicitly'))
         if self.control is not None and self.control.save_requested:self.gate_reason='saved partial during verification; resume explicitly'
         if self.gate_reason:return self._finish(url,self._deferred(url,self.gate_reason))
-        if self.counts['blocked']>=2:
-            return self._finish(url,self._deferred(url,'two unresolved detail access walls; resume after human clearance'))
+        if self._origin(url) in self.walled_origins:
+            # Fast, resumable deferral for this walled origin only. A page
+            # already prefetched for it goes back to the free pool so a
+            # later different-origin navigation can reuse the tab.
+            prefetched=self._prefetched.pop(url,None)
+            if prefetched is not None:self._release_parallel_page(prefetched[0])
+            self.counts['wall_skipped']+=1
+            return self._finish(url,self._deferred(url,'unresolved detail verification wall on this host; posting skipped; resume explicitly'))
         if self._lookahead_active and not self._batch_mode:
             # Overlap navigations for the current lookahead window. The current
             # URL may itself be prefetched; _browser() consumes that page.
@@ -564,7 +575,11 @@ class SessionDetailEnricher:
             state.put(url,(result.text,result.location,result.hiring_org),dict(kind='full_jd',country=result.country,method=result.method,truncated=result.truncated))
             self.scanner.store_captured_jd(url,result.text)
         elif result.status in('blocked','failed'):
-            if result.status=='blocked':self.gate_reason='unresolved detail verification; saved batch paused for explicit continuation'
+            if result.status=='blocked':
+                # Skip-and-continue: only this origin is walled for the rest
+                # of the session. The batch, and other origins, keep going;
+                # walled postings stay resumable and never gain a JD verdict.
+                self.walled_origins.add(self._origin(url));self.counts['walled_origins']=len(self.walled_origins)
             self.counts[result.status]+=1;state.failure(url,blocked=result.status=='blocked',reason=result.reason,transport=result.transport,status=result.http_status,title=result.title)
         else:
             self.counts[result.status]+=1
@@ -578,6 +593,23 @@ class SessionDetailEnricher:
         self.cache[url]=result;self.cache.move_to_end(url)
         while len(self.cache)>512:self.cache.popitem(last=False)
         return result
+    def _verification_skipped(self,url,page,status,title,final,reason):
+        """User closed a looping verification tab: skip only this posting.
+
+        The wall stays unresolved (blocked, no JD text, resumable), its
+        origin is recorded by ``_finish`` so same-host postings defer
+        without reopening the wall, and the dead page is forgotten so a
+        fresh detail tab can serve other origins. This is not clearance.
+        """
+        self._event('verification_skipped_by_user',url,status=status,title=title)
+        self._attention(False,url,reason or 'detail tab closed during verification')
+        self.counts['verification_skipped']+=1
+        if self.page is page:self.page=None
+        text=str(reason or 'unresolved detail verification').strip()
+        return DetailResult(status='blocked',
+            reason=text+'; detail tab closed by user during verification; posting skipped',
+            http_status=status,title=title,transport='browser (assisted session)',
+            requested_url=url,final_url=final,phase='human_clearance')
     def _browser(self,url):
         state=self.scanner._detail_state;last=None
         prefetched=self._prefetched.pop(url,None)
@@ -600,7 +632,14 @@ class SessionDetailEnricher:
                         self.browser_closed=True
                         return DetailResult(status='failed',reason='detail browser closed by user; resume explicitly',transport='browser (assisted session)',requested_url=url,phase='page_closed')
                     if page is None:
-                        self.page=page=self._new_page()
+                        try:
+                            self.page=page=self._new_page()
+                        except Exception:
+                            # A context that cannot create a page is gone as
+                            # a whole; that (not a single closed tab) is what
+                            # legitimately stops the batch.
+                            self.browser_closed=True
+                            return DetailResult(status='failed',reason='detail browser context closed; resume explicitly',transport='browser (assisted session)',requested_url=url,phase='page_creation')
                         if page is None:
                             return DetailResult(status='failed',reason='assisted browser context unavailable',transport='browser (assisted session)',requested_url=url,phase='page_creation')
                     if use_prefetched:
@@ -639,7 +678,7 @@ class SessionDetailEnricher:
                                 try:page.bring_to_front()
                                 except Exception:pass
                                 if callable(self.progress):
-                                    message=_('Action needed: job-detail access was denied at {url}. Inspect Chromium or stop; no CAPTCHA was confirmed.') if 'not confirmed'in reason else _('Action needed: job-detail verification at {url} — please solve the check in Chromium or stop.')
+                                    message=_('Action needed: job-detail access was denied at {url}. Inspect Chromium or stop; no CAPTCHA was confirmed.') if 'not confirmed'in reason else _('Action needed: job-detail verification at {url} — please solve the check in Chromium, close the detail tab to skip this posting, or stop.')
                                     self.progress(message.format(url=url))
                                 continue
                             command=self.control.poll(page)if self.control is not None else''
@@ -680,7 +719,12 @@ class SessionDetailEnricher:
                             page.wait_for_function("() => {const n=document.querySelector('[itemprop=description],[class*=job-description],main');return n && (n.innerText||'').length>=200}",timeout=min(3000,self.scanner.config.DETAIL_BROWSER_TIMEOUT_MS))
                         except Exception:pass
                         # Reinspect the wall and URL after JavaScript, not just prose.
-                    if page.is_closed():self.browser_closed=True
+                    if page.is_closed():
+                        if prompted:
+                            try:final=page.url
+                            except Exception:final=''
+                            return self._verification_skipped(url,page,status,title,final,reason if 'reason' in locals() else '')
+                        self.browser_closed=True
                     return DetailResult(status='failed',reason='detail browser closed or cancelled; saved jobs retained',transport='browser (assisted session)',requested_url=url,phase='page_closed')
                 except Exception as exc:
                     error=redact_text(type(exc).__name__+': '+str(exc))[:1200]
@@ -690,7 +734,10 @@ class SessionDetailEnricher:
                     self._note(last,url);self.counts['browser_errors']+=1
                     try:closed=page is not None and page.is_closed()
                     except Exception:closed=False
-                    if closed:self.browser_closed=True;return last
+                    if closed:
+                        if prompted:
+                            return self._verification_skipped(url,page,status,title,final,reason if 'reason' in locals() else '')
+                        self.browser_closed=True;return last
                     if prompted:
                         self._event('verification_retry',url,status=status,title=title,reason=error)
                         self._attention(False,url,reason='transient detail read error; retrying')

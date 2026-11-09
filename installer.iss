@@ -2,17 +2,19 @@
 ; SponsorScout Inno Setup Installer Script
 ; https://jrsoftware.org/isinfo.php
 ;
-; Production-ready installer:
-; - stable AppId
+; Production-ready per-user installer:
+; - stable AppId under per-user LOCALAPPDATA\Programs\SponsorScout
 ; - no duplicate uninstall registry entry
-; - force-close running app during uninstall/install
-; - remove AppData user-data folder on uninstall
-; - UninstallRun kills SponsorScout.exe before file deletion
+; - path-scoped running-instance check (never force-kills processes by name)
+; - safe per-user data cleanup via --purge-user-data on uninstall
 ;
 
 #define MyAppName      "SponsorScout"
 #ifndef MyAppVersion
   #define MyAppVersion "0.2.0"
+#endif
+#ifndef InstallerSourceDir
+  #define InstallerSourceDir ".build\windows\installer-src"
 #endif
 #define MyAppPublisher "SponsorScout"
 #define MyAppURL       "https://github.com/Kazehaya395/SponsorScout"
@@ -47,27 +49,15 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 ShowTasksTreeLines=yes
 DisableFinishedPage=no
-
-; Detect a running instance before installing over it.
-;
-; NOTE: there is deliberately NO AppMutex= entry. Inno's CloseApplications
-; detects the app through its top-level window, which is enough here, and an
-; AppMutex naming a mutex the app never creates (it only sets an AppUserModelID
-; via SetCurrentProcessExplicitAppUserModelID) would advertise a guarantee the
-; app does not provide. If a real single-instance mutex is ever added to
-; main.py, add the matching AppMutex line here.
-;
-; Force-close the app during both install and uninstall
-CloseApplications=force
+CloseApplications=no
 RestartApplications=no
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; With --onedir PyInstaller build, the entire build directory is copied.
-; Recurse into subdirs and create all subdirectories at install time.
-Source: "dist\SponsorScout-InstallerFiles\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; With --onedir PyInstaller build, the verified staged payload is packaged cleanly.
+Source: "{#InstallerSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcoName}"
@@ -81,22 +71,46 @@ Name: "desktopicon"; Description: "Create Desktop Shortcut"; GroupDescription: "
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
-; Kill SponsorScout.exe BEFORE uninstall file deletion begins.
-; This ensures the main exe is not locked and can be fully removed.
 ; Inno removes tracked installed files only; never recursively erase {app}.
 
 [Code]
-function IsUserAnAdmin: Integer;
-  external 'IsUserAnAdmin@shell32.dll stdcall';
+function InstalledAppRunning(): Boolean;
+var
+  WbemLocator, WbemServices, Processes, ProcessItem: Variant;
+  TargetPath, ProcessPath: String;
+  I: Integer;
+begin
+  Result := False;
+  TargetPath := ExpandConstant('{app}\{#MyAppExeName}');
+  if not FileExists(TargetPath) then
+    Exit;
+  try
+    WbemLocator := CreateOleObject('WbemScripting.SWbemLocator');
+    WbemServices := WbemLocator.ConnectServer('', 'root\CIMV2');
+    Processes := WbemServices.ExecQuery('SELECT ExecutablePath FROM Win32_Process WHERE Name = ''{#MyAppExeName}''');
+    for I := 0 to Processes.Count - 1 do
+    begin
+      ProcessItem := Processes.ItemIndex(I);
+      if VarIsNull(ProcessItem.ExecutablePath) or VarIsEmpty(ProcessItem.ExecutablePath) then
+      begin
+        Result := True;
+        Exit;
+      end;
+      ProcessPath := String(ProcessItem.ExecutablePath);
+      if CompareText(ProcessPath, ExpandConstant('{app}\{#MyAppExeName}')) = 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  except
+    Result := True;
+  end;
+end;
 
 function InitializeSetup(): Boolean;
 begin
   Result := False;
-  if IsUserAnAdmin <> 0 then
-  begin
-    MsgBox('Run this per-user installer normally, not as administrator.', mbError, MB_OK);
-    Exit;
-  end;
   if RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') or
      RegKeyExists(HKLM32, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') then
   begin
@@ -106,11 +120,16 @@ begin
   Result := True;
 end;
 
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if InstalledAppRunning() then
+    Result := 'Close the installed SponsorScout application before upgrading or reinstalling, then click Retry.';
+end;
+
 function InitializeUninstall(): Boolean;
 begin
-  Result := IsUserAnAdmin = 0;
-  if not Result then
-    MsgBox('Run this per-user uninstaller normally, not as administrator. Custom user paths must not be processed with elevated privileges.', mbError, MB_OK);
+  Result := True;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -121,7 +140,8 @@ begin
   // Exceptions at this step abort uninstall, keeping the helper for retry.
   if CurUninstallStep <> usUninstall then
     Exit;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im SponsorScout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if InstalledAppRunning() then
+    RaiseException('Close the installed SponsorScout application before uninstalling, then retry.');
   if not Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--purge-user-data', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     RaiseException('Could not run SponsorScout data cleanup. Uninstall cancelled. Restore the installed application and retry.');
   if ResultCode <> 0 then

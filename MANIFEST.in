@@ -18,4 +18,7 @@ include installer.iss
 include .gitignore
 
 recursive-include build_hooks *.py
-recursive-include Changelogs/browser_policy *.md *.json *.xml
+recursive-include Changelogs/browser_policy *.md *.json *.xml *.py
+
+recursive-include Changelogs/build_packaging *.md *.json *.xml *.log
+recursive-include sponsorscout/tests *.ps1

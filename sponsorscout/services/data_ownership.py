@@ -101,10 +101,6 @@ def register_runtime(data_dir=None,db_path=None) -> None:
 
 def purge_user_data() -> dict:
     """Only this account's registered data and dedicated default folders."""
-    if os.name=='nt':
-        import ctypes
-        if ctypes.windll.shell32.IsUserAnAdmin():
-            return dict(removed=[],errors=['Run per-user data cleanup without administrator elevation'])
     base=state_dir();errors=[];removed=[]
     entries=[]
     try:

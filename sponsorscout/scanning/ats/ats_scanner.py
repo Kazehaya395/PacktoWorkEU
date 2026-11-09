@@ -3140,12 +3140,13 @@ class ATSScanner:
             and re.search(r"_[A-Za-z0-9][\w-]*/?$", parsed.path))
         if not title or (len(title) > 180 and not provider_long_role) or metadata_title(title):
             return False
-        # Explicit pool/navigation exclusions must precede the evergreen-role
-        # allowance; a detail-shaped URL cannot make a talent pool a vacancy.
+        # Generic-application postings are NOT vacancies (user decision
+        # 2026-11-09); a detail-shaped URL cannot make a talent pool or a
+        # proactive/unsolicited application a vacancy.
         if any(p in low for p in ("talent community", "talent pool", "candidate database", "career day")):
             return False
-        if evergreen_title(title) and url and self.valid_job_url(url):
-            return True
+        if evergreen_title(title):
+            return False
         # FIX P73 (run 20261016T140013): identical rule to career -- a title
         # with no role word that equals the last slug segment(s) of its own
         # URL is an aggregator category page, not a vacancy.
@@ -4828,6 +4829,10 @@ class ATSScanner:
                 for row in result:
                     cid = row["Canonical Job ID"]
                     if row["Record Status"] == "quarantine":
+                        # Generic-application postings drop silently (user
+                        # decision 2026-11-09), never the quarantine file.
+                        if evergreen_title(row.get("Job Title", "")):
+                            continue
                         quarantined.append(row)
                         continue
                     if cid in seen_ids:

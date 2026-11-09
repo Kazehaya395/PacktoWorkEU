@@ -189,7 +189,7 @@ def weak_title(title: str) -> bool:
 
 
 _EVERGREEN_TITLE = re.compile(
-    r'(?:\b(?:general|open|speculative|proactive|spontaneous|unsolicited)\s+application\b|'
+    r'(?:\b(?:general|open|speculative|proactive|spontaneous|unsolicited|initiative)\s+application\b|'
     r'\btalent\s+(?:pool|community|network)\b|\bcandidate database\b|'
     r'\bcandidatur[ae]\s+spontan(?:e[aeé]|é[e]?)\b|'
     r'\binitiativbewerbung\b|\bopen sollicitatie\b|\bspontane sollicitatie\b)',re.I)
@@ -315,7 +315,9 @@ _INFORMATION_TITLE = re.compile(
 def nonposting_record(url, title='', raw_title=''):
     """Information/analytics cannot become a vacancy via recovered page titles.
 
-    Strong actual requisitions win; intentional open applications are unchanged.
+    Strong actual requisitions win. Generic-application postings (proactive/
+    initiative/unsolicited/speculative/open/talent-pool…) are NOT vacancies
+    (user decision 2026-11-09) and never win via a recovered page title.
     This does not infer posting existence from a synthetic fragment alone.
     """
     if posting_utility_url(url):return True
@@ -324,7 +326,8 @@ def nonposting_record(url, title='', raw_title=''):
         if re.fullmatch(r'(?i)job=tag-manager(?:-[a-z0-9]+)*-?',fragment):return True
     except ValueError:return True
     if str(title or '').strip().casefold() == 'order now':return True
-    if explicit_detail_url(url) or evergreen_title(title):return False
+    if evergreen_title(title) or evergreen_title(raw_title):return True
+    if explicit_detail_url(url):return False
     return bool(nonposting_url(url) or _INFORMATION_TITLE.fullmatch(' '.join(str(title or '').split()))
                 or nonposting_title(title) or nonposting_title(raw_title))
 
@@ -345,20 +348,30 @@ def nonposting_url(url):
         if re.search(r'(?i)/page/[0-9a-f]{24,64}/?$',p.path):return True
         if re.search(r'(?i)/(?:whybayer(?:/|$)|working-at-bayer(?:/|$)|how-to-join-us(?:/|$))',p.path):return True
         if re.search(r'(?i)/careers?/(?:benefits-rewards|development-teamwork|meet_our_employees)/?$',p.path):return True
+        # Generic careers-information leaves, not requisitions (Eni evidence
+        # run 20261109T211510: welfare / fraud-guidance / opportunities
+        # landing pages shipped as jobs under /en-IT/careers/).
+        if re.search(r'(?i)/(?:careers?)/[^/]*(?:welfare|job-offers-fraud|fraud-alert|job-opportunities)(?:\.html?)?/?$',p.path):return True
         if not p.path.strip('/') and not p.query and not p.fragment:return True
         return bool(re.search(r'(?i)^/@|/(?:go/[^/]+/\d+|careers?/[^/]+/profile|careers?/jobs_by_[^/]+|lp/[^/]+/[^/]+?)/?$|(?:^|/)(?:working-on-(?:land|board)|overview-apprentices|professionals|vacancies-job-opportunities)(?:\.html?)?/?$',p.path))
     except ValueError:return True
 
 
 def administrative_action(url, title='') -> bool:
-    """Subscription/account furniture, not a role. Positive job evidence wins.
+    """Subscription/account furniture and generic applications, not a role.
 
     No hostname/locale presets; a genuine role can contain `legal`, `about`,
     `saved-search` or `job-alert` in its title/path. IDs are never deduped here.
     """
     if nonposting_url(url):
         return True
-    if explicit_detail_url(url) or evergreen_title(title):
+    # Generic-application postings are not vacancies (user decision
+    # 2026-11-09); checked BEFORE explicit-detail evidence so a numbered
+    # aggregator URL (e.g. jobdetail/3992/initiative-application) cannot
+    # resurrect one.
+    if evergreen_title(title):
+        return True
+    if explicit_detail_url(url):
         return False
     try:
         return bool(_ADMIN_ACTION_PATH.search(urlsplit(str(url or '')).path) or _ACTION_TITLE.fullmatch(str(title or '').strip()))
@@ -376,7 +389,7 @@ def posting_candidate(url, title='', validator=None) -> bool:
         return False
     if administrative_action(url, title):
         return False
-    if explicit_detail_url(url) or evergreen_title(title):
+    if explicit_detail_url(url):
         return True
     if callable(validator):
         return bool(validator(url))

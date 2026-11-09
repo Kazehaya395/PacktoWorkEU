@@ -86,9 +86,10 @@ def test_main_routes_the_self_check_flag(monkeypatch):
 
 def test_build_scripts_collect_playwright_and_smoke_test_the_bundle():
     for script in (DEB, EXE, RPM):
-        assert "--additional-hooks-dir build_hooks" in script
-        assert "--hidden-import greenlet" in script
-        assert "--hidden-import pyee" in script
+        assert "SponsorScout.spec" in script
+        spec = (ROOT / "SponsorScout.spec").read_text()
+        assert "hookspath=[str(Path(SPECPATH) / 'build_hooks')]" in spec
+        assert "['greenlet', 'pyee']" in spec
         assert "--self-check" in script
         assert "--self-check-browser" in script
         # Verify the build venv BEFORE PyInstaller runs, so a broken dependency

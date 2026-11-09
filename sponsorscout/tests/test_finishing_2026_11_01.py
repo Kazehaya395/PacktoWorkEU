@@ -36,8 +36,9 @@ def test_actual_career_raw_rescue_admission_to_csv(tmp_path,monkeypatch,rescue):
     seed=tmp_path/'seed.csv';seed.write_text('name,careers_url,provider,board_slug\nFixture,https://fixture.invalid/board,greenhouse,fixture\n',encoding='utf-8-sig')
     output=tmp_path/'jobs.csv'
     scanner=CareerPortalScanner(input_csv=str(seed),output_csv=str(output),detail_scan=False)
-    good=[(URL,'View Job','Benefits Manager'),('https://jobs.fixture.invalid/jobs/open-application','View Job','Unsolicited Application')]
-    rows=BAD+good;resolved={url:title for url,raw,title in rows};calls=[]
+    good=[(URL,'View Job','Benefits Manager')]
+    dropped=[('https://jobs.fixture.invalid/jobs/open-application','View Job','Unsolicited Application')]
+    rows=BAD+good+dropped;resolved={url:title for url,raw,title in rows};calls=[]
     jobs=[dict(job_url=url,job_title=raw,location_hint='Berlin, Germany',extraction_method='fixture_provider')for url,raw,title in rows]
     monkeypatch.setattr(scanner,'_fetch_provider_jobs',lambda target:(jobs,'offline provider fixture'))
     def resolve(url,*args):calls.append(url);return resolved[url]
@@ -51,6 +52,9 @@ def test_actual_career_raw_rescue_admission_to_csv(tmp_path,monkeypatch,rescue):
     quarantined=list(csv.DictReader((tmp_path/'jobs_quarantine.csv').open(encoding='utf-8-sig')))
     assert {r['Job URL']for r in accepted}=={row[0]for row in good}
     assert {r['Job URL']for r in quarantined}=={row[0]for row in BAD}
+    # Generic application: silently dropped (2026-11-09) - in NEITHER file.
+    assert dropped[0][0] not in {r['Job URL']for r in accepted}
+    assert dropped[0][0] not in {r['Job URL']for r in quarantined}
     for url in (BAD[0][0],BAD[1][0]):
         assert url in calls
         row=next(r for r in quarantined if r['Job URL']==url)

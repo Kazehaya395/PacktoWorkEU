@@ -194,7 +194,10 @@ def test_http_readable_origin_does_not_open_parallel_tabs(monkeypatch):
     reader.close()
 
 
-def test_read_many_defers_remaining_urls_after_a_real_wall(monkeypatch):
+def test_read_many_skips_same_origin_after_a_real_wall_without_interrupting(monkeypatch):
+    # Skip-and-continue (user-confirmed 2026-11-09): a wall blocks only its
+    # own origin. Same-origin remainders defer fast and resumable; the batch
+    # itself is NOT interrupted, unlike the old pause-whole-batch policy.
     _patch(monkeypatch, wall=True)
     context = FakeContext(page_walls=[False, True, False, False])
     control = FakeControl()
@@ -204,9 +207,55 @@ def test_read_many_defers_remaining_urls_after_a_real_wall(monkeypatch):
     assert results[urls[0]].status == "readable"
     assert results[urls[1]].status == "blocked"
     assert all(results[url].status == "budget_skipped" for url in urls[2:])
-    assert reader.batch_interrupted
-    assert "verification" in reader.batch_interrupt_reason
+    assert all("verification wall" in results[url].reason for url in urls[2:])
+    assert not reader.batch_interrupted
+    assert ORIGIN in reader.walled_origins
     assert any(info.get("waiting") for info in control.attention_events)
+    reader.close()
+
+
+def test_read_many_continues_with_other_origins_after_a_wall(monkeypatch):
+    _patch(monkeypatch, wall=True)
+    context = FakeContext(page_walls=[False, True])
+    reader, state, context = _reader(monkeypatch, context=context)
+    walled = _url(1)
+    other = "https://other.invalid/jobs/42-engineer.html"
+    urls = [_url(0), walled, other, _url(2)]
+    results = reader.read_many(urls, should_stop=lambda: False)
+    assert results[urls[0]].status == "readable"
+    assert results[walled].status == "blocked"
+    assert results[other].status == "readable"
+    assert results[urls[3]].status == "budget_skipped"
+    assert not reader.batch_interrupted and not reader.browser_closed
+    reader.close()
+
+
+def test_closing_a_looping_verification_tab_skips_only_that_posting(monkeypatch):
+    # The reported failure: a Cloudflare tab keeps resetting, the user
+    # closes it, and previously the whole batch died as session_closed.
+    _patch(monkeypatch, wall=True)
+
+    class ClosingWallPage(FakePage):
+        def content(self):
+            html = super().content()
+            self._closed = True  # user closes the stuck tab mid-wait
+            return html
+
+    class ClosingContext(FakeContext):
+        def new_page(self):
+            page = ClosingWallPage(wall=True)
+            self.pages.append(page)
+            return page
+
+    reader, state, context = _reader(monkeypatch, context=ClosingContext())
+    skipped = reader.read(_url(0))
+    assert skipped.status == "blocked"
+    assert "closed by user during verification" in skipped.reason
+    assert not reader.browser_closed and not reader.batch_interrupted
+    assert ORIGIN in reader.walled_origins
+    # Same host defers without another browser visit; another host reads.
+    assert reader.read(_url(1)).status == "budget_skipped"
+    assert reader.read("https://other.invalid/jobs/7-engineer.html").status == "readable"
     reader.close()
 
 

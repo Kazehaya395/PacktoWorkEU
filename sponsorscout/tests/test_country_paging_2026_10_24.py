@@ -55,11 +55,18 @@ def test_administrative_actions_not_postings(tail,title):
 
 @pytest.mark.parametrize('url,title',[('https://fixture.invalid/about/careers/jobs/8325928a-68a9-4b6c-9c32-785f168e6d81','Backend Engineer'),
  ('https://fixture.invalid/jobs/legal/123456-job-alert-engineer.html','Job Alert Engineer'),
- ('https://fixture.invalid/positions?jobId=123456&country=DE#scope','Legal Counsel'),
- ('https://fixture.invalid/careers/open-sollicitatie','Open sollicitatie')])
+ ('https://fixture.invalid/positions?jobId=123456&country=DE#scope','Legal Counsel')])
 def test_positive_posting_and_evergreen_not_admin(url,title):
     assert not ji.administrative_action(url,title)
     assert ji.posting_candidate(url,title)
+
+
+def test_generic_application_is_admin_not_a_posting():
+    # Reversed 2026-11-09 by user decision (generic applications = noise).
+    url='https://fixture.invalid/careers/open-sollicitatie'
+    assert ji.evergreen_title('Open sollicitatie')
+    assert ji.administrative_action(url,'Open sollicitatie')
+    assert not ji.posting_candidate(url,'Open sollicitatie')
 
 
 def test_posting_acceptance_never_changes_identity_or_collapses_titles():

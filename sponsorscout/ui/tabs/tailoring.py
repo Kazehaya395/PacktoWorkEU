@@ -496,6 +496,11 @@ class TailoringTab(QWidget):
         threading.Thread(target=work, name="JDFetch", daemon=True).start()
 
     def _on_fetched(self, ok: bool, payload: str):
+        # Retire this fetch's one-shot loader instead of accumulating one
+        # QObject per fetch for the tab's whole lifetime.
+        loader = self.sender()
+        if loader is not None:
+            loader.deleteLater()
         self._set_loading(False)
         if ok:
             self.jd_edit.setPlainText(normalize_jd_text(payload))

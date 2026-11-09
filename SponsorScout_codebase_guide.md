@@ -69,6 +69,8 @@ Other supported entry points:
 | `python -m sponsorscout.scripts.run_scan` / `sponsorscout-scan` | CLI campaign scan |
 | `python -m sponsorscout.main --self-check` | Startup/dependency smoke check |
 | `python -m sponsorscout.main --self-check-browser` | Explicit selected-browser check: headless and visible (needs a display) |
+| `python -m sponsorscout.main --self-check-gui` | Packaging-only offline GUI smoke (builders set `SPONSORSCOUT_SELF_CHECK_LOG`) |
+| `python -m sponsorscout.main --purge-user-data` | Deliberate per-account data cleanup (packaged uninstallers) |
 
 An installed console entry point may still point to an older editable checkout.
 Use the intended environment and reinstall `-e .` when moving the source folder.
@@ -277,6 +279,12 @@ Verification controls appear only when an active worker needs attention.
 Continue asks the app to recheck the actual content; a checkbox click is not
 proof of successful verification. Open website is view-only in the external
 browser and does not transfer clearance. Some sites remain inaccessible.
+Detail verification is skip-and-continue (`FLOW_REVISION 20261109-skip-walled-origin-v6`):
+an unresolved wall — including a looping automatic check whose detail tab the
+user closes — blocks only that posting (Unknown, resumable `access_gate`);
+same-host postings defer without reopening the wall, other hosts keep reading,
+and only Stop/Save or loss of the whole browser context stops the batch. This
+never bypasses a wall or uses the personal browser profile.
 
 `AssistedWorker` owns browser/database work on its thread. GUI callbacks send
 commands/cancellation rather than executing Playwright work. Preserve bounded
@@ -340,22 +348,20 @@ xvfb-run -a env QT_QPA_PLATFORM=offscreen SPONSORSCOUT_TEST_BROWSER=1 SPONSORSCO
 Do not count an opt-in skip as executed coverage. Dependency/display failures
 are environment failures, not proof of a product defect or a successful test.
 
-**Current browser/storage policy validation:** 2,395 passed / 0 failures / 0 errors /
+**Browser/storage policy snapshot before the packaging-only corrections:** 2,395 passed / 0 failures / 0 errors /
 0 skips across all 104 modules, using four serial subprocess shards with real local
 Chromium opted in. The code/build/asset snapshot stayed unchanged throughout that
 run. Focused CLI/UI checks, an actual managed download, Linux frozen dual-mode
-launch/cleanup and wheel/sdist checks are recorded under
-[`Changelogs/browser_policy/`](Changelogs/browser_policy/VALIDATION.md).
+launch/cleanup and wheel/sdist checks were recorded in the developer's
+workspace changelog at the time (not bundled with this source snapshot).
 Native Windows and installed DEB/RPM transactions were not executed; fixture
-success must not be presented as native certification. This documentation summary
-was finalized after the test run; production code, tests, resources and build
-scripts were not changed afterward.
+success must not be presented as native certification. Those results apply only to that earlier snapshot. The later packaging-only
+corrections have their own validation record below.
 
-The earlier 2,312-pass/102-module snapshot under
-[`Changelogs/final_review/`](Changelogs/final_review/report.md) remains historical,
-not certification of the new browser/storage policy. See also [open issues](issues.md).
-Both sets of relevant records are retained in this source bundle; the larger
-workspace audit history remains separately preserved in the sibling `../Changelogs/`.
+The earlier 2,312-pass/102-module snapshot remains historical,
+not certification of the new browser/storage policy.
+The larger workspace audit history is preserved outside this source bundle
+in the developer's `Changelogs/` folder.
 No original user uploads/private runtime data, old patch ZIPs, virtual environment,
 browser binaries or generated package builds are bundled.
 
@@ -377,6 +383,64 @@ without launching a browser; optional
 `SPONSORSCOUT_VALIDATE_BROWSER=1` runs `--self-check-browser` against an already
 saved selection in both modes. A successful lean build is not proof of site access
 or even of a configured browser on the target machine.
+
+### Packaging-only build corrections
+
+All builders consume the maintained `SponsorScout.spec` with explicit owned
+work/output directories. They never generate a replacement spec at the source
+root. The spec explicitly adds its source path for `python -I`, filters
+`sponsorscout.tests` before collection, collects only the three used Qt modules
+and disables UPX/binary stripping. Qt hooks retain required platform/image/TLS
+plugins and package metadata; there is no blanket post-check pruning.
+
+Windows does not refuse effective administrator execution: `build_exe.ps1`, the
+per-user installer and the uninstaller run on standard and full-access
+Administrator accounts alike. SponsorScout.spec resolves datas from the source tree itself (`_collect_local_datas`/`_collect_local_submodules`) because builders invoke it with `python -I` while the package may be uninstalled. It resolves the active venv
+bootstrap before a Python-launcher fallback and creates `.build/windows-venv`.
+No wildcard pip repair or package uninstall touches an arbitrary runtime/global
+environment. Linux keeps its separate existing build venvs. All builders record
+`pip freeze` and check dependency consistency; version ranges are not a lockfile,
+so these are auditable builds, not promised bit-reproducible artifacts.
+
+`--self-check-gui` dispatches only in explicit packaging-check mode, before normal
+startup. It creates all eight actual tabs and closes the window using temporary
+HOME/data paths and explicit QSettings INI storage (never native HKCU). The
+named `QSettings(org, app)` overload ignores `setDefaultFormat`: the check mode
+therefore redirects the Assisted module's named-settings factory explicitly; a
+regression guards against new unhandled named-settings consumers. First-run scanning
+is disabled in this mode only. It does not open a browser or a portal. This is an
+offscreen startup smoke, not a full physical desktop/installer certification.
+
+`build_hooks/verify_payload.py` rejects browser caches/binaries and WebEngine,
+checks link containment and can write per-file hashes/regular-file byte totals.
+Windows audits and driver/GUI-checks both the final app folder and exact staged
+installer payload after icon copying. Linux checks follow final permission
+normalization and any filesystem-fallback staging, against the exact install tree.
+Linux compressed artifact reporting uses file bytes/SHA256, not allocated `du` blocks.
+Both Linux packagers retain the previous valid artifact until a new one is ready. Generated frozen/work folders are outside the DEB install tree, avoiding
+accidental duplicate payloads and build files in the package.
+
+Default Windows mode requires Inno and a fresh nonempty setup executable; explicit
+`-BundleOnly` reports no installer. The compiler writes into a fresh owned staging directory; only validated fresh
+output is published to dist, preserving the previous setup if compilation fails. Compressed installer MiB/SHA256,
+uncompressed folder MiB and dependency/spec inventory are separate measurements.
+The build report never labels compilation as native installer execution.
+
+Build shutdown checks compare the exact output executable path. Inno uninstall
+uses a WMI executable-path check and refuses active/unknown instances; no blanket
+`taskkill` or force-close is used. Linux scriptlets compare `/proc/*/exe` to the
+installed executable (including its deleted spelling) and ask users to close it
+before removal/upgrade. No different same-name copy is terminated. The former
+effective-administrator guard (`IsUserAnAdmin` in installer, uninstaller and
+`--purge-user-data`) was removed; per-user install, uninstall and data purge on a
+full-access Administrator account were native-verified on Windows on 2026-11-09.
+`--self-check-gui` diagnostics go to `SPONSORSCOUT_SELF_CHECK_LOG` when the
+builders set it, so a failed GUI smoke leaves a log instead of only an exit code.
+
+Current patch evidence and remaining native-testing limits are recorded in
+the developer's workspace changelog (not bundled). Earlier full-suite
+browser-policy results above are historical for that snapshot, not certification
+of these later packaging changes.
 
 ### Shared browser policy
 
@@ -442,18 +506,19 @@ cannot be discovered safely: users must review those themselves.
 
 `--purge-user-data` is dispatched before Qt/locale/database startup and needs no
 display. Run it only deliberately after backups, as the data-owning account.
-Linux DEB prerm acts only on `remove`; RPM preun only on `$1=0`. They stop the app,
-then invoke the trusted installed binary with `runuser ... env -i` separately for
+Linux DEB prerm purges only on `remove`; RPM preun only on `$1=0`. They require
+the installed app to be closed, then invoke the trusted installed binary with `runuser ... env -i` separately for
 root, ordinary accounts and lower-UID accounts with SponsorScout state. A user
 manifest is never parsed by the package script as root. Cleanup failures stop
 removal before the executable disappears. Postrm/postun do not execute broad
 root deletions. Upgrades preserve data.
 
-Windows is now non-elevated **per-user**, under LOCALAPPDATA/Programs/SponsorScout.
+Windows is now **per-user** (`PrivilegesRequired=lowest`), under LOCALAPPDATA/Programs/SponsorScout,
+on standard and full-access Administrator accounts alike; no elevation check runs
+at install, uninstall or `--purge-user-data` startup.
 The installer refuses an existing HKLM/machine-wide installation: backup/removal/
 restore migration is explicit, not a destructive implicit upgrade. Updates within
-the new per-user format preserve data. The uninstaller checks elevation at startup
-but runs cleanup only at `usUninstall`, **after confirmation**, before file removal;
+the new per-user format preserve data. Cleanup runs only at `usUninstall`, **after confirmation**, before file removal;
 a cleanup exception aborts uninstall. Only Inno-tracked installed files are removed,
 not an unconditional recursive `{app}` deletion. Each account uninstalls its own
 copy; other Windows users and personal browsers are untouched.
@@ -498,7 +563,6 @@ both English and Italian, plus Custom Scan in both languages. Captures use an
 isolated fictional four-job/one-application database and idle workers, not an
 invented successful scrape. `assets/scanning_tool_finished.png` is separately
 labelled as the real supplied Windows partial-run capture (0/163 readable).
-The captured visible labels are retained in `ui_capture_manifest.json`.
 
 Tools hides terminal JD progress and retains static coverage after completion,
 partial results, cancellation or error. Running/paused/stopping states remain
@@ -506,9 +570,10 @@ live; checked/classified counts must never be relabelled as readable counts.
 No-observation and absent-coverage cases are separate. The next run restores the
 live JD bar. The permanent finished-results regression module remains included.
 
-**Manychat verification remains an unresolved bug.** The final review changes no
-access, identity, resolver, scope or pacing policy. Other observed extraction and
-live-access limitations remain explicitly disclosed in `issues.md`. Do not call
+The final review changes no
+access, identity, resolver, scope or pacing policy. Some portals' verification
+walls and other observed extraction and live-access limitations remain
+unresolved and are disclosed in the README's Troubleshooting section. Do not call
 the code bug-free or infer that a local fixture solved a vendor challenge.
 
 Clean source includes all active modules, tests, seed files, classifier assets,
