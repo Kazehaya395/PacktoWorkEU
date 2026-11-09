@@ -579,11 +579,11 @@ def test_actual_visible_clearance_controls_and_observed_listing_resume(window,tm
 
 
 def test_assisted_launch_preserves_previous_working_configuration():
-    """Pin the user's prior working launch, not a new browser/profile design."""
+    """Pin existing Assisted options behind the approved shared browser resolver."""
     import ast
     import inspect
     tree=ast.parse(inspect.getsource(bp.run_assisted_ingestion))
-    launch=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and isinstance(n.func,ast.Attribute)and n.func.attr=='launch'and isinstance(n.func.value,ast.Attribute)and n.func.value.attr=='chromium')
+    launch=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and isinstance(n.func,ast.Name)and n.func.id=='launch_chromium')
     launch_options={k.arg:ast.literal_eval(k.value)for k in launch.keywords}
     assert launch_options==dict(headless=False,args=['--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized'])
     context=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and isinstance(n.func,ast.Attribute)and n.func.attr=='new_context'and isinstance(n.func.value,ast.Name)and n.func.value.id=='browser')

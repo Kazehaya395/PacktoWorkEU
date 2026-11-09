@@ -98,6 +98,8 @@ def cleanup_connection(conn,*,artifact_dir=None):
                     'backup_sha256':_file_digest(backup),
                     'state':'planned','preview':preview,'actions':[]}
         _write_audit(audit_path,document)  # fail safely BEFORE modifying user data
+        from sponsorscout.services.data_ownership import register_artifacts
+        register_artifacts(backup,audit_path)
         try:
             conn.execute('BEGIN IMMEDIATE')
             current = (conn.execute('PRAGMA data_version').fetchone()[0], conn.total_changes)

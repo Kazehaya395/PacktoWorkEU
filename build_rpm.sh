@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ── SponsorScout RPM build ──────────────────────────────────────────────────
 # Builds dist/sponsorscout-<version>-<release>.<arch>.rpm from a fresh
-# PyInstaller bundle with Playwright Chromium inside. Linux sibling of
+# lean PyInstaller bundle with the Playwright driver (no browser). Linux sibling of
 # build_deb.sh (Debian/Ubuntu) and build_exe.ps1 (Windows); the three scripts
 # deliberately share the same bundle, size-reduction, smoke-test and
 # uninstall contract, and none of them wipes dist/, so the .exe, .deb and
@@ -123,6 +123,7 @@ Version: 0
 Release: 0
 Summary: rpmbuild capability probe (never installed)
 License: MIT
+Requires(preun): util-linux
 %global debug_package %{nil}
 %global __os_install_post %{nil}
 %global __arch_install_post %{nil}
@@ -150,7 +151,7 @@ EOF
 fi
 
 # ── Payload compression probe ───────────────────────────────────────────────
-# The staged tree is ~1.5 GB (PySide6 + the bundled Playwright Chromium), so
+# The staged tree contains Qt and the Playwright driver (no browser), so
 # compression dominates the packaging time. Probe which payload flags this
 # rpmbuild actually supports instead of guessing from its version:
 #   * auto/xz: w1T.xzdio (xz -1, multithreaded) -> w1.xzdio -> w1.gzdio,
@@ -304,7 +305,7 @@ fi
   --name "$APP_NAME" \
   --collect-data sponsorscout \
   --collect-submodules sponsorscout \
-  --collect-all playwright \
+  --additional-hooks-dir build_hooks \
   --collect-submodules PySide6 \
   --hidden-import greenlet \
   --hidden-import pyee \
@@ -370,40 +371,13 @@ for p in imageformats tls networkinformation generic sqldrivers; do
   find "$APP_DIR" -type d -path "*/PySide6/Qt/plugins/$p" -prune -exec rm -rf {} + 2>/dev/null || true
 done
 
-# ── Bundled Playwright Chromium ──────────────────────────────────────────────
-# Install Chromium DIRECTLY into the package's `_playwright` directory so it
-# ships inside the .rpm and sponsorscout/paths.py (exe_dir/_playwright) and
-# the /usr/bin/sponsorscout launcher can point PLAYWRIGHT_BROWSERS_PATH at it
-# on the user's machine. Otherwise the downloaded browser only lands in the
-# build machine's ~/.cache/ms-playwright and every `provider=auto` career
-# target fails with "Executable doesn't exist".
-echo "Installing Playwright Chromium into bundle ($APP_DIR/_playwright)..."
-PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium --only-shell
-if [ ! -d "$APP_DIR/_playwright" ]; then
-  echo "ERROR: Playwright browsers were NOT installed into $APP_DIR/_playwright -" >&2
-  echo "the packaged app could not scan SPA career portals. Aborting build." >&2
-  exit 1
-fi
-# Remove Playwright's bundled ffmpeg (video recording only — never used), ~3 MB.
-find "$APP_DIR/_playwright" -maxdepth 1 -type d -name 'ffmpeg*' -exec rm -rf {} + 2>/dev/null || true
-# The bundled Playwright Chromium (_playwright) is intentionally KEPT so
-# JS-rendered career portals work out of the box. Deleting it makes every scan
-# fail and the UI appear hung/frozen.
-echo "Size reduction complete."
-
-# ── Smoke test ──────────────────────────────────────────────────────────────
-# Run the freshly built binary BEFORE packaging it. A bundle that cannot import
-# Playwright (or cannot launch its bundled Chromium) used to sail through the
-# build and then fail 200+ scan targets at runtime with
-# "Playwright is required for DOM fallback". Fail here instead.
-echo "Smoke-testing the packaged app (Playwright + bundled Chromium)..."
-if ! PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" \
-     "$APP_DIR/$APP_NAME" --self-check --self-check-browser; then
-  echo "ERROR: the packaged app failed --self-check; aborting the build." >&2
-  echo "Re-run manually for full details:" >&2
-  echo "  PLAYWRIGHT_BROWSERS_PATH=\"$APP_DIR/_playwright\" \\" >&2
-  echo "    \"$APP_DIR/$APP_NAME\" --self-check --self-check-browser" >&2
-  exit 1
+# Lean package: Playwright driver is collected, but no browser binary/cache.
+# Browser setup reuses a validated installation or asks before one full download.
+echo "Smoke-testing the packaged app (dependencies/driver only)..."
+"$APP_DIR/$APP_NAME" --self-check || { echo "Packaged dependency self-check failed" >&2; exit 1; }
+# Optional developer check requires a saved selection AND a desktop/display.
+if [ "${SPONSORSCOUT_VALIDATE_BROWSER:-0}" = "1" ]; then
+  "$APP_DIR/$APP_NAME" --self-check-browser || exit 1
 fi
 
 mkdir -p "$PKG_ROOT/usr/bin"
@@ -426,16 +400,6 @@ if [ ! -x "$APP_BIN" ]; then
   echo "SponsorScout: ERROR — $APP_BIN is not executable." >&2
   echo "  Try:  sudo chmod +x $APP_BIN" >&2
   exit 1
-fi
-
-# Prefer the Chromium bundle shipped inside the package (/opt/sponsorscout/_playwright,
-# installed by build_rpm.sh); fall back to the user's Playwright cache.
-if [ -z "$PLAYWRIGHT_BROWSERS_PATH" ]; then
-  if [ -d "/opt/sponsorscout/_playwright" ]; then
-    export PLAYWRIGHT_BROWSERS_PATH="/opt/sponsorscout/_playwright"
-  else
-    export PLAYWRIGHT_BROWSERS_PATH="${HOME}/.cache/ms-playwright"
-  fi
 fi
 
 exec "$APP_BIN" "$@"
@@ -525,6 +489,7 @@ Version: $VERSION
 Release: $RPM_RELEASE
 Summary: Job sponsorship search application
 License: MIT
+Requires(preun): util-linux
 URL: https://sponsorscout.app
 
 # PyInstaller bundles are NOT distribution binaries: rpm's brp-strip and
@@ -565,21 +530,7 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 
-# Last-resort fallback: install Playwright Chromium into the user's cache.
-# Normally NOT needed — build_rpm.sh ships the browsers inside
-# /opt/sponsorscout/_playwright, which the launcher and sponsorscout/paths.py
-# prefer automatically. This only helps if the bundled browsers are missing.
-PYTHON=""
-for candidate in python3 python; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    PYTHON="$candidate"
-    break
-  fi
-done
-if [ -n "$PYTHON" ] && "$PYTHON" -c "import playwright" 2>/dev/null; then
-  echo "SponsorScout: installing Playwright Chromium browser (one-time, ~150 MB)..."
-  "$PYTHON" -m playwright install chromium >/dev/null 2>&1 || true
-fi
+# No browser download during installation. Use Browser setup explicitly.
 
 exit 0
 EOL
@@ -601,95 +552,39 @@ for sig in TERM KILL; do
   fi
 done
 
+# Each user's custom paths are handled under that user's own privileges.
+if [ "${1:-1}" = "0" ]; then
+  command -v runuser >/dev/null 2>&1 || { echo "runuser is required for safe cleanup" >&2; exit 1; }
+  [ -x /opt/sponsorscout/SponsorScout ] || { echo "Restore the installed executable before removing SponsorScout data" >&2; exit 1; }
+  accounts=$(getent passwd) || { echo "Unable to enumerate accounts for cleanup" >&2; exit 1; }
+  while IFS=: read -r name unused uid gid gecos home shell; do
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    [ "$uid" -eq 0 ] || [ "$uid" -ge 1000 ] || [ -e "$home/.sponsorscout" ] || [ -L "$home/.sponsorscout" ] || continue
+    [ -d "$home" ] || continue
+    case "$home" in /|/nonexistent|/var/empty) continue ;; esac
+    if ! runuser -u "$name" -- env -i HOME="$home" USER="$name" LOGNAME="$name" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+      /opt/sponsorscout/SponsorScout --purge-user-data; then
+      echo "SponsorScout: data cleanup failed for $name; removal stopped. Review permissions and retry." >&2
+      exit 1
+    fi
+  done <<SPONSORSCOUT_ACCOUNT_LIST
+$accounts
+SPONSORSCOUT_ACCOUNT_LIST
+fi
+
 exit 0
 EOL
 
 cat >> "$SPEC" <<'EOL'
 %postun
-
-set -eu
-
-# rpm passes the number of instances of this package still installed when the
-# scriptlet finishes: 0 = final removal, anything else = an upgraded or
-# parallel copy remains (rpm-scriptlets(7)). Never purge user data during an
-# upgrade — purge only for a real uninstall, like the Debian postrm does for
-# its "remove|purge" actions.
-if [ "$1" -ne 0 ]; then
-  exit 0
-fi
-
-# Stop the GUI before removing the package files and database.
-for sig in TERM KILL; do
-  pids=$(pgrep -x "SponsorScout" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    echo "SponsorScout: stopping running instance(s) (SIG$sig)..."
-    # shellcheck disable=SC2086
-    kill -s "$sig" $pids 2>/dev/null || true
-    sleep 1
-  fi
-done
-
-# rpm normally removes package-owned files itself. Keep this explicit cleanup
-# for interrupted upgrades and older installations that left the app tree.
-APP_DIR="/opt/sponsorscout"
-if [ -d "$APP_DIR" ]; then
-  rm -rf -- "$APP_DIR"
-fi
-
-purge_path() {
-  target="$1"
-  case "$target" in
-    /*) ;;
-    *) echo "SponsorScout: refusing non-absolute purge path: $target" >&2; return 0 ;;
-  esac
-  case "$target" in
-    "/"|"/bin"|"/boot"|"/dev"|"/etc"|"/home"|"/lib"|"/lib64"|"/media"|"/mnt"|"/opt"|"/proc"|"/root"|"/run"|"/sbin"|"/srv"|"/sys"|"/tmp"|"/usr"|"/var")
-      echo "SponsorScout: refusing unsafe purge path: $target" >&2
-      return 0
-      ;;
-  esac
-  if [ -d "$target" ]; then
-    echo "SponsorScout: removing data directory: $target"
-    rm -rf -- "$target"
-  elif [ -e "$target" ]; then
-    rm -f -- "$target"
-  fi
-}
-
-# Remove the standard per-user data directory for every real account.
-if command -v getent >/dev/null 2>&1; then
-  getent passwd | while IFS=: read -r username _ uid _ _ home _; do
-    case "$uid" in
-      ''|*[!0-9]*) continue ;;
-    esac
-    if [ "$uid" -ge 1000 ] || [ "$username" = "root" ]; then
-      case "$home" in
-        ""|/|/nonexistent|/dev/null) continue ;;
-      esac
-      purge_path "$home/.sponsorscout"
-    fi
-  done
-else
-  purge_path "$HOME/.sponsorscout"
-  purge_path "/root/.sponsorscout"
-fi
-
-# Also clean explicit overrides when rpm inherited them from the invoking
-# environment. This does not inspect arbitrary files or delete a drive root.
-if [ -n "${SPONSORSCOUT_DATA_DIR:-}" ]; then
-  purge_path "$SPONSORSCOUT_DATA_DIR"
-fi
-if [ -n "${SPONSORSCOUT_DB_PATH:-}" ]; then
-  rm -f -- "$SPONSORSCOUT_DB_PATH" "$SPONSORSCOUT_DB_PATH-wal" "$SPONSORSCOUT_DB_PATH-shm"
-fi
-
+# User data was purged in preun only for $1=0; upgrades retain it.
 exit 0
 EOL
 
 # ── Package ─────────────────────────────────────────────────────────────────
 # Notes for this step:
 #
-#   * The staged tree is ~1.5 GB (PySide6 + the bundled Playwright Chromium),
+#   * The staged tree contains Qt and the Playwright driver (no browser),
 #     so compression dominates the build time; the payload flags were probed
 #     near the top of this script (COMPRESS_LABEL reports what was selected).
 #   * %defattr(-,root,root) in the spec stops the unprivileged build from

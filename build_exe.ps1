@@ -132,7 +132,7 @@ $Code = Invoke-Native -m PyInstaller `
     --icon sponsorscout/data/sponsorscout.ico `
     --collect-data sponsorscout `
     --collect-submodules sponsorscout `
-    --collect-all playwright `
+    --additional-hooks-dir build_hooks `
     --collect-submodules PySide6 `
     --hidden-import greenlet `
     --hidden-import pyee `
@@ -182,43 +182,16 @@ if ($WebEngineDll) {
     throw "Qt6WebEngineCore.dll is in the bundle. Remove the full PySide6 packages from the build venv (pip uninstall PySide6 PySide6-Addons) and rebuild."
 }
 
-# Install Playwright's Chromium DIRECTLY into the bundle's `_playwright`
-# directory so it ships inside the installer and sponsorscout/paths.py can
-# point PLAYWRIGHT_BROWSERS_PATH at it on the user's machine (first launch,
-# offline-capable). Previously this downloaded to the build machine's cache
-# only, so the installed app had no browser at all and every `provider=auto`
-# career target failed with "Executable doesn't exist".
-$BundledPlaywright = Join-Path $BuildDir '_playwright'
-Write-Host "[3/4] Installing Chromium into bundle ($BundledPlaywright)..." -ForegroundColor Cyan
-$env:PLAYWRIGHT_BROWSERS_PATH = $BundledPlaywright
-try {
-    $Code = Invoke-Native -m playwright install chromium --only-shell
-    if ($Code -ne 0) { throw "playwright install chromium failed (exit $Code)" }
-} finally {
-    Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+# Lean package: collect Playwright's driver, not a browser or headless shell.
+# Browser selection/download is explicit, per user, in Tools > Browser setup.
+Write-Host "[3/4] Checking packaged dependencies (no browser needed)..." -ForegroundColor Cyan
+$SelfCheck = Start-Process -FilePath $ExePath -ArgumentList '--self-check' -Wait -PassThru
+if ($SelfCheck.ExitCode -ne 0) { throw "Packaged dependency self-check failed." }
+# Optional developer check needs a previously saved, validated selection.
+if ($env:SPONSORSCOUT_VALIDATE_BROWSER -eq '1') {
+    $BrowserCheck = Start-Process -FilePath $ExePath -ArgumentList '--self-check-browser' -Wait -PassThru
+    if ($BrowserCheck.ExitCode -ne 0) { throw "Selected browser validation failed." }
 }
-if (-not (Test-Path $BundledPlaywright)) {
-    throw "Playwright browsers were NOT installed into $BundledPlaywright - career scanning would be broken in the packaged app."
-}
-Write-Host "Bundled Chromium verified at $BundledPlaywright" -ForegroundColor Green
-
-# ── Smoke test ──────────────────────────────────────────────────────────────
-# Run the freshly built exe BEFORE packaging it. A bundle that cannot import
-# Playwright (or cannot launch its bundled Chromium) used to sail through the
-# build and then fail 200+ scan targets at runtime with
-# "Playwright is required for DOM fallback". Fail here instead.
-Write-Host "[3.5/4] Smoke-testing the packaged app (Playwright + Chromium)..." -ForegroundColor Cyan
-$env:PLAYWRIGHT_BROWSERS_PATH = $BundledPlaywright
-try {
-    & $ExePath --self-check --self-check-browser
-    $SelfCheckExit = $LASTEXITCODE
-} finally {
-    Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
-}
-if ($SelfCheckExit -ne 0) {
-    throw "Packaged app failed --self-check (exit $SelfCheckExit). Career scanning would be broken in the installed app."
-}
-Write-Host "Packaged app self-check passed." -ForegroundColor Green
 
 # ── Size reduction: caches / metadata only ─────────────────────────────────
 # Same safe set as build_deb.sh. Deletes generated caches and package metadata
@@ -238,8 +211,6 @@ Get-ChildItem -Path $InternalDir -Recurse -Force -ErrorAction SilentlyContinue |
 
 # Remove Playwright's bundled ffmpeg (video recording only — never used),
 # ~3 MB.
-Get-ChildItem -Path $BundledPlaywright -Directory -Filter 'ffmpeg*' -ErrorAction SilentlyContinue |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 # Qt slimming: the app uses only QtCore/QtGui/QtWidgets. Drop the plugin folders
 # the app never loads (image formats, Qt TLS, network info, generic input, SQL
 # drivers). HTTPS goes through requests; icons are PNG. Qt translation files are
@@ -249,12 +220,10 @@ foreach ($plug in 'imageformats','tls','networkinformation','generic','sqldriver
         Where-Object { $_.FullName -match ('PySide6[\\/]Qt[\\/]plugins[\\/]' + $plug + '$') } |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host "Bundle cleanup complete (caches, *.pyc, *.dist-info, _playwright/ffmpeg-*)."
+Write-Host "Bundle cleanup complete (generated caches, *.pyc, *.dist-info)."
 
 # Prepare installer source directory with the entire onedir build output.
-# Playwright's Chromium IS bundled for offline use — it will be installed to
-# %LOCALAPPDATA%\ms-playwright automatically during first run from the bundled
-# _playwright directory, or used directly if PLAYWRIGHT_BROWSERS_PATH is set.
+# Driver only; no browser binaries or shared cache are included.
 $InstallerSrcDir = Join-Path $DistDir "$AppName-InstallerFiles"
 if (Test-Path $InstallerSrcDir) {
     Remove-Item -Recurse -Force $InstallerSrcDir
@@ -276,15 +245,6 @@ if (-not (Test-Path $SourceIco)) {
 }
 Copy-Item -Path $SourceIco -Destination $BundleIco -Force
 Write-Host "Copied $SourceIco -> $BundleIco" -ForegroundColor Green
-
-# Verify _playwright directory with Chromium binaries exists in the bundle
-# (installed by step [3/4] above). The installer.iss sets
-# PLAYWRIGHT_BROWSERS_PATH to {app}\_playwright and sponsorscout/paths.py
-# falls back to exe_dir\_playwright, so this directory is mandatory.
-$PlaywrightInBundle = Join-Path $InstallerSrcDir '_playwright'
-if (-not (Test-Path $PlaywrightInBundle)) {
-    throw "Playwright browsers missing from bundle at $PlaywrightInBundle - refusing to build an installer that cannot scan SPA career portals."
-}
 
 # Step 4: Build Inno Setup installer if ISCC.exe is available
 $Iscc = $null

@@ -96,7 +96,7 @@ def test_repeated_failed_launch_then_success_on_same_worker(monkeypatch):
         pool.submit(work).result(timeout=5)
     assert [d.stops for d in factory.drivers] == [1, 1, 1]
     assert browser.closed == 1
-    assert all(a == {'headless': True, 'args': cs.BROWSER_ARGS}
+    assert all(a['headless'] is True and a['args'][:-1] == cs.BROWSER_ARGS and a['args'][-1].startswith('--crash-dumps-dir=') and a['channel'] == 'chromium' and a['executable_path']
                for a in factory.launch_args)
 
 

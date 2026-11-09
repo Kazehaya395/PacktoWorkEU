@@ -6,6 +6,7 @@ and multi-page vacancy harvesting across all direct employers and aggregators.
 
 from __future__ import annotations
 
+from sponsorscout.services.browser_policy import launch_chromium
 import logging
 import json
 import sqlite3
@@ -1503,7 +1504,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     LAST_INGESTION_REPORT.clear()
     LAST_INGESTION_REPORT.update(url=url,completed=False,persistence_errors=[])
     try:
-        from playwright.sync_api import sync_playwright
+        from sponsorscout.services.browser_policy import managed_playwright as sync_playwright
     except ImportError as exc:
         raise RuntimeError('Playwright is not installed; assisted browser cannot start.') from exc
 
@@ -1581,7 +1582,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     try:
         with sync_playwright() as pw:
             try:
-                browser = pw.chromium.launch(headless=False,args=[
+                browser = launch_chromium(pw.chromium,headless=False,args=[
                     '--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized'])
                 context = browser.new_context(
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -3075,6 +3076,8 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                           "jd_reason", "jd_transport", "jd_http_status", "jd_http_title", "jd_final_url", "jd_phase", "jd_error",
                           "jd_http_final_url", "jd_browser_status", "jd_browser_title", "jd_browser_final_url", "jd_browser_reason", "jd_browser_evidence", "jd_defer_kind", "jd_browser_phase", "jd_browser_error", "jd_http_reason", "jd_http_phase", "jd_http_error"]
             base = out_dir / f"{run_id}_career_jobs.csv"
+            from sponsorscout.services.data_ownership import register_scan_outputs
+            register_scan_outputs(base)
             with open(base,'w',encoding='utf-8-sig',newline='') as f:
                 wcsv = _csv.DictWriter(f,fieldnames=job_fields)
                 wcsv.writeheader(); wcsv.writerows({key:row.get(key,'')for key in job_fields}for row in harvest_rows)

@@ -16,23 +16,21 @@ RPM = (ROOT / "build_rpm.sh").read_text(encoding="utf-8")
 
 
 def test_windows_uninstaller_purges_app_data_but_not_shared_browser_cache():
-    assert "[UninstallDelete]" in INN
-    assert "procedure PurgeUserData" in INN
-    assert "usPostUninstall" in INN
-    assert "SPONSORSCOUT_DATA_DIR" in INN
-    assert "SPONSORSCOUT_DB_PATH" in INN
+    assert "[UninstallDelete]" not in INN and "DelTree(" not in INN
+    assert "CurUninstallStep <> usUninstall" in INN
+    assert "--purge-user-data" in INN and "RaiseException(" in INN
+    assert "PrivilegesRequired=lowest" in INN
+    assert "SPONSORSCOUT_DATA_DIR" not in INN and "SPONSORSCOUT_DB_PATH" not in INN
     assert "ms-playwright" not in INN.lower()
 
 
 def test_debian_uninstaller_purges_on_remove_but_skips_upgrade():
+    prerm = DEB.split('cat > "$DEBIAN_DIR/prerm"', 1)[1].split("EOL\nchmod", 1)[0]
     postrm = DEB.split('cat > "$DEBIAN_DIR/postrm"', 1)[1].split("EOL\nchmod", 1)[0]
-    assert 'case "$ACTION" in' in postrm
-    assert "remove|purge)" in postrm
-    assert "*) exit 0 ;;" in postrm
-    assert "SPONSORSCOUT_DATA_DIR" in postrm
-    assert "SPONSORSCOUT_DB_PATH" in postrm
-    assert "ms-playwright" not in postrm.lower()
-    assert 'cat > "$DEBIAN_DIR/prerm"' in DEB
+    assert '[ "${1:-}" = "remove" ]' in prerm
+    assert 'runuser -u "$name" -- env -i' in prerm and '--purge-user-data' in prerm
+    assert 'rm -rf' not in postrm and 'SPONSORSCOUT_DATA_DIR' not in postrm
+    assert 'SPONSORSCOUT_DB_PATH' not in postrm and 'ms-playwright' not in postrm.lower()
 
 
 def test_debian_build_uses_local_venv_and_does_not_require_sudo():
@@ -83,17 +81,13 @@ def test_debian_packaging_handles_filesystems_without_permissions():
 
 
 def test_rpm_uninstaller_purges_on_erase_but_never_on_upgrade():
+    preun = RPM.split("%preun", 1)[1].split("EOL", 1)[0]
     postun = RPM.split("%postun", 1)[1].split("EOL", 1)[0]
-    # rpm passes the number of instances still installed as $1: 0 = final
-    # removal, >0 = an upgraded/parallel copy remains (rpm-scriptlets(7)).
-    assert '[ "$1" -ne 0 ]' in postun
-    # The guard must run before any destructive work.
-    assert postun.index('[ "$1" -ne 0 ]') < postun.index("purge_path")
-    assert "purge_path" in postun
-    assert "SPONSORSCOUT_DATA_DIR" in postun
-    assert "SPONSORSCOUT_DB_PATH" in postun
-    assert "ms-playwright" not in postun.lower()
-    assert 'case "$ACTION" in' not in postun  # that case-statement is Debian-only
+    assert '[ "${1:-1}" = "0" ]' in preun
+    assert preun.index('[ "${1:-1}" = "0" ]') < preun.index('--purge-user-data')
+    assert 'runuser -u "$name" -- env -i' in preun
+    assert 'rm -rf' not in postun and 'SPONSORSCOUT_DATA_DIR' not in postun
+    assert 'SPONSORSCOUT_DB_PATH' not in postun and 'ms-playwright' not in postun.lower()
 
 
 def test_rpm_scriptlets_stop_the_gui_and_refresh_the_desktop_entry():
@@ -104,11 +98,11 @@ def test_rpm_scriptlets_stop_the_gui_and_refresh_the_desktop_entry():
     assert "kill -s" in preun
     assert "purge_path" not in preun
     assert "SPONSORSCOUT_DATA_DIR" not in preun
-    # %post mirrors the Debian postinst: desktop/icon caches + Chromium fallback.
+    # %post mirrors Debian: desktop/icon caches only, never a browser download.
     post = RPM.split("%post\n", 1)[1].split("EOL", 1)[0]
     assert "update-desktop-database" in post
     assert "gtk-update-icon-cache" in post
-    assert "-m playwright install chromium" in post
+    assert "-m playwright install" not in post
 
 
 def test_rpm_build_uses_local_venv_and_does_not_require_sudo():
@@ -167,40 +161,23 @@ def test_rpm_handles_filesystems_without_permissions():
     assert 'TOPDIR="$STAGE_DIR/rpmbuild"' in RPM
 
 
-def test_rpm_bundles_chromium_and_smoke_tests_the_bundle():
-    assert "-m playwright install chromium" in RPM
-    assert "--self-check --self-check-browser" in RPM
-    assert "_playwright" in RPM
-    # The generated spec must ship every packaged entry point.
+def test_rpm_collects_driver_without_browser_and_checks_dependencies():
+    assert "-m playwright install chromium" not in RPM
+    assert '"$APP_DIR/$APP_NAME" --self-check' in RPM
+    assert 'SPONSORSCOUT_VALIDATE_BROWSER' in RPM
+    assert '--self-check-browser' in RPM
+    assert '--additional-hooks-dir build_hooks' in RPM
     assert "/usr/bin/sponsorscout" in RPM
     assert "/usr/share/applications/sponsorscout.desktop" in RPM
     assert "/opt/sponsorscout" in RPM
 
 
-# ── Build-script correctness (2026-09 audit) ─────────────────────────────────
-
-def test_windows_installer_writes_browser_path_to_the_per_user_hive():
-    """HKCU, not HKLM.
-
-    {app} is {autopf}\\SponsorScout — a PER-USER directory — so a machine-wide
-    environment variable would point every account on the PC at whichever user
-    installed last, and everyone else would fail to find Chromium.
-    """
-    registry = INN.split("[Registry]", 1)[1].split("[Tasks]", 1)[0]
-    assert "PLAYWRIGHT_BROWSERS_PATH" in registry
-    # Judge the directives only — the section carries a comment explaining
-    # WHY it is HKCU, and that prose must not be mistaken for configuration.
-    directives = [ln for ln in registry.splitlines()
-                  if ln.strip() and not ln.strip().startswith(";")]
-    body = "\n".join(directives)
-    assert "Root: HKCU" in body
-    assert "Root: HKLM" not in body, (
-        "a machine-wide env var must not point at a per-user install path")
-    # `Permissions: everyone-modify` on that variable would let any non-admin
-    # rewrite something injected into every new process on the machine.
-    assert "everyone-modify" not in body
-    # uninsdeletevalue must only clear the installing user's own value.
-    assert "uninsdeletevalue" in body
+def test_windows_installer_does_not_redirect_global_browser_cache():
+    assert '[Registry]' not in INN
+    assert 'Root: HKCU' not in INN and 'Root: HKLM' not in INN
+    assert 'everyone-modify' not in INN and 'uninsdeletevalue' not in INN
+    assert 'DefaultDirName={localappdata}\\Programs\\{#MyAppName}' in INN
+    assert 'PrivilegesRequired=lowest' in INN
 
 
 def test_installer_has_no_placeholder_publisher_url():
@@ -258,12 +235,13 @@ def test_readme_artifact_names_match_the_build_scripts():
     assert "sponsorscout_<version>_amd64.deb" not in readme
 
 
-def test_readme_documents_the_opt_in_browser_download():
-    """The auto-download behaviour changed; both languages must say so."""
+def test_readme_documents_explicit_browser_download_and_obsolete_env_flag():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert readme.count("SPONSORSCOUT_AUTO_INSTALL_BROWSERS") >= 4, (
-        "document the opt-in flag in EN + IT, troubleshooting + requirements")
-    assert "SPONSORSCOUT_AUTO_INSTALL_BROWSERS" in readme
+    assert readme.count("SPONSORSCOUT_AUTO_INSTALL_BROWSERS") == 2
+    assert 'no longer enables downloads' in readme and 'non abilita più i download' in readme
+    assert 'Download app-managed Chromium' in readme
+    assert 'Chromium gestito dall’app' in readme
+    assert '--no-shell' in readme
 
 
 def test_debian_third_party_test_cleanup_is_not_a_no_op():

@@ -146,6 +146,9 @@ def _sync_to_revision(log_fn=print) -> dict:
         u = read_seed_rows(user)
         backup.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(user, backup / user.name)
+        from sponsorscout.services.data_ownership import register_artifacts, register_empty_directory
+        register_artifacts(backup / user.name)
+        register_empty_directory(backup.parent)
         bundled_list = [r for r in b["rows"] if not is_comment_row(r) and r.get("name")]
         name_counts = {}
         for r in bundled_list:

@@ -54,8 +54,9 @@ for available downloads. The supported package formats are:
 | Linux (Fedora / RHEL / openSUSE) | `sponsorscout-<version>-1.<arch>.rpm` |
 
 `<arch>` is your machine's architecture (`amd64` on most desktops, `arm64` on
-Raspberry Pi / Graviton). Pick the file for your platform. The app and its
-browser are bundled, so no Python is needed.
+Raspberry Pi / Graviton). Pick the file for your platform. The app and Playwright
+driver are included, so no Python is needed. Browser binaries are **not** bundled: choose
+an installed browser, or confirm the optional app-managed Chromium download.
 
 Installing the Linux packages:
 
@@ -68,7 +69,7 @@ sudo dnf install ./sponsorscout-<version>-1.<arch>.rpm   # or: sudo zypper insta
 ```
 
 Both packages install to `/opt/sponsorscout` and add a launcher plus a desktop
-entry; the bundled Chromium is used automatically.
+entry. Before scanning, use **Browser setup** as described below.
 
 ---
 
@@ -129,14 +130,17 @@ entry; the bundled Chromium is used automatically.
 1. **Run from source** — follow the Python/venv commands under
    [Building From Source](#-building-from-source), then launch the app.
    Separately published installers, if available, are optional and may be older.
-2. **Run the first scan** — accept the first-run prompt, or press **Scan Now**
+2. **Choose a browser** — open **Tools → Advanced maintenance and diagnostics → Browser setup**,
+   validate both modes and save your selection. Starting browser work without a
+   usable selection opens the same setup dialog; cancelling does not start a scan.
+3. **Run the first scan** — accept the first-run prompt, or press **Scan Now**
    in **Tools**. A full scan can take minutes to hours depending on how many
    companies are enabled. You can pause, stop and resume without losing the jobs
    already found.
-3. **Find and track jobs** — open **Search** to filter by country, title, visa
+4. **Find and track jobs** — open **Search** to filter by country, title, visa
    sponsorship, EU Blue Card, remote type and regex; save interesting jobs to
    **Applications**.
-4. **Go deeper** — open **Insights** for category, skill, domain and
+5. **Go deeper** — open **Insights** for category, skill, domain and
    sponsorship charts, **AI Prompt Kit** to assemble an application prompt, and
    **Assisted Ingestion** for explicit browser collection or access/recovery issues; access is not guaranteed.
 
@@ -158,6 +162,40 @@ Running from source? See [Building From Source](#-building-from-source).
   See [Where Your Data Lives](#-where-your-data-lives).
 
 ---
+
+### Browser setup
+
+The same selected browser is used for normal/Custom/Resume scans and the visible
+**Assisted Ingestion** window. Open **Tools → Advanced maintenance and diagnostics →
+Browser setup**, then:
+
+1. Click **Detect browsers**. Chrome and Edge use their Playwright channels;
+   Brave, Opera, Vivaldi and Chromium are additional executable candidates.
+   Known installation paths and Windows App Paths are checked; portable/custom
+   installations may not be detected. A detected browser is not yet proven compatible.
+2. Select one, click **Validate selected browser**, and wait for both checks:
+   headless scanning and a briefly visible local test window. Click **Save browser**.
+   The local test also checks that Playwright created a temporary profile.
+3. If no candidate works, install a Chromium-family browser yourself, or click
+   **Download app-managed Chromium** and explicitly confirm. This downloads one
+   **full Chromium**, using `--no-shell`, into SponsorScout storage; it does not
+   install a separate headless shell or alter your personal browser installation.
+   Validation/download work runs off the UI thread; wait for it to finish before closing setup.
+
+Every app-controlled browser launch uses an isolated temporary Playwright profile, not your normal
+profile, cookies, accounts or extensions. Reuse means the installed executable, not attaching to an already-open personal
+browser window. Temporary contexts are closed with the browser. **Open website** remains external, view-only browsing (including Firefox).
+Installed Firefox/LibreWolf cannot be reused by this Playwright Chromium workflow;
+no Firefox automation or verification bypass is provided. Brave/Opera/Vivaldi are
+compatibility-tested candidates, not an official support guarantee. Browser updates,
+enterprise policy or missing Linux libraries may require validation again. Passing
+this local test does **not** prove that a particular job site will grant access.
+
+The app never downloads a browser during a scan, startup, package installation or
+build. `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` no longer enables downloads. Existing
+shared Playwright caches are not automatically selected, changed or deleted.
+
+<img src="assets/browser_setup.png" alt="Browser setup: detect installed browsers, validate both modes, explicitly download Chromium or save the selected browser" width="860">
 
 ## 🗂 The Eight Tabs
 
@@ -251,7 +289,7 @@ subsets of unresolved, not extra jobs to add to it.
 
 **Scan History** remains visible below (scroll if necessary). Select a run before
 **View Per-Company Log** or **Download Scan Log**. The tab opens with
-**Advanced maintenance and diagnostics** collapsed. Expand it for **High-Performance
+**Advanced maintenance and diagnostics** collapsed. Expand it for **Browser setup**, **High-Performance
 Mode**, **Read saved descriptions again (next new run only)**, **Review alias
 merges**, **Clear Stale Data**, **Clear Scan Data**, **Review Quarantine**,
 **Review data quality** and **Job Availability Check**. The availability **Run**
@@ -483,6 +521,13 @@ copying only its `.db` while the app runs is not a complete backup.
 Set `SPONSORSCOUT_DATA_DIR` or `SPONSORSCOUT_DB_PATH` **before launching** to
 override the paths. A separately located custom database needs its own backup.
 
+Browser selection (`browser.json`), the ownership registry (`owned_paths.jsonl`) and
+the optional full browser (`browser/`) and browser caches/downloads (`runtime/`) stay in the **default per-account folder**
+above, even when you override job-data paths. CV text and saved AI prompt content
+are part of the database. App-scoped Qt settings are also cleaned on uninstall. On Linux, short private
+temporary directories under `/tmp/sponsorscout-<uid>-<account-hash>` avoid browser
+socket-path limits; they are account-owned, permission-checked and removed on uninstall.
+
 ### Uninstalling
 
 **Source/venv users:** deleting a source checkout or its venv is not running an
@@ -490,17 +535,33 @@ uninstaller. Keep your separate user-data folder unless you deliberately want
 to remove it. The following warnings apply to packaged uninstallers.
 
 
-The Windows installer, the Linux `.deb` and the Linux `.rpm` all remove
-SponsorScout-owned user data when the app is uninstalled — the SQLite database,
-editable seeds, language setting and scan logs. The default locations are
-cleaned for the current Windows user and for local Linux user accounts. Custom
-data paths are also removed when their `SPONSORSCOUT_DATA_DIR` /
-`SPONSORSCOUT_DB_PATH` environment variables are available to the uninstaller.
-Back up anything you want to keep before uninstalling. The shared Playwright
-browser cache is not removed because other applications may use it.
+The Windows uninstaller and Linux `.deb`/`.rpm` removal delete SponsorScout-owned
+data: database and SQLite sidecars, CV/prompt content, editable seeds and their
+app-created backups, language/settings, scan outputs, maintenance backup/audit
+files and the optional app-managed browser. **Back up what you want to keep first.**
+Custom locations used by this version are recorded persistently, so cleanup does
+not depend on the environment variables still being set at uninstall time.
 
-On Linux the two packages behave identically; `apt remove sponsorscout` /
-`dnf remove sponsorscout` does the same as the Windows uninstaller.
+Shared custom parents and unrelated files are retained; only tracked app files
+and empty containers are removed there. Personal browsers, profiles and shared
+Playwright caches are never uninstalled or purged. Manually exported/copied files
+outside managed/tracked locations, or older custom locations never used by this
+version, require your own review. Do not use symlink/junction data locations.
+Missing permissions or unsafe records cause an incomplete-cleanup error, not a
+claim of success; package removal stops so you can repair permissions and retry.
+
+Windows packages are now **per-user**, installed normally without administrator
+rights under `%LOCALAPPDATA%\Programs\SponsorScout`. Uninstall cleans that
+account; it does not inspect other Windows users. An older machine-wide install
+is detected and the new installer stops: back up its data/custom locations before
+removing it, then install and restore your data. Do not treat that migration as an
+in-place upgrade. Ordinary updates within the new per-user format preserve data.
+
+On Linux, `apt remove sponsorscout` / `dnf remove sponsorscout` run cleanup before
+the trusted executable is removed, separately under each relevant account’s own
+privileges. Upgrades do **not** purge user data. Source/venv deletion alone is not
+an uninstall; for deliberate irreversible account cleanup, after backups, run
+`python -m sponsorscout.main --purge-user-data` as that user, **not with sudo**.
 
 ---
 
@@ -510,29 +571,25 @@ On Linux the two packages behave identically; `apt remove sponsorscout` /
 check the newest **Scan History** row — an `error` status, or failures in its
 log, shows which companies returned nothing.
 
-**"Playwright is required for DOM fallback" / "Chromium browser is not
-available".** Career pages are crawled with Playwright, and installers bundle
-both the library and Chromium. To see exactly what is wrong in an installed
-build, run:
+**Browser setup is required / browser launch failed.** Open **Tools → Advanced
+maintenance and diagnostics → Browser setup**, detect/select a browser, validate
+both modes and save it. If a browser was moved or updated, validate again. If none
+works, the download button offers the explicitly confirmed full Chromium fallback.
+A bare `playwright install` into a shared cache does not configure SponsorScout.
+Missing `playwright`/`greenlet` is instead a Python dependency issue: reinstall the
+requirements in your actual venv; browser setup cannot repair missing libraries.
 
 ```bash
-/opt/sponsorscout/SponsorScout --self-check --self-check-browser
-"C:\Program Files\SponsorScout\SponsorScout.exe" --self-check --self-check-browser
+python -m sponsorscout.main --self-check          # imports + driver, no browser required
+python -m sponsorscout.main --self-check-browser  # selected browser, headless AND visible
 ```
 
-It reports whether `playwright` imports (including *why* it fails, e.g. a
-missing `greenlet`), where Playwright looks for browsers, and whether the
-bundled Chromium launches — without opening the app. Builds run this
-automatically and refuse to package a broken bundle. From source, run
-`python -m playwright install chromium`.
-
-**SponsorScout will not download a browser by itself.** If Chromium is missing
-the app logs a warning and keeps working, but JS-rendered career pages return 0
-jobs. Install it once with `python -m playwright install chromium`. To restore
-the old automatic behaviour set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` — it is
-off by default because a large browser download can block the scan for minutes.
-Installed builds are unaffected: the browser ships inside the `.exe`, `.deb`
-and `.rpm`.
+Packaged equivalents use `/opt/sponsorscout/SponsorScout` on Linux or
+`%LOCALAPPDATA%\Programs\SponsorScout\SponsorScout.exe` on Windows. The second
+check opens a short-lived window and needs a desktop/display; it is **optional**
+for developers, not an unconditional lean-build requirement. Linux system-library
+errors may need OS packages installed by an administrator; the app does not run
+`sudo`, an OS dependency installer or a browser download implicitly.
 
 **A seed row contains an error.** Scan startup does not run a whole-seed
 validation pass. Custom scans select companies before processing their rows;
@@ -600,7 +657,6 @@ From the extracted folder containing `pyproject.toml`, with Python 3.10+:
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m sponsorscout.main
 ```
 
@@ -609,13 +665,15 @@ py -3 -m venv .venv
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m playwright install chromium
 .venv/bin/python -m sponsorscout.main
 ```
 
-On supported Linux systems, Chromium may also need system libraries:
-`.venv/bin/python -m playwright install --with-deps chromium` (may require admin
-privileges). Native Qt libraries and a desktop session are needed for normal GUI use.
+Choose and validate an installed browser in **Browser setup** after launching.
+The optional app-managed download is available there with confirmation, not as a
+required terminal step. Native Qt libraries, Chromium system libraries and a
+desktop session are needed on Linux. If necessary, an administrator can explicitly
+run `.venv/bin/python -m playwright install-deps chromium` on supported systems;
+that installs OS dependencies, **not** a second browser, and may need elevated rights.
 For startup diagnostics use `python -m sponsorscout.main --self-check` and
 `python -m sponsorscout.main --self-check-browser` with that same venv interpreter.
 Do **not** use `python -m sponsorscout`: this tree has no `__main__.py`.
@@ -633,7 +691,6 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt   # runtime + pyinstaller (used by the build scripts)
 pip install -e ".[dev]"          # pytest, for the test suite
-python -m playwright install chromium
 ```
 
 `requirements.txt` is what the build scripts (`build_exe.ps1`, `build_deb.sh`,
@@ -641,15 +698,16 @@ python -m playwright install chromium
 `pytest` for the suite; `pip install -e .` alone is enough if you only want to
 run the app.
 
-If you skip `playwright install chromium`, the app can still start but
-browser-dependent reads can fail or yield no jobs; inspect the reported error. It will **not** download the browser on its
-own; set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` if you want that behaviour back.
+Native builds collect the driver but no browser binaries. `--self-check` verifies
+dependencies/driver only. To explicitly test a previously configured browser in
+both modes, set `SPONSORSCOUT_VALIDATE_BROWSER=1` before building; a display is
+required. No automatic download occurs in either mode.
 
 **Windows installer:**
 ```powershell
 .\build_exe.ps1               # -> dist\sponsorscout-<version>-setup.exe
 ```
-(requires Inno Setup 6/7; bundles Playwright Chromium)
+(requires Inno Setup 6/7; per-user, driver included, browser not bundled)
 
 **Linux package (Debian / Ubuntu):**
 ```bash
@@ -659,7 +717,7 @@ Run it as your normal user: **do not use `sudo`**. The script creates an
 isolated build environment in `.build/deb-venv`, so it never modifies the
 system Python. If Python's venv module is missing, install it once with
 `sudo apt install python3-venv`, then run `./build_deb.sh` again.
-Packaging the ~1.4 GB payload (PySide6 + bundled Chromium) is the slow step and
+Compressing the Qt/Playwright application payload can still be slow; the script
 prints how long it took; the `.deb` only appears in `dist/` once it is complete.
 For a much faster build that requires dpkg >= 1.21.18 to install, use
 `DEB_COMPRESSION=zstd ./build_deb.sh`.
@@ -675,8 +733,8 @@ reliable build, copy the project to a Linux filesystem such as `~/sponsorscout`.
 Same rules as the `.deb`: run it as your normal user (**do not use `sudo`**)
 and let it create the isolated `.build/rpm-venv`. Requires `rpmbuild`
 (`sudo dnf install rpm-build` on Fedora/RHEL, `sudo apt install rpm` on
-Debian/Ubuntu/WSL, `sudo zypper install rpm-build` on openSUSE). It bundles
-Playwright Chromium, smoke-tests the binary and never strips the bundled
+Debian/Ubuntu/WSL, `sudo zypper install rpm-build` on openSUSE). It collects the
+Playwright driver, smoke-tests dependencies and never strips the bundled
 C-extensions — exactly like `build_deb.sh`. The payload compressor is probed
 on your machine (fast xz by default); for a smaller package where every
 target has rpm >= 4.14, use `RPM_COMPRESSION=zstd ./build_rpm.sh`. Like the
@@ -704,10 +762,10 @@ python -m pytest sponsorscout/tests
 
 - Python 3.10 or newer to run from source (packaged installers do not require Python)
 - Runtime: **PySide6-Essentials** (not the full meta-package), **requests**, **truststore**, **playwright** (`requirements.txt`)
-- Playwright Chromium: `python -m playwright install chromium`
+- A compatible, explicitly selected Chromium-family browser; optional confirmed app-managed full Chromium
 - Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`); `rpmbuild` for the `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
-- Optional: `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` lets the app download Chromium itself when it is missing (off by default)
+- No automatic browser downloads; the legacy auto-install environment switch is ignored
 
 ---
 
@@ -759,7 +817,9 @@ I formati supportati sono:
 
 `<arch>` è l'architettura della tua macchina (`amd64` sulla maggior parte dei
 desktop, `arm64` su Raspberry Pi / Graviton). Scegli il file per la tua
-piattaforma. L'app e il browser sono inclusi, quindi non serve Python.
+piattaforma. L’app e il driver Playwright sono inclusi, quindi non serve Python.
+I browser **non** sono inclusi: scegli un browser installato oppure conferma
+il download facoltativo di Chromium gestito dall’app.
 
 Installare i pacchetti Linux:
 
@@ -772,8 +832,8 @@ sudo dnf install ./sponsorscout-<versione>-1.<arch>.rpm   # oppure: sudo zypper 
 ```
 
 Entrambi i pacchetti installano in `/opt/sponsorscout` e aggiungono un launcher
-più una voce nel menu applicazioni; il Chromium incluso viene usato
-automaticamente.
+più una voce nel menu applicazioni. Prima della scansione usa
+**Configurazione browser**, come spiegato sotto.
 
 ---
 
@@ -871,6 +931,41 @@ Esegui dai sorgenti? Vedi [Compilare dai Sorgenti](#-compilare-dai-sorgenti).
 
 ---
 
+### Configurazione browser
+
+Il browser scelto viene usato nelle scansioni normali/Personalizzate/Riprendi e
+nella finestra visibile di **Acquisizione Assistita**. Apri **Strumenti →
+Manutenzione e diagnostica avanzate → Configurazione browser**:
+
+1. Premi **Rileva browser**. Chrome ed Edge usano i canali Playwright;
+   Brave, Opera, Vivaldi e Chromium sono ulteriori eseguibili candidati.
+   Vengono controllati percorsi noti e App Paths di Windows; installazioni portatili
+   o personalizzate potrebbero non essere rilevate. Rilevato non significa compatibile.
+2. Seleziona un browser e premi **Verifica browser selezionato**. Attendi il controllo
+   senza finestra e quello con una breve finestra locale, poi premi **Salva browser**.
+   Il test controlla anche la creazione di un profilo temporaneo Playwright.
+3. Se nessuno funziona, installa tu un browser Chromium oppure premi **Scarica
+   Chromium gestito dall’app** e conferma esplicitamente. Viene scaricato un solo
+   **Chromium completo**, con `--no-shell`, nello spazio di SponsorScout: nessuna
+   shell headless separata e nessuna modifica al browser personale. Verifica e download
+   lavorano in background; attendi la fine prima di chiudere la configurazione.
+
+Ogni avvio usa un profilo Playwright temporaneo e isolato, non profili, cookie,
+account o estensioni personali. Si riutilizza l’eseguibile, non la finestra personale già aperta. I contesti
+temporanei vengono chiusi con il browser.
+**Apri sito** resta una navigazione esterna di sola visualizzazione, anche con Firefox.
+Firefox e LibreWolf installati non sono riutilizzabili per questa automazione Chromium;
+non vengono aggiunti automazione Firefox o sistemi per aggirare verifiche. Brave,
+Opera e Vivaldi restano candidati da verificare, non una garanzia ufficiale. Aggiornamenti,
+policy aziendali o librerie Linux mancanti possono richiedere una nuova verifica.
+Superare il test locale **non** garantisce l’accesso ai siti di lavoro.
+
+Nessun download automatico durante scansione, avvio, installazione del pacchetto o
+build. `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` non abilita più i download. Le cache
+Playwright condivise non vengono selezionate, modificate o eliminate automaticamente.
+
+<img src="assets/browser_setup_it.png" alt="Configurazione browser: rilevamento, verifica delle due modalità, download esplicito e salvataggio" width="860">
+
 ## 🗂 Le Otto Schede
 
 Il selettore in alto a destra cambia lingua. Testi delle offerte, nomi delle aziende,
@@ -962,7 +1057,7 @@ inconcludenti sono sottoinsiemi delle irrisolte, non righe aggiuntive.
 
 La cronologia resta sotto: scorri e seleziona un'esecuzione prima di **Vedi
 Registro per Azienda** o **Scarica Registro di Scansione**.
-**Manutenzione e diagnostica avanzate** parte chiusa. Dentro ci sono modalità
+**Manutenzione e diagnostica avanzate** parte chiusa. Dentro ci sono **Configurazione browser**, modalità
 alte prestazioni, rilettura delle descrizioni solo per la prossima nuova esecuzione,
 revisione fusioni alias, pulizia dati obsoleti/di scansione, quarantena, revisione
 qualità e controllo disponibilità. Il controllo disponibilità di un campione
@@ -1192,6 +1287,14 @@ Copiare solo un database aperto può perdere dati nei file WAL/SHM. Imposta
 `SPONSORSCOUT_DATA_DIR` o `SPONSORSCOUT_DB_PATH` prima dell'avvio; un database
 separato richiede anche un backup della sua posizione.
 
+La scelta del browser (`browser.json`), il registro dei percorsi (`owned_paths.jsonl`)
+e il browser facoltativo (`browser/`) restano nella **cartella predefinita dell’account**,
+anche se sposti i dati di lavoro. Cache e download del browser restano in `runtime/`.
+Su Linux i temporanei privati in `/tmp/sponsorscout-<uid>-<hash-account>` evitano
+limiti di lunghezza dei socket; proprietà e permessi vengono controllati e la
+disinstallazione li elimina. CV e prompt salvati sono nel database. La
+disinstallazione rimuove anche le impostazioni Qt specifiche dell’app.
+
 ### Disinstallazione
 
 **Uso da sorgenti/venv:** eliminare sorgenti o venv non esegue un programma di
@@ -1199,19 +1302,33 @@ disinstallazione. Conserva la cartella dati separata. Gli avvisi sotto riguardan
 i pacchetti e i relativi programmi di disinstallazione.
 
 
-L'installer Windows, il pacchetto Linux `.deb` e il pacchetto Linux `.rpm`
-rimuovono durante la disinstallazione tutti i dati locali di SponsorScout:
-database SQLite, elenchi modificabili, lingua e log delle scansioni. Vengono
-pulite le posizioni predefinite dell'utente Windows e degli account Linux
-locali. Vengono rimosse anche le posizioni personalizzate se le variabili
-`SPONSORSCOUT_DATA_DIR` / `SPONSORSCOUT_DB_PATH` sono disponibili al programma
-di disinstallazione. Fai una copia di cio che vuoi conservare prima di
-disinstallare. La cache condivisa dei browser Playwright non viene rimossa,
-perche potrebbe servire ad altre applicazioni.
+La disinstallazione Windows e la rimozione dei pacchetti `.deb`/`.rpm` eliminano i
+dati di SponsorScout: database e file SQLite ausiliari, CV/prompt, seed modificabili
+e relativi backup creati dall’app, lingua/impostazioni, output, backup/audit di
+manutenzione e browser facoltativo gestito dall’app. **Salva prima ciò che vuoi tenere.**
+I percorsi personalizzati usati da questa versione vengono registrati: non serve
+che le variabili d’ambiente siano ancora presenti durante la disinstallazione.
 
-Su Linux i due pacchetti si comportano allo stesso modo; `apt remove
-sponsorscout` / `dnf remove sponsorscout` equivalgono alla disinstallazione
-Windows.
+Nei contenitori condivisi vengono rimossi solo file dell’app registrati e cartelle
+vuote, non file estranei. Browser personali, profili e cache Playwright condivise
+non vengono eliminati. Esportazioni/copie manuali esterne o vecchi percorsi mai usati
+con questa versione richiedono una verifica personale. Evita dati su symlink o junction.
+Permessi mancanti o record non sicuri fermano la rimozione con un errore: correggi
+il problema e riprova; non viene dichiarata una pulizia completa non riuscita.
+
+L’installer Windows ora è **per utente**, senza privilegi amministrativi, in
+`%LOCALAPPDATA%\Programs\SponsorScout`. Pulisce solo quell’account, non altri utenti
+Windows. Se rileva una vecchia installazione per tutta la macchina, si ferma:
+salva dati e percorsi personalizzati prima di rimuoverla, poi installa e ripristina
+i dati. Non è un aggiornamento diretto. Gli aggiornamenti dello stesso nuovo
+formato per utente conservano i dati.
+
+Su Linux `apt remove sponsorscout` / `dnf remove sponsorscout` puliscono i dati
+prima di rimuovere l’eseguibile, usando i privilegi propri di ciascun account
+interessato, mai interpretando i suoi percorsi come root. Gli aggiornamenti non
+cancellano i dati. Eliminare sorgenti/venv non disinstalla: per una pulizia
+irreversibile volontaria dell’account, dopo il backup, usa
+`python -m sponsorscout.main --purge-user-data` come quell’utente, **senza sudo**.
 
 ---
 
@@ -1222,30 +1339,25 @@ ancora vuoto, controlla l'ultima riga della **Cronologia Scansioni**: uno stato
 `error`, o errori nel registro, indicano quali aziende non hanno restituito
 lavori.
 
-**"Playwright is required for DOM fallback" / "Chromium browser is not
-available".** Le pagine carriera vengono esplorate con Playwright, e gli
-installer includono sia la libreria sia Chromium. Per vedere esattamente cosa
-non funziona in una build installata, esegui:
+**Configurazione browser richiesta / avvio non riuscito.** Apri **Strumenti →
+Manutenzione e diagnostica avanzate → Configurazione browser**, rileva e seleziona
+un browser, verifica entrambe le modalità e salva. Ripeti dopo spostamenti o
+aggiornamenti del browser. Se nessuno funziona puoi confermare il download del
+Chromium completo. Un semplice `playwright install` nella cache condivisa non
+configura SponsorScout. Se mancano `playwright`/`greenlet`, reinstalla invece le
+dipendenze nel venv corretto: la configurazione browser non ripara librerie mancanti.
 
 ```bash
-/opt/sponsorscout/SponsorScout --self-check --self-check-browser
-"C:\Program Files\SponsorScout\SponsorScout.exe" --self-check --self-check-browser
+python -m sponsorscout.main --self-check          # import e driver, nessun browser necessario
+python -m sponsorscout.main --self-check-browser  # browser scelto, senza finestra E visibile
 ```
 
-Riporta se `playwright` si importa (incluso il *motivo* di un eventuale
-errore, ad esempio `greenlet` mancante), dove Playwright cerca i browser e se
-il Chromium incluso si avvia — senza aprire l'app. Le build eseguono questo
-controllo automaticamente e rifiutano di pacchettizzare un bundle rotto. Da
-codice sorgente, esegui `python -m playwright install chromium`.
-
-**SponsorScout non scarica un browser da solo.** Se Chromium manca, l'app
-scrive un avviso e continua a funzionare, ma le pagine carriera renderizzate via
-JavaScript restituiscono 0 lavori. Installalo una volta con
-`python -m playwright install chromium`. Per riattivare il comportamento
-automatico di prima imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1`: e disattivato
-perche un grande download del browser puo bloccare la scansione per minuti. Le build
-installate non ne risentono: il browser e incluso dentro `.exe`, `.deb` e
-`.rpm`.
+Per i pacchetti usa `/opt/sponsorscout/SponsorScout` su Linux oppure
+`%LOCALAPPDATA%\Programs\SponsorScout\SponsorScout.exe` su Windows. Il secondo
+controllo apre una finestra temporanea e richiede un display; è facoltativo per
+sviluppatori, non obbligatorio per compilare un pacchetto leggero. Per librerie
+Linux mancanti può servire l’amministratore: l’app non esegue implicitamente
+`sudo`, installazioni di librerie di sistema o download del browser.
 
 **Un seed contiene una riga errata.** All'avvio non viene eseguita una
 validazione globale. Le scansioni personalizzate selezionano prima le aziende;
@@ -1312,7 +1424,6 @@ Dalla cartella estratta con `pyproject.toml`, usando Python 3.10 o successivo:
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m sponsorscout.main
 ```
 
@@ -1321,14 +1432,16 @@ py -3 -m venv .venv
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m playwright install chromium
 .venv/bin/python -m sponsorscout.main
 ```
 
-Su Linux possono servire librerie di sistema Chromium: usa
-`.venv/bin/python -m playwright install --with-deps chromium` sui sistemi supportati
-(può richiedere privilegi amministrativi). Servono anche librerie native Qt e una
-sessione desktop. Per la diagnostica usa lo stesso interprete venv con
+Dopo l’avvio scegli e verifica un browser installato in **Configurazione browser**.
+Il download gestito è facoltativo e richiede conferma nella finestra. Su Linux
+servono librerie native Qt/Chromium e una sessione desktop. Se necessario,
+l’amministratore può usare esplicitamente
+`.venv/bin/python -m playwright install-deps chromium` sui sistemi supportati:
+installa dipendenze di sistema, **non** un secondo browser, e può richiedere privilegi.
+ Per la diagnostica usa lo stesso interprete venv con
 `-m sponsorscout.main --self-check` o `--self-check-browser`. Non usare
 `python -m sponsorscout`: manca `__main__.py`. Dopo aver spostato i sorgenti,
 ripeti `pip install -e .` nell'ambiente corretto, senza eliminare il database.
@@ -1343,17 +1456,18 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt   # runtime + pyinstaller (usati dagli script di build)
 pip install -e ".[dev]"          # pytest, per la suite di test
-python -m playwright install chromium
 ```
 
-Se salti `playwright install chromium` l’app può partire, ma le letture
-che richiedono il browser possono fallire o non trovare offerte: controlla l’errore. Non scarica il browser da solo; imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` per riattivarlo.
+Le build includono il driver, non i browser. `--self-check` verifica dipendenze e
+driver. Per provare esplicitamente il browser già configurato in entrambe le
+modalità, imposta `SPONSORSCOUT_VALIDATE_BROWSER=1` prima della build; serve un
+display. Nessun download automatico in entrambe le modalità.
 
 **Installer Windows:**
 ```powershell
 .\build_exe.ps1               # -> dist\sponsorscout-<versione>-setup.exe
 ```
-(richiede Inno Setup 6/7; include Playwright Chromium)
+(richiede Inno Setup 6/7; per utente, driver incluso, browser non incluso)
 
 **Pacchetto Linux (Debian / Ubuntu):**
 ```bash
@@ -1363,8 +1477,8 @@ Esegui lo script come utente normale: **non usare `sudo`**. Lo script crea un
 ambiente di compilazione isolato in `.build/deb-venv`, quindi non modifica mai
 Python di sistema. Se manca il modulo venv, installalo una sola volta con
 `sudo apt install python3-venv`, poi esegui di nuovo `./build_deb.sh`.
-La compressione del payload da ~1,4 GB (PySide6 + Chromium incluso) e il passo
-piu lento e ne stampa la durata; il file `.deb` compare in `dist/` solo quando
+La compressione del payload Qt/Playwright può essere lenta; lo script ne stampa
+la durata e il file `.deb` compare in `dist/` solo quando
 e completo. Per una build molto piu veloce, che richiede dpkg >= 1.21.18 per
 l'installazione, usa `DEB_COMPRESSION=zstd ./build_deb.sh`.
 
@@ -1380,8 +1494,8 @@ affidabile, copia il progetto su un filesystem Linux come `~/sponsorscout`.
 Stesse regole del `.deb`: esegui lo script come utente normale (**non usare
 `sudo`**) e lascia che crei l'ambiente isolato `.build/rpm-venv`. Richiede
 `rpmbuild` (`sudo dnf install rpm-build` su Fedora/RHEL, `sudo apt install rpm`
-su Debian/Ubuntu/WSL, `sudo zypper install rpm-build` su openSUSE). Include
-Playwright Chromium, esegue il self-check del binario e non strappa mai le
+su Debian/Ubuntu/WSL, `sudo zypper install rpm-build` su openSUSE). Include il
+driver Playwright, verifica le dipendenze del binario e non modifica mai le
 estensioni C incluse — esattamente come `build_deb.sh`. Il compressore del
 payload viene sondato sulla macchina (di default xz veloce); per un pacchetto
 piu piccolo dove tutti i target hanno rpm >= 4.14 usa
@@ -1409,10 +1523,10 @@ python -m pytest sponsorscout/tests
 
 - Python 3.10 o successivo per eseguire dai sorgenti (gli installer non richiedono Python)
 - Runtime: **PySide6-Essentials** (non il meta-pacchetto completo), **requests**, **truststore**, **playwright** (`requirements.txt`)
-- Playwright Chromium: `python -m playwright install chromium`
+- A compatible, explicitly selected Chromium-family browser; optional confirmed app-managed full Chromium
 - Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`); `rpmbuild` per il `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
-- Opzionale: `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` permette all'app di scaricare da sola Chromium quando manca (disattivato per impostazione predefinita)
+- Nessun download automatico; la vecchia variabile di auto-installazione viene ignorata
 
 ---
 

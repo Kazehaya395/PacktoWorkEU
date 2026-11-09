@@ -1144,6 +1144,8 @@ def run_scan(method: str = "full",
     progress = _event_tee(db_path, run_id, progress)
     ats_out = out_dir / f"{run_id}_ats_jobs.csv"
     career_out = out_dir / f"{run_id}_career_jobs.csv"
+    from sponsorscout.services.data_ownership import register_scan_outputs
+    register_scan_outputs(ats_out,career_out)
     detail = method == "full"
 
     phase_errors: list[str] = []

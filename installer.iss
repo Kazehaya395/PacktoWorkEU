@@ -29,7 +29,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 VersionInfoVersion={#MyAppVersion}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=auto
 LicenseFile=LICENSE
@@ -42,7 +42,7 @@ UninstallDisplayIcon={app}\{#MyAppIcoName}
 UninstallDisplayName={#MyAppName}
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 Compression=lzma2/ultra64
 SolidCompression=yes
 ShowTasksTreeLines=yes
@@ -73,25 +73,7 @@ Source: "dist\SponsorScout-InstallerFiles\*"; DestDir: "{app}"; Flags: ignorever
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcoName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcoName}"; Tasks: desktopicon
 
-[Registry]
-; Point Playwright at the bundled _playwright directory so the app works on the
-; very first launch and offline (no ~130 MB download).
-;
-; This MUST be HKCU, not HKLM:
-;   * {app} is {autopf}\SponsorScout — a PER-USER directory. A machine-wide
-;     (HKLM) variable would point every account on the PC at whichever user
-;     installed last, and every other user would fail to find the browser.
-;   * An HKLM value with `Permissions: everyone-modify` lets any non-admin
-;     rewrite an environment variable that is injected into EVERY new process
-;     on the machine. HKCU needs no Permissions directive at all.
-;   * `uninsdeletevalue` then only clears the installing user's own value
-;     instead of deleting the shared one out from under other installations.
-;
-; Note: a registry change does not reach a process launched by a shell that has
-; not re-read the environment, so the very first run after install would miss
-; it. sponsorscout/paths.py handles exactly that by falling back to
-; exe_dir\_playwright, so this entry is a convenience, not a dependency.
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "PLAYWRIGHT_BROWSERS_PATH"; ValueData: "{app}\_playwright"; Flags: uninsdeletevalue
+; No global PLAYWRIGHT_BROWSERS_PATH or personal-browser registry changes.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create Desktop Shortcut"; GroupDescription: "Additional Icons"; Flags: unchecked
@@ -101,117 +83,47 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 
 ; Kill SponsorScout.exe BEFORE uninstall file deletion begins.
 ; This ensures the main exe is not locked and can be fully removed.
-[UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/f /im SponsorScout.exe"; Flags: runhidden runminimized skipifdoesntexist
-Filename: "{sys}\taskkill.exe"; Parameters: "/f /im Sponsorscout.exe"; Flags: runhidden runminimized skipifdoesntexist
-
-[UninstallDelete]
-; Remove the installed bundle. User data is purged again from [Code] so
-; explicitly configured data paths are handled as well.
-; Keep the shared Playwright browser cache: other applications may use it.
-Type: filesandordirs; Name: "{app}"
+; Inno removes tracked installed files only; never recursively erase {app}.
 
 [Code]
-const
-  AppDataDirName = 'SponsorScout';
+function IsUserAnAdmin: Integer;
+  external 'IsUserAnAdmin@shell32.dll stdcall';
 
-function GetUserAppDataDir(): string;
+function InitializeSetup(): Boolean;
 begin
-  Result := ExpandConstant('{userappdata}\' + AppDataDirName);
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  AppDir: string;
-begin
-  if CurStep = ssPostInstall then
+  Result := False;
+  if IsUserAnAdmin <> 0 then
   begin
-    AppDir := GetUserAppDataDir();
-    if not DirExists(AppDir) then
-    begin
-      if CreateDir(AppDir) then
-      begin
-        Log('Created AppData dir: ' + AppDir);
-        SaveStringToFile(AppDir + '\.keep', #13#10, False);
-      end
-      else
-      begin
-        Log('Failed to create AppData dir: ' + AppDir);
-        MsgBox('Failed to create AppData folder. Database features may be restricted.', mbCriticalError, 'Warning');
-      end;
-    end;
-  end;
-end;
-
-function IsUnsafePurgePath(const PathValue: string): boolean;
-begin
-  Result := (PathValue = '') or (PathValue = '\');
-  if (Length(PathValue) >= 2) and (PathValue[1] = '\') and (PathValue[2] = '\') then
-    Result := True;
-  if (Length(PathValue) = 2) and (PathValue[2] = ':') then
-    Result := True;
-  if (Length(PathValue) = 3) and (PathValue[2] = ':') and (PathValue[3] = '\') then
-    Result := True;
-end;
-
-procedure PurgePath(const LabelText, PathValue: string);
-var
-  FullPath: string;
-begin
-  if PathValue = '' then
-    Exit;
-  FullPath := ExpandConstant(PathValue);
-  if IsUnsafePurgePath(FullPath) then
-  begin
-    Log('Refusing unsafe purge path: ' + FullPath);
+    MsgBox('Run this per-user installer normally, not as administrator.', mbError, MB_OK);
     Exit;
   end;
-  if DirExists(FullPath) then
+  if RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') or
+     RegKeyExists(HKLM32, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') then
   begin
-    Log('Purging ' + LabelText + ': ' + FullPath);
-    DelTree(FullPath, True, True, True);
+    MsgBox('An older machine-wide SponsorScout installation exists. This per-user installer cannot upgrade it safely. Back up your SponsorScout data and custom paths before removing the old version, then install and restore your backup. Installation cancelled; no user data was changed.', mbInformation, MB_OK);
+    Exit;
   end;
+  Result := True;
 end;
 
-procedure PurgeUserData;
-var
-  CustomDataDir: string;
-  CustomDbPath: string;
+function InitializeUninstall(): Boolean;
 begin
-  // Default Windows locations used by sponsorscout/paths.py.
-  PurgePath('application data', '{userappdata}\{#MyAppDataDirName}');
-  PurgePath('local application data', '{localappdata}\{#MyAppDataDirName}');
-  PurgePath('user profile data', '{%USERPROFILE}\.sponsorscout');
-
-  // Also honor explicit overrides when they are present in the uninstaller's
-  // environment. Never purge a drive root or the user's entire profile.
-  CustomDataDir := ExpandConstant('{env:SPONSORSCOUT_DATA_DIR}');
-  if CustomDataDir <> '' then
-    PurgePath('configured data directory', CustomDataDir);
-
-  CustomDbPath := ExpandConstant('{env:SPONSORSCOUT_DB_PATH}');
-  if CustomDbPath <> '' then
-  begin
-    if FileExists(CustomDbPath) then
-      DeleteFile(CustomDbPath);
-    if FileExists(CustomDbPath + '-wal') then
-      DeleteFile(CustomDbPath + '-wal');
-    if FileExists(CustomDbPath + '-shm') then
-      DeleteFile(CustomDbPath + '-shm');
-  end;
+  Result := IsUserAnAdmin = 0;
+  if not Result then
+    MsgBox('Run this per-user uninstaller normally, not as administrator. Custom user paths must not be processed with elevated privileges.', mbError, MB_OK);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
 begin
-  if CurUninstallStep = usUninstall then
-  begin
-    // Ensure the GUI is closed before Inno removes the application files.
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im SponsorScout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Sponsorscout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-
-  if CurUninstallStep = usPostUninstall then
-    PurgeUserData;
+  // usUninstall is AFTER confirmation, BEFORE installed files are removed.
+  // Exceptions at this step abort uninstall, keeping the helper for retry.
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im SponsorScout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--purge-user-data', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Could not run SponsorScout data cleanup. Uninstall cancelled. Restore the installed application and retry.');
+  if ResultCode <> 0 then
+    RaiseException('SponsorScout data cleanup was incomplete. Uninstall cancelled. Close active processes, review data permissions and cleanup-errors.json in the SponsorScout profile folder if present, then retry.');
 end;

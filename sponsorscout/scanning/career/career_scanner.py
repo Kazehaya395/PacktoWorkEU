@@ -1,4 +1,15 @@
 import os
+# Dual-mode bootstrap: when launched as a loose script (python career_scanner.py)
+# the repo root is NOT on sys.path, so add it here — BEFORE the first
+# `sponsorscout.*` import below. No-op when imported as a package module.
+if __name__ == "__main__":
+    import sys as _sys
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _i in range(3):  # career/ -> scanning/ -> sponsorscout/ -> repo root
+        _here = os.path.dirname(_here)
+    if _here not in _sys.path:
+        _sys.path.insert(0, _here)
+from sponsorscout.services.browser_policy import launch_chromium
 import re
 import csv
 import atexit
@@ -15,7 +26,8 @@ from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
 from html import escape, unescape  # FIX P0-30: JD HTML -> plain text
 from html.parser import HTMLParser
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from sponsorscout.services.browser_policy import managed_playwright as sync_playwright
     PLAYWRIGHT_IMPORT_ERROR = None
 except ModuleNotFoundError as _pw_exc:  # Provider-API-only runs can still work without a browser.
     sync_playwright = None
@@ -31,16 +43,6 @@ def _playwright_unavailable_reason():
 # Real-time logging. When a progress callback is installed (desktop app) all
 # output lines are routed to it; otherwise they print to stdout as before.
 import builtins as _builtins
-# Dual-mode bootstrap: when launched as a loose script (python career_scanner.py)
-# the repo root is NOT on sys.path, so add it here — BEFORE the first
-# `sponsorscout.*` import below. No-op when imported as a package module.
-if __name__ == "__main__":
-    import sys as _sys
-    _here = os.path.dirname(os.path.abspath(__file__))
-    for _i in range(3):  # career/ -> scanning/ -> sponsorscout/ -> repo root
-        _here = os.path.dirname(_here)
-    if _here not in _sys.path:
-        _sys.path.insert(0, _here)
 from sponsorscout.core.job_identity import POSTING_CONTEXT_PATTERN
 from sponsorscout.core.job_metadata import load_job_json, header_metadata_locations
 
@@ -4948,7 +4950,7 @@ class CareerPortalScanner:
             self._close_current_worker_browser()
         pw = sync_playwright().start()
         try:
-            bro = pw.chromium.launch(headless=True, args=BROWSER_ARGS)
+            bro = launch_chromium(pw.chromium,headless=True, args=BROWSER_ARGS)
         except BaseException:
             # A failed launch still leaves a started Playwright driver/loop.
             # Stop it on its owning worker thread before another target reuses
@@ -10477,7 +10479,7 @@ class CareerPortalScanner:
                 return out  # no browser for failed/blocked/already-attempted URLs
             try:
                 with self._jd_browser_sem,sync_playwright() as pw:
-                    browser = pw.chromium.launch(headless=True,args=BROWSER_ARGS)
+                    browser = launch_chromium(pw.chromium,headless=True,args=BROWSER_ARGS)
                     try:
                         page = browser.new_page()
                         install_page_resource_blocking(page)
@@ -12018,7 +12020,7 @@ class CareerPortalScanner:
             if browser_page is not None:
                 return read(browser_page)
             with self._jd_browser_sem,sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True,args=BROWSER_ARGS)
+                browser = launch_chromium(pw.chromium,headless=True,args=BROWSER_ARGS)
                 try:
                     context = browser.new_context(viewport={'width':1280,'height':800})
                     install_page_resource_blocking(context)
@@ -12466,7 +12468,7 @@ class CareerPortalScanner:
                             return ''
                         from playwright.sync_api import sync_playwright as _sp
                         pw_context = _sp().start()
-                        browser = pw_context.chromium.launch(headless=True,args=BROWSER_ARGS)
+                        browser = launch_chromium(pw_context.chromium,headless=True,args=BROWSER_ARGS)
                         browser._pw_ctx = pw_context
                     pg,close_pg = browser.new_page(),True
                     install_page_resource_blocking(pg)

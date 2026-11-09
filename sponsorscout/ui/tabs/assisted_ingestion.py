@@ -585,6 +585,9 @@ class AssistedIngestionTab(QWidget):
         if not portal_queue_key(url):
             QMessageBox.warning(self,_("Missing URL"),_("Please provide a valid HTTP or HTTPS portal URL."))
             return
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
+            return
         # Preserve filters and user-entered provenance; never infer a company
         # from its hostname or silently reuse a selected row's old name.
         index=self.portals_table.currentRow()

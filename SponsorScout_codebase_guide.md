@@ -37,7 +37,6 @@ Run these commands from the folder containing `pyproject.toml`.
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m sponsorscout.main
 ```
 
@@ -47,19 +46,17 @@ py -3 -m venv .venv
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m playwright install chromium
 .venv/bin/python -m sponsorscout.main
 ```
 
-Linux may require `python3-venv`, native Qt libraries and Chromium system
-libraries. Playwright's supported Linux dependency installer is:
-
-```bash
-.venv/bin/python -m playwright install --with-deps chromium
-```
-
-That step can require administrator privileges and downloads; it is not an
-application scan. A desktop session is needed for ordinary interactive use.
+After launch, configure the browser through Tools → Advanced maintenance and
+diagnostics → Browser setup. Reuse a detected installation, validate both modes,
+and save. The optional app-private full Chromium download requires explicit GUI
+confirmation. Installing into a shared SDK cache alone does not configure the app.
+Linux may require native Qt/Chromium libraries. An administrator can explicitly
+run `.venv/bin/python -m playwright install-deps chromium` on supported systems;
+this installs OS libraries, not browser binaries. It is never run by the app.
+A desktop session is needed for ordinary interactive use.
 No macOS installer or native Windows validation is implied by these commands.
 
 Other supported entry points:
@@ -71,7 +68,7 @@ Other supported entry points:
 | `sponsorscout` | Installed console entry point for the GUI |
 | `python -m sponsorscout.scripts.run_scan` / `sponsorscout-scan` | CLI campaign scan |
 | `python -m sponsorscout.main --self-check` | Startup/dependency smoke check |
-| `python -m sponsorscout.main --self-check-browser` | Smoke check including browser startup |
+| `python -m sponsorscout.main --self-check-browser` | Explicit selected-browser check: headless and visible (needs a display) |
 
 An installed console entry point may still point to an older editable checkout.
 Use the intended environment and reinstall `-e .` when moving the source folder.
@@ -170,7 +167,10 @@ Supporting modules, relative to `sponsorscout/`:
 | `db/database.py`, `db/schema.sql` | SQLite access, initialization and migrations |
 | `ui/async_load.py`, `core/db_tasks.py` | Background DB work, cancellation and lifetime management |
 | `ui/refresh_options.py` | Shared EN/IT refresh confirmation and result formatting |
-| `services/browser_fetcher.py` | Existing browser-fetching service, not an extension bridge |
+| `services/browser_fetcher.py` | HTTP/rendered fetching; browser identity delegated to shared policy |
+| `services/browser_policy.py` | Installed Chromium-family discovery, explicit selection, isolated dual-mode validation, consent-gated single full Chromium |
+| `services/data_ownership.py` | Stable per-account registry, custom app-file tracking and headless safe purge |
+| `ui/browser_setup.py` | Localized setup dialog; probes/downloads run in AsyncLoader, no UI-thread network work |
 
 ## 5. Campaign and incremental-refresh contracts
 
@@ -340,18 +340,24 @@ xvfb-run -a env QT_QPA_PLATFORM=offscreen SPONSORSCOUT_TEST_BROWSER=1 SPONSORSCO
 Do not count an opt-in skip as executed coverage. Dependency/display failures
 are environment failures, not proof of a product defect or a successful test.
 
-**Final source validation:** 2,312 passed / 0 failures / 0 errors / 0 skips across 102 modules. This is a fresh run of
-all 102 active test modules in four serial subprocess shards, with real local
-Chromium cases opted in. Exact outcomes, source/resource hashes, cleanup inventory
-and screenshot provenance are bundled under `Changelogs/final_review/`.
-See [the report](Changelogs/final_review/report.md) and
-[open issues](issues.md). Earlier 2,287-pass and 168-pass counts are historical
-results for earlier validation scopes, not substitutes for this fresh run.
+**Current browser/storage policy validation:** 2,395 passed / 0 failures / 0 errors /
+0 skips across all 104 modules, using four serial subprocess shards with real local
+Chromium opted in. The code/build/asset snapshot stayed unchanged throughout that
+run. Focused CLI/UI checks, an actual managed download, Linux frozen dual-mode
+launch/cleanup and wheel/sdist checks are recorded under
+[`Changelogs/browser_policy/`](Changelogs/browser_policy/VALIDATION.md).
+Native Windows and installed DEB/RPM transactions were not executed; fixture
+success must not be presented as native certification. This documentation summary
+was finalized after the test run; production code, tests, resources and build
+scripts were not changed afterward.
 
-The full workspace audit history remains separately preserved in the sibling
-`../Changelogs/`; only the final review’s relevant records are in this source
-bundle. No original user uploads, private data, old patch ZIPs, legacy copies,
-virtual environment, browser binaries or generated package builds are bundled.
+The earlier 2,312-pass/102-module snapshot under
+[`Changelogs/final_review/`](Changelogs/final_review/report.md) remains historical,
+not certification of the new browser/storage policy. See also [open issues](issues.md).
+Both sets of relevant records are retained in this source bundle; the larger
+workspace audit history remains separately preserved in the sibling `../Changelogs/`.
+No original user uploads/private runtime data, old patch ZIPs, virtual environment,
+browser binaries or generated package builds are bundled.
 
 An earlier intermittent GUI heartbeat failure remains unexplained. Passing
 Linux fixtures does not guarantee Windows behaviour, every live website or
@@ -360,11 +366,111 @@ responsiveness on a physical 8 GB i3/Pentium system.
 ## 9. Packaging and maintenance
 
 Build definitions are `SponsorScout.spec`, `build_exe.ps1`, `installer.iss`,
-`build_deb.sh` and `build_rpm.sh`. They target Windows and Linux bundles and
-include Chromium under `_playwright`; `paths.py` resolves a bundled browser while
-honouring an explicit `PLAYWRIGHT_BROWSERS_PATH` override. Source installs need
-their own browser installation. Automatic runtime browser download is opt-in
-through `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1`, not the default.
+`build_deb.sh` and `build_rpm.sh`. A shared `build_hooks/hook-playwright.py` collects Playwright’s Node/CLI and resources,
+excluding `.local-browsers` caches even if the builder previously used hermetic installs.
+The three CLI builders use this hook rather than unfiltered `--collect-all playwright`;
+`SponsorScout.spec` uses the same hook (including sync/async SDK-hook overrides,
+so an upstream hook cannot reintroduce the cache). They do **not** ship browser
+binaries or a headless shell. Linux postinstall never downloads one.
+Default build `--self-check` checks Qt/Python imports, driver files and driver startup
+without launching a browser; optional
+`SPONSORSCOUT_VALIDATE_BROWSER=1` runs `--self-check-browser` against an already
+saved selection in both modes. A successful lean build is not proof of site access
+or even of a configured browser on the target machine.
+
+### Shared browser policy
+
+All nine production launch sites use `launch_chromium`: two in browser_fetcher,
+one ATS fallback, four Career paths, headed Assisted and the optional self-check.
+Chrome/Edge use `chrome`/`msedge` channel parameters with the detected executable;
+Brave/Opera/Vivaldi/Chromium use explicitly detected executables and `chromium`.
+No portal-specific policy, profile attachment, Firefox automation or silent engine
+fallback is added. `browser_type.launch` creates ephemeral profiles; no persistent
+context or personal cookies/extensions are reused. Validation probes both modes
+with a local page and checks CDP command-line evidence for the temporary profile.
+It is compatibility screening, not a guarantee for every fork, policy or website.
+
+`managed_playwright` covers every browser-launching driver lifecycle, including
+`.start()`/`.stop()` paths. A short lock captures app-private TMP values when
+starting Node and immediately restores Python’s environment, even on failure.
+Browser child HOME/XDG/APPDATA caches, crash dumps and downloads are directed into
+account storage; no personal browser cache is cleaned. Linux uses a short
+`/tmp/sponsorscout-<uid>-<state-hash>` directory for profiles/sockets/download ZIPs
+to avoid Unix socket-length failures for long home paths. Creation/purge verifies
+UID, mode 0700, marker and link boundaries; purge derives this exact directory
+instead of trusting an arbitrary recursive-delete manifest entry. The normal
+Playwright temporary-profile lifecycle is retained, not a persistent profile.
+
+`browser.json`, `owned_paths.jsonl` and `browser/` live in the standard per-account
+SponsorScout folder regardless of DATA_DIR/DB overrides. Selection stores family,
+kind, absolute executable path, validation result, versions and a size/mtime/path
+fingerprint. A missing/changed executable invalidates selection; wrapper-based
+browser updates may still need manual revalidation. The GUI gates new/Custom/Resume
+and Assisted browser work on setup without changing saved campaign scope. CLI
+run_scan fails with setup guidance if no selection exists.
+
+Only the explicit download button calls `install_managed(consent=True)`. It runs
+the **bundled Playwright Node/CLI**, not `sys.executable -m playwright` (which would
+relaunch a frozen SponsorScout executable), with a private cache and
+`install chromium --no-shell`. One full Chromium serves both modes. Older private
+Chromium builds are pruned after a new managed selection is validated and saved;
+locked leftovers are logged rather than deleting a browser still in use. Shared
+SDK caches, personal installations and PLAYWRIGHT_BROWSERS_PATH are not redirected
+or cleaned by the application. The old auto-install environment flag is ignored.
+UI operations use a worker, show errors and never silently retry a download.
+Ordinary installed Firefox/LibreWolf remain external manual viewing only because
+Playwright Firefox automation requires its patched build.
+
+### Ownership and native uninstall
+
+`register_runtime` runs at GUI/CLI startup. The append-only account registry tracks
+custom database paths plus sidecars, locale/caches/seeds, known legacy outputs,
+seed backup pairs and maintenance pairs. Creation sites register new scan outputs,
+seed backups and maintenance backups/audits immediately, including custom artifact
+directories. CV/prompt content is inside the database. Qt settings are app-scoped:
+Linux .config/XDG paths are tracked; Windows cleanup removes only the app's HKCU
+settings subtree. No cleanup interprets raw uninstall-time DATA_DIR/DB overrides.
+
+Custom directories are **not** recursively claimed: tracked files are removed and
+containers removed only when empty. Default dedicated SponsorScout profile folders
+(including the private browser) are removed recursively, without following links.
+Roots, homes, known personal browser locations, shared Playwright caches and
+symlink/junction ancestors are refused. A malformed/unsafe registry or permission
+failure reports incomplete cleanup and leaves retry information where possible.
+Manual exports/copies and older custom locations never registered by this version
+cannot be discovered safely: users must review those themselves.
+
+`--purge-user-data` is dispatched before Qt/locale/database startup and needs no
+display. Run it only deliberately after backups, as the data-owning account.
+Linux DEB prerm acts only on `remove`; RPM preun only on `$1=0`. They stop the app,
+then invoke the trusted installed binary with `runuser ... env -i` separately for
+root, ordinary accounts and lower-UID accounts with SponsorScout state. A user
+manifest is never parsed by the package script as root. Cleanup failures stop
+removal before the executable disappears. Postrm/postun do not execute broad
+root deletions. Upgrades preserve data.
+
+Windows is now non-elevated **per-user**, under LOCALAPPDATA/Programs/SponsorScout.
+The installer refuses an existing HKLM/machine-wide installation: backup/removal/
+restore migration is explicit, not a destructive implicit upgrade. Updates within
+the new per-user format preserve data. The uninstaller checks elevation at startup
+but runs cleanup only at `usUninstall`, **after confirmation**, before file removal;
+a cleanup exception aborts uninstall. Only Inno-tracked installed files are removed,
+not an unconditional recursive `{app}` deletion. Each account uninstalls its own
+copy; other Windows users and personal browsers are untouched.
+
+### Local developer tests
+
+The permanent policy/uninstall suite includes mocked installed-family discovery,
+both launch modes/channels, profile checks, consent, bundled-driver invocation,
+unsafe/corrupt records, custom data/sidecars/artifacts, link boundaries, protected
+browser/cache paths, shell-hook upgrade/failure paths and CLI purge. The pytest
+fixture isolates the home/settings folder and supplies an explicit test selection;
+legacy SDK fixtures also use the full executable, not a separate headless shell.
+Lean unit tests use a dummy executable only at mocked launch sites. Opt-in actual
+browser tests require a full test Chromium (`python -m playwright install chromium
+--no-shell`, a deliberate **developer** download into the SDK cache), or an explicit
+`SPONSORSCOUT_TEST_BROWSER_EXECUTABLE` path, plus a display/Xvfb. This test-only setup
+does not select a browser in the deployed application or certify native installers.
 
 Use the matching OS/toolchain for a native build. Do not run the Debian build
 script with sudo. Build scripts in the repository are not evidence that a fresh

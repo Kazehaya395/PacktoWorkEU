@@ -19,6 +19,7 @@
 #   • Network retry + backoff and a pre-flight connectivity gate.
 #   • Self-healing seed upgrade (fixes wrong/legacy URLs, EU Lever, recruiter tags).
 # ─────────────────────────────────────────────────────────────────────────────
+from sponsorscout.services.browser_policy import launch_chromium
 import csv
 import json
 import logging
@@ -35,7 +36,8 @@ from html import unescape
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin, unquote
 from urllib.request import Request, urlopen
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright as _sdk_playwright
+    from sponsorscout.services.browser_policy import managed_playwright as sync_playwright
     PLAYWRIGHT_IMPORT_ERROR = None
 except ModuleNotFoundError as _pw_exc:
     sync_playwright = None
@@ -88,7 +90,7 @@ def _log_file_path() -> str:
     except Exception:  # standalone single-file mode
         return "ats_scraper_errors.log"
 logging.basicConfig(
-    filename="ats_scraper_errors.log",
+    filename=_log_file_path(),
     level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s",
 )
@@ -4388,7 +4390,7 @@ class ATSScanner:
                 # FIX P0-29: low-resource flags + block images/fonts/media and
                 # analytics hosts. Measured -44% bytes on real job boards; the
                 # DOM the extractor reads is unchanged.
-                browser = p.chromium.launch(headless=True,
+                browser = launch_chromium(p.chromium,headless=True,
                                             args=LOW_RESOURCE_BROWSER_ARGS)
                 ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                 install_page_resource_blocking(ctx)

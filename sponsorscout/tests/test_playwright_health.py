@@ -86,7 +86,7 @@ def test_main_routes_the_self_check_flag(monkeypatch):
 
 def test_build_scripts_collect_playwright_and_smoke_test_the_bundle():
     for script in (DEB, EXE, RPM):
-        assert "--collect-all playwright" in script
+        assert "--additional-hooks-dir build_hooks" in script
         assert "--hidden-import greenlet" in script
         assert "--hidden-import pyee" in script
         assert "--self-check" in script
@@ -94,5 +94,5 @@ def test_build_scripts_collect_playwright_and_smoke_test_the_bundle():
         # Verify the build venv BEFORE PyInstaller runs, so a broken dependency
         # fails in seconds instead of producing a bundle that fails at runtime.
         assert "from playwright.sync_api import sync_playwright" in script
-        # The old mode collected submodules but not data/binaries.
+        # Browser data/binaries now come from the cache-filtering hook.
         assert "--collect-submodules playwright" not in script

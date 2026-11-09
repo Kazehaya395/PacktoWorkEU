@@ -1624,3 +1624,23 @@ _FINISHED_JD_RESULTS_IT = {
 for _key, _value in _FINISHED_JD_RESULTS_IT.items():
     LANGUAGES['en'][_key] = _key
     LANGUAGES['it'][_key] = _value
+
+# Installed browser reuse and explicit app-private full Chromium fallback.
+_BROWSER_SETUP_IT = {
+    'Browser setup': 'Configurazione browser',
+    'Choose an installed Chromium-family browser. Validation briefly opens an isolated window and also checks headless mode. Personal profiles are never used. Firefox is available for manual browsing only.': 'Scegli un browser installato della famiglia Chromium. La verifica apre brevemente una finestra isolata e controlla anche la modalità senza finestra. I profili personali non vengono mai usati. Firefox resta disponibile solo per la navigazione manuale.',
+    'No compatible browser? Download one full Chromium into SponsorScout storage? This uses network and disk space. No separate headless shell is installed. The download is removed with SponsorScout data.': 'Nessun browser compatibile? Scaricare un solo Chromium completo nello spazio di SponsorScout? Sono necessari rete e spazio su disco. Non viene installata una shell headless separata. Il download viene rimosso insieme ai dati di SponsorScout.',
+    'Detect browsers': 'Rileva browser',
+    'Validate selected browser': 'Verifica browser selezionato',
+    'Download app-managed Chromium': 'Scarica Chromium gestito dall’app',
+    'Select a browser, then validate both modes.': 'Seleziona un browser, poi verifica entrambe le modalità.',
+    'Save browser': 'Salva browser',
+    'No supported browser detected. Install a Chromium-family browser or explicitly download Chromium.': 'Nessun browser supportato rilevato. Installa un browser della famiglia Chromium oppure scegli esplicitamente di scaricare Chromium.',
+    'Working... Browser validation/download runs in the background.': 'Operazione in corso... La verifica o il download del browser viene eseguito in background.',
+    'Both browser modes passed. Click Save browser to use this selection.': 'Entrambe le modalità hanno superato la verifica. Premi Salva browser per usare questa scelta.',
+    'Browser setup failed: %s': 'Configurazione browser non riuscita: %s',
+    'Download Chromium?': 'Scaricare Chromium?',
+    'Finish or stop the active operation before changing browsers.': 'Completa o interrompi l’operazione attiva prima di cambiare browser.',
+}
+LANGUAGES['it'].update(_BROWSER_SETUP_IT)
+LANGUAGES['en'].update({key:key for key in _BROWSER_SETUP_IT})

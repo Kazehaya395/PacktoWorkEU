@@ -22,10 +22,8 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from sponsorscout.services.browser_policy import launch_chromium, managed_playwright  # noqa: E402
 
-from sponsorscout.i18n import load_saved_locale  # noqa: E402
-from sponsorscout.ui.style import build_light_palette, build_qss  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +49,15 @@ def _self_check_write(msg: str) -> None:
 
 
 def self_check(try_browser: bool) -> int:
-    """Headless smoke test for packaged builds (used by build_deb.sh/build_rpm.sh/build_exe.ps1).
+    """Dependency/optional browser smoke test for packaged builds (used by build_deb.sh/build_rpm.sh/build_exe.ps1).
 
     Verifies that Playwright imports in the *frozen* app and, when
-    ``try_browser`` is set, that the bundled Chromium actually launches — all
+    ``try_browser`` is set, that the selected full Chromium launches in both modes — all
     without starting Qt. Returns a process exit code so the build scripts can
     abort instead of shipping a bundle that fails every DOM scan target with
     "Playwright is required for DOM fallback".
     """
-    import sponsorscout.paths  # noqa: F401  (configures the bundled _playwright dir)
+    import sponsorscout.paths  # noqa: F401
 
     _self_check_write(
         f"SponsorScout self-check (frozen={getattr(sys, 'frozen', False)})"
@@ -72,24 +70,37 @@ def self_check(try_browser: bool) -> int:
         _self_check_write(f"browsers_dir_exists={Path(browsers).is_dir()}")
 
     failures = 0
+    try:
+        import PySide6.QtWidgets  # noqa: F401
+        _self_check_write("Qt imports: OK")
+    except Exception as exc:
+        _self_check_write(f"Qt imports: FAILED ({type(exc).__name__}: {exc})")
+        failures += 1
     sync_playwright = None
     try:
         from playwright.sync_api import sync_playwright as _sp
 
+        from playwright._impl._driver import compute_driver_executable
+        node, cli = compute_driver_executable()
+        if not Path(node).is_file() or not Path(cli).is_file():
+            raise RuntimeError("Playwright driver files missing")
         sync_playwright = _sp
-        _self_check_write("playwright import: OK")
+        with _sp() as driver:
+            if driver.chromium.name != "chromium":
+                raise RuntimeError("Unexpected Playwright driver")
+        _self_check_write("playwright imports + driver startup: OK")
     except Exception as exc:
         _self_check_write(f"playwright import: FAILED ({type(exc).__name__}: {exc})")
         failures += 1
 
     if try_browser and sync_playwright is not None:
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-                )
-                browser.close()
-            _self_check_write("chromium launch: OK")
+            with managed_playwright() as pw:
+                for headless in (True, False):
+                    browser = launch_chromium(pw.chromium,
+                        headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
+                    browser.close()
+                    _self_check_write("Selected Chromium launch: OK (headless=%s)" % headless)
         except Exception as exc:
             _self_check_write(f"chromium launch: FAILED ({type(exc).__name__}: {exc})")
             failures += 1
@@ -100,6 +111,12 @@ def self_check(try_browser: bool) -> int:
 
 def main() -> None:
     """Bootstrap and launch SponsorScout."""
+    if '--purge-user-data' in sys.argv:
+        import json
+        from sponsorscout.services.data_ownership import purge_user_data
+        result = purge_user_data()
+        _self_check_write(json.dumps(result))
+        raise SystemExit(1 if result['errors'] else 0)
     if SELF_CHECK_FLAG in sys.argv or SELF_CHECK_BROWSER_FLAG in sys.argv:
         raise SystemExit(self_check(SELF_CHECK_BROWSER_FLAG in sys.argv))
     logging.basicConfig(
@@ -111,8 +128,13 @@ def main() -> None:
 
     # Load the persisted language preference before building the UI so every
     # widget labels itself in the correct locale from the first frame.
+    from sponsorscout.i18n import load_saved_locale
+    from sponsorscout.ui.style import build_light_palette, build_qss
     load_saved_locale()
 
+    from PySide6.QtWidgets import QApplication
+    from sponsorscout.services.data_ownership import register_runtime
+    register_runtime()
     app = QApplication(sys.argv or ["sponsorscout"])
     # Fusion renders the QSS paddings/borders predictably across Windows
     # styles (and avoids the combo/spinbox text-overlap artifacts), while

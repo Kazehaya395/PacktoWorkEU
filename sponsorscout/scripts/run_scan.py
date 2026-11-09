@@ -34,6 +34,11 @@ def main() -> None:
                         help="Only scan one company by name")
     args = parser.parse_args()
 
+    from sponsorscout.services.data_ownership import register_runtime
+    register_runtime()
+    from sponsorscout.services.browser_policy import read_selection
+    if read_selection() is None:
+        parser.error('Browser setup required. Open the desktop app: Tools > Advanced maintenance and diagnostics > Browser setup. No browser was downloaded.')
     initialize(DB_PATH)
     method = "quick" if args.quick else "full"
 

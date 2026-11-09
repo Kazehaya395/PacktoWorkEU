@@ -86,6 +86,8 @@ def apply_data_review(db_path,*,plan_sha256,company='',confirm=False,artifact_di
             finally:target.close()
             record=dict(operation='explicit observed-country/non-job review',state='planned',started_at=stamp,backup=str(backup),backup_sha256=_file_digest(backup),preview=preview,actions=[])
             _write_audit(audit,record)
+            from sponsorscout.services.data_ownership import register_artifacts
+            register_artifacts(backup,audit)
             try:
                 conn.execute('BEGIN IMMEDIATE')
                 if version!=(conn.execute('PRAGMA data_version').fetchone()[0],conn.total_changes):

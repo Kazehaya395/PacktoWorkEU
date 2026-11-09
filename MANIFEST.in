@@ -16,3 +16,6 @@ include build_rpm.sh
 include build_exe.ps1
 include installer.iss
 include .gitignore
+
+recursive-include build_hooks *.py
+recursive-include Changelogs/browser_policy *.md *.json *.xml

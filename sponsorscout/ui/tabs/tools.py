@@ -708,6 +708,9 @@ class ToolsTab(QWidget):
         self.advanced_panel = QWidget()
         advanced_layout = QVBoxLayout(self.advanced_panel)
         advanced_layout.setContentsMargins(0, 0, 0, 0)
+        self.browser_setup_btn = QPushButton(_("Browser setup"))
+        self.browser_setup_btn.clicked.connect(self._open_browser_setup)
+        advanced_layout.addWidget(self.browser_setup_btn)
         self.refresh_jd_cb = QCheckBox(_(REFRESH_LABEL))
         self.refresh_jd_cb.setToolTip(_(REFRESH_HELP))
         advanced_layout.addWidget(self.refresh_jd_cb)
@@ -731,6 +734,13 @@ class ToolsTab(QWidget):
             pass
 
 # ── Group builders ───────────────────────────────────────────────────────
+    def _open_browser_setup(self):
+        if self.coordinator.is_running() or getattr(self, '_assisted_busy', False) or getattr(self, '_review_busy', False):
+            QMessageBox.information(self, _("Browser setup"), _("Finish or stop the active operation before changing browsers."))
+            return
+        from sponsorscout.ui.browser_setup import BrowserSetupDialog
+        BrowserSetupDialog(self).exec()
+
     def _toggle_advanced(self, expanded):
         self.advanced_panel.setVisible(expanded)
         self.advanced_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
@@ -1052,6 +1062,9 @@ class ToolsTab(QWidget):
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
             return
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
+            return
         # Single scan mode (see SCAN_METHOD): no method choice is offered —
         # the app always runs the campaign that extracts the most accurate
         # data for every job.
@@ -1075,6 +1088,9 @@ class ToolsTab(QWidget):
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
+            return
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
             return
         try:
             dlg = CustomScanDialog(self)
@@ -1212,6 +1228,9 @@ class ToolsTab(QWidget):
         if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
             return
         """Start a checkpoint continuation from an already-fetched lookup."""
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
+            return
         remaining = (len(checkpoint["remaining_ats"])
                      + len(checkpoint["remaining_career"]))
         total = checkpoint["total_ats"] + checkpoint["total_career"]
@@ -1776,6 +1795,7 @@ class ToolsTab(QWidget):
 
     # ── i18n ──────────────────────────────────────────────────────────────
     def retranslate(self):
+        self.browser_setup_btn.setText(_("Browser setup"))
         self.refresh_jd_cb.setText(_(REFRESH_LABEL))
         self.refresh_jd_cb.setToolTip(_(REFRESH_HELP))
         self.refresh_jd_help.setText(_(REFRESH_HELP))

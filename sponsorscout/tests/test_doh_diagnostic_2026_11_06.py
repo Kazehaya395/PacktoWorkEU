@@ -36,7 +36,11 @@ def test_normal_launch_and_wall_guards_after_diagnostic_removal(monkeypatch,tmp_
     path=tmp_path/'normal.db';db.initialize(path);conn=db.get_connection(path)
     try:
         bp.run_assisted_ingestion(root,'Fixture',conn,max_pages=1,clear_wait_s=.1,db_path=str(path))
-        assert launches==[{'headless':False,'args':['--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized']}]
+        assert len(launches)==1 and launches[0]['headless']is False
+        assert launches[0]['args'][:-1]==['--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized']
+        assert launches[0]['args'][-1].startswith('--crash-dumps-dir=')
+        assert launches[0]['executable_path'] and launches[0]['channel']=='chromium'
+        assert 'SponsorScout'in launches[0]['env']['HOME'] or '.sponsorscout'in launches[0]['env']['HOME']
         assert contexts[0]['no_viewport']and 'Chrome/126.0.0.0'in contexts[0]['user_agent']
         report=bp.LAST_INGESTION_REPORT
         assert report['ingested']==(0 if wall else 1)
