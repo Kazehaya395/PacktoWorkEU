@@ -214,32 +214,21 @@ def get_top_skills(
 def get_segregated_skills(
     db_path, run_id="", country="", source_subtype="", category="", domain="", skill_term=""
 ) -> dict[str, list[tuple[str, int]]]:
-    """Return top skills segregated into 'technical' and 'soft' lists.
+    """Return skills partitioned into technical, professional/domain and soft lists.
 
     `skill_term` restricts the whole ranking to jobs carrying that term, which
     is what a click on a skill bar asks for: the remaining bars then read as the
     skills that co-occur with it.
     """
-    from sponsorscout.insights.terms import get_soft_skill_terms
-
-    soft_terms = get_soft_skill_terms()
-
+    from sponsorscout.insights.terms import skill_kind
     all_skills = get_top_skills(
-        db_path, run_id=run_id, country=country, source_subtype=source_subtype, category=category, domain=domain, skill_term=skill_term
-    )
-    tech = []
-    soft = []
-    for term, count in all_skills:
-        if term in soft_terms:
-            soft.append((term, count))
-        else:
-            tech.append((term, count))
-
-    return {
-        "all": all_skills,
-        "technical": tech,
-        "soft": soft,
-    }
+        db_path, run_id=run_id, country=country, source_subtype=source_subtype,
+        category=category, domain=domain, skill_term=skill_term)
+    partitions={'technical':[],'professional':[],'soft':[]}
+    names={'technical_skill':'technical','professional_skill':'professional','soft_skill':'soft'}
+    for term,count in all_skills:
+        partitions[names[skill_kind(term)]].append((term,count))
+    return dict(all=all_skills,**partitions)
 
 
 def get_sponsorship_by_category(
@@ -422,6 +411,7 @@ def backfill_existing_job_terms(db_path, force_all: bool = False, *,
             processed += 1
             if processed % 16 == 0:
                 notify(processed,total,'extracting')
+                time.sleep(0)  # yield the interpreter to interactive Qt callbacks
         if not idle(processed,total):
             break
         # A transaction covers only already-computed results, never regex work.
@@ -443,6 +433,12 @@ def backfill_existing_job_terms(db_path, force_all: bool = False, *,
                     writer.executemany('INSERT OR IGNORE INTO job_terms(job_id,kind,term) VALUES(?,?,?)',
                                        [(jid,kind,term) for kind,term in result['terms'] if term])
                     batch_updated += 1
+                # A forced/version-only backfill can change derived data without
+                # changing input generations or jobs.updated_at. Invalidate any
+                # existing cube in this same atomic batch, never serve old charts.
+                if batch_updated and writer.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='insights_cube_meta'").fetchone():
+                    writer.execute("DELETE FROM insights_cube_meta WHERE key='stamp'")
                 writer.commit()
                 updated += batch_updated
                 break

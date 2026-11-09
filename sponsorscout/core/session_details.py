@@ -12,13 +12,14 @@ import json,re,time,hashlib
 from datetime import datetime,timezone
 from urllib.parse import urljoin,urlsplit
 from sponsorscout.i18n import _
+from sponsorscout.scanning.common import recommended_workers
 from sponsorscout.core.job_identity import posting_identity,posting_candidate,administrative_action
 from sponsorscout.core.country_details import structured_job_country
 from sponsorscout.scanning.jd_support import normalize_jd_text
 from sponsorscout.scanning.response_evidence import challenge_reason,response_metadata,listing_block_message
 from sponsorscout.core.browser_evidence import inspect_page,public_snapshot,redact_url,redact_text,watch_page_responses
 
-FLOW_REVISION='20261027-assisted-parallel-reprobe-v1'
+FLOW_REVISION='20261101-bounded-finishing-no-paste-v5'
 MAX_JD_CHARS=60000
 
 
@@ -130,15 +131,32 @@ def parse_detail(text,url,final_url,scanner,title='',browser_evidence=None):
         address=nodes[0].get('url')or nodes[0].get('@id')or''
         if isinstance(address,str)and(address.startswith(('http://','https://','/'))):
             result.status='empty';result.reason='JobPosting belongs to a different posting; primary identity unproven';return result
+    from sponsorscout.core.job_metadata import structured_job_locations, title_job_location
+    observed=(browser_evidence or {}).get('job_locations') or []
+    if isinstance(observed,list):
+        result.location=' | '.join(dict.fromkeys(str(x).strip() for x in observed[:32] if isinstance(x,str) and x.strip()))
+    if not result.location:
+        result.location=title_job_location(title,getattr(scanner,'_ISO3_TO_COUNTRY',{}))
     description=''
     if primary is not None:
         description=primary.get('description')or''
         if isinstance(description,dict):description=description.get('text')or''
         if isinstance(description,list):description=' '.join(str(x)for x in description)
         result.country=structured_job_country(json.dumps(primary),getattr(scanner,'_ISO3_TO_COUNTRY',{}))
+        parsed_location=''
         try:
-            _desc,result.location,result.hiring_org=scanner._parse_detail_html('<script type="application/ld+json">'+json.dumps(primary)+'</script>')
+            _desc,parsed_location,result.hiring_org=scanner._parse_detail_html('<script type="application/ld+json">'+json.dumps(primary)+'</script>')
         except Exception:pass
+        structured_locations=structured_job_locations(primary)
+        structured_location=' | '.join(structured_locations) or parsed_location
+        # A country-only schema value must not erase this same posting's
+        # explicit city+country title. Conflicting countries still favor schema.
+        from sponsorscout.core.location_country import country_from_location
+        same_country=bool(result.country and country_from_location(result.location)==result.country)
+        if structured_location and not (result.location and same_country and
+                len(structured_locations)==1 and ',' not in structured_location):
+            result.location=structured_location
+        if result.country:result.country_source='structured_job_country'
         result.method='jobposting_jsonld'
     elif isinstance(data,dict):
         info=data.get('jobPostingInfo')
@@ -146,6 +164,10 @@ def parse_detail(text,url,final_url,scanner,title='',browser_evidence=None):
             description=info.get('jobDescription')or info.get('description')or''
             result.location=str(info.get('location')or'')
             result.method='provider_job_description'
+    if result.location and not result.country:
+        from sponsorscout.core.location_country import country_from_location
+        result.country=country_from_location(result.location) or ''
+        if result.country:result.country_source='observed_detail_location'
     description=normalize_jd_text(str(description))
     if browser_evidence and browser_evidence.get('detail_ready') and not (len(nodes)>1 and primary is None):
         rendered=normalize_jd_text(str(browser_evidence.get('primary_text')or''))
@@ -216,7 +238,7 @@ class SessionDetailEnricher:
         self.preferred_origins=set();self.browser_closed=False
         self.control=control;self.gate_reason='';self.events=[];self.event_counts=Counter();self._started=time.monotonic()
         cfg=scanner.config
-        self.max_tabs=min(3,max(1,int(getattr(cfg,'ASSISTED_DETAIL_TABS',3)or 3)))
+        self.max_tabs=recommended_workers('browser', requested=min(3,max(1,int(getattr(cfg,'ASSISTED_DETAIL_TABS',3)or 3))))
         self.http_reprobe_enabled=bool(getattr(cfg,'ASSISTED_HTTP_REPROBE',True))
         self.http_reprobe_after=max(1,int(getattr(cfg,'ASSISTED_HTTP_REPROBE_AFTER',5)or 5))
         self.http_reprobe_cooldown=max(0,int(getattr(cfg,'ASSISTED_HTTP_REPROBE_COOLDOWN_SEC',60)or 0))
@@ -282,28 +304,39 @@ class SessionDetailEnricher:
         if len(self.samples)>24:self.samples=self.samples[:12]+self.samples[-12:]
     def _saved(self,url):
         if self.conn is None:return None
-        row=self.conn.execute('SELECT description,location,country,country_source,support_evidence_type,ats_source FROM jobs WHERE url=?',(url,)).fetchone()
+        from sponsorscout.core.saved_details import saved_detail
+        reader = getattr(self.scanner, '_saved_jd_reader', None)
+        # A policy miss (changed/stale/forced) must not fall back around it.
+        row = (reader.read(url) if callable(getattr(reader, 'read', None))
+               else saved_detail(self.conn, url))
         if row:
-            row=dict(row);marker=str(row.get('support_evidence_type')or'')
-            match=re.search(r'jd_sha256=([0-9a-f]{64})',marker)
-            captured=re.search(r'jd_captured_at=([^; ]+)',marker)
-            fresh=False
-            if captured:
-                try:fresh=0<=(datetime.now(timezone.utc)-datetime.fromisoformat(captured[1])).total_seconds()<86400
-                except (ValueError,TypeError):pass
-            proven=('jd_read_status=readable'in marker and match is not None and fresh
-                    and hashlib.sha256(str(row.get('description')or'').encode()).hexdigest()==match[1])
-            if proven and len(str(row.get('description')or''))>=200:
-                country=(row.get('country')or'') if row.get('country_source')in('structured_job_country','job_address','provider_country','observed_country_field')else''
-                return DetailResult(text=row['description'],location=row.get('location')or'',country=country,
-                    country_source=row.get('country_source')or'',status='readable',method='stored_detail_cache',
-                    reused=True,captured_at=captured[1],requested_url=url,final_url=url,phase='saved_cache')
+            country=(row.get('country')or'') if row.get('country_source')in('structured_job_country','job_address','provider_country','observed_country_field')else''
+            return DetailResult(text=row['description'],location=row.get('location')or'',country=country,
+                country_source=row.get('country_source')or'',status='readable',method='stored_detail_cache',
+                reused=True,captured_at=row['jd_captured_at'],requested_url=url,final_url=url,phase='saved_cache')
         return None
     def _deferred(self,url,reason):
         return DetailResult(status='budget_skipped',reason=reason,requested_url=url,phase='admission')
     def _budget_reason(self,url):
         scope=self.scanner._detail_state.scopes.get(self.scanner._detail_state.owner(url),{})
-        return ', '.join(sorted(scope.get('stops',())))or'shared detail request/time allowance exhausted'
+        stops=', '.join(sorted(scope.get('stops',())))
+        if stops:return stops
+        if url in self.scanner._detail_state.failed:return 'detail already failed; no automatic repeat'
+        if url in self.scanner._detail_state.browser_attempted:return 'detail browser navigation already attempted'
+        return 'detail reservation refused; limit exhaustion not established'
+    def _reservation_refusal(self,url,*,browser=False,retry=False):
+        state=self.scanner._detail_state
+        reason=self._budget_reason(url)
+        # allowed() rejects these BEFORE checking limits. Refusal alone is
+        # therefore not evidence that any request/time cap was exhausted.
+        if url in state.failed:
+            return DetailResult(status='failed',reason='detail already failed; no automatic repeat',requested_url=url,phase='admission')
+        if browser and url in state.browser_attempted and not retry:
+            return DetailResult(status='unattempted',reason='detail browser navigation already attempted',requested_url=url,phase='admission')
+        scope=state.scopes.get(state.owner(url),{})
+        if scope.get('stops'):return self._deferred(url,reason)
+        return DetailResult(status='unattempted',reason=reason,requested_url=url,phase='admission')
+
     def _maybe_reprobe_origin(self,url,*,force=False):
         """One bounded HTTP request after clearance/successful browser reads.
 
@@ -373,7 +406,7 @@ class SessionDetailEnricher:
                 pass
             state=self.scanner._detail_state;state.register(url,self.scope)
             if not state.reserve(url,self.policy,browser=True):
-                self._prefetched_results[url]=self._finish(url,self._deferred(url,self._budget_reason(url)))
+                self._prefetched_results[url]=self._finish(url,self._reservation_refusal(url,browser=True))
                 self._release_parallel_page(page)
                 continue
             self.counts['browser']+=1;self.counts['parallel_prefetch']+=1
@@ -438,6 +471,8 @@ class SessionDetailEnricher:
     def read(self,url):
         state=self.scanner._detail_state;state.register(url,self.scope)
         if self.stopped():return self._finish(url,self._deferred(url,'cancelled'))
+        if url in self._prefetched_results:
+            return self._prefetched_results.pop(url)
         if url in self.cache:
             self.counts['reused']+=1;state.count(url,'reused');return self.cache[url]
         saved=self._saved(url)
@@ -457,12 +492,18 @@ class SessionDetailEnricher:
             # URL may itself be prefetched; _browser() consumes that page.
             self._prefetch_ahead(self._lookahead,self._lookahead_index)
             self._lookahead_index+=1
+            # The current URL may have failed DURING lookahead. Consume that
+            # finished outcome before attempting another reservation.
+            if url in self._prefetched_results:
+                return self._prefetched_results.pop(url)
+            if url in self.cache:
+                return self.cache[url]
         origin=urlsplit(url).scheme.lower()+'://'+urlsplit(url).netloc.lower()
         if origin in self.preferred_origins:
             self.counts['browser_preferred']+=1
             result=self._browser(url)
         elif not state.reserve(url,self.policy,browser=False):
-            result=self._deferred(url,self._budget_reason(url))
+            result=self._reservation_refusal(url)
         else:
             self.counts['http']+=1;response=None
             try:
@@ -496,7 +537,8 @@ class SessionDetailEnricher:
             if result.status not in('readable','truncated')and not self.stopped():
                 self._note(result,url);http=result
                 result=self._browser(url)
-                if not result.country:result.country=http.country
+                if not result.country:
+                    result.country=http.country;result.country_source=http.country_source
                 result.http_reason=http.reason;result.http_title=http.title;result.http_code=http.http_status;result.http_final_url=http.final_url;result.http_phase=http.phase;result.http_error=http.error
                 if result.status in('readable','truncated')and http.status in('blocked','empty','thin'):
                     # Evidence is scoped to this explicit portal and origin,
@@ -530,6 +572,9 @@ class SessionDetailEnricher:
                 state.observe(url,result.text,kind='thin'if result.text else'empty',reason=result.reason,transport=result.transport,status=result.http_status,title=result.title)
         self._note(result,url);return self._remember(url,result)
     def _remember(self,url,result):
+        # Normalize exact repeats on fresh AND proven saved-JD reads. This is
+        # read-time metadata normalization, not a database/history cleanup.
+        result.location=' | '.join(dict.fromkeys(x.strip() for x in str(result.location or '').split('|') if x.strip()))
         self.cache[url]=result;self.cache.move_to_end(url)
         while len(self.cache)>512:self.cache.popitem(last=False)
         return result
@@ -544,7 +589,7 @@ class SessionDetailEnricher:
                 if self.browser_closed:return self._deferred(url,'detail browser was closed; resume explicitly')
                 if not use_prefetched:
                     if not state.reserve(url,self.policy,browser=True,retry=attempt>0):
-                        deferred=self._deferred(url,self._budget_reason(url))
+                        deferred=self._reservation_refusal(url,browser=True,retry=attempt>0)
                         if last is not None:deferred.error=last.error;deferred.reason+='; '+last.reason
                         return deferred
                     self.counts['browser']+=1
@@ -610,6 +655,8 @@ class SessionDetailEnricher:
                                 self._event('verification_not_accepted',url,status=status,title=title,evidence=public_snapshot(snapshot));self._attention(False,url,reason)
                                 return DetailResult(status='blocked',reason=reason,http_status=status,title=title,transport='browser (assisted session)',requested_url=url,final_url=final,phase='human_clearance',browser_evidence=public_snapshot(snapshot))
                             time.sleep(min(.5,max(.01,deadline-time.monotonic())));continue
+                        if status>=400 and not (snapshot and snapshot.get('detail_ready') and not snapshot.get('document_error')):
+                            return DetailResult(status='failed',reason=f'HTTP {status} browser detail unavailable',http_status=status,title=title,transport='browser (assisted session)',requested_url=url,final_url=final,phase='browser_response',browser_evidence=public_snapshot(snapshot))
                         if posting_identity(final)!=posting_identity(url):
                             return DetailResult(status='empty',reason='browser reached a different posting; requested identity unproven',http_status=status,title=title,transport='browser (assisted session)',requested_url=url,final_url=final,phase='identity_check')
                         if prompted:

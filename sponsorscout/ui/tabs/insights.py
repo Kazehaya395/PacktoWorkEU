@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.ui.async_load import AsyncLoader
-from sponsorscout.i18n import _
+from sponsorscout.i18n import _, set_table_header_labels
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,10 @@ class DonutPieChart(QWidget):
         self.selected_label = selected_label or ""
         self._compute_slices()
         self.update()
+
+    def center_text(self):
+        """The centre always reports the full distribution, not its highlight."""
+        return f"{sum(count for _, count in self.items)}\n" + _("Chart total")
 
     def set_selected(self, label: str):
         self.selected_label = label or ""
@@ -238,10 +242,8 @@ class DonutPieChart(QWidget):
         f_center.setPointSize(10)
         f_center.setBold(True)
         painter.setFont(f_center)
-        if self.selected_label:
-            c_text = f"{total}\n" + _("Filtered")
-        else:
-            c_text = f"{total}\n" + _("Jobs")
+        # This is the distribution total, not the selected slice count.
+        c_text = self.center_text()
         painter.drawText(hole_rect.toRect(), int(Qt.AlignCenter), c_text)
 
         legend_x = int(pie_rect.right() + 24)
@@ -313,6 +315,9 @@ class ScrollableBarChart(QWidget):
     def set_data(self, items: list[tuple[str, int]], selected_label: str = ""):
         self.items = items or []
         self.selected_label = selected_label or ""
+        # Hit geometry follows data immediately, not a later queued paint.
+        self._hit_rows = [(QRect(0, 6 + i * 26, self.width(), 26), label)
+                          for i, (label, _count) in enumerate(self.items)]
         needed_height = max(160, len(self.items) * 26 + 30)
         self.setFixedHeight(needed_height)
         self.update()
@@ -575,7 +580,7 @@ class InsightsTab(QWidget):
         self.grid.addWidget(self.filter_indicator_widget)
 
                 # Row 2: Granular Categories & Distinct Side-by-Side Skills Visuals
-        row_bars = QHBoxLayout()
+        row_bars = QGridLayout()
         row_bars.setSpacing(12)
 
         # 1. Left: Granular Categories
@@ -588,7 +593,7 @@ class InsightsTab(QWidget):
         self.cat_chart.bar_clicked.connect(lambda label: self._on_bar_clicked('category', label))
         cat_scroll.setWidget(self.cat_chart)
         cat_vbox.addWidget(cat_scroll)
-        row_bars.addWidget(self.cat_box, 1)
+        row_bars.addWidget(self.cat_box, 0, 0)
 
         # 2. Middle-Right: Dedicated Technical Skills Visual
         self.tech_skill_box = QGroupBox(_("In-Demand Technical Skills & Tools"))
@@ -600,10 +605,10 @@ class InsightsTab(QWidget):
         self.tech_skill_chart.bar_clicked.connect(lambda label: self._on_bar_clicked('skill', label))
         tech_scroll.setWidget(self.tech_skill_chart)
         tech_vbox.addWidget(tech_scroll)
-        row_bars.addWidget(self.tech_skill_box, 1)
+        row_bars.addWidget(self.tech_skill_box, 0, 1)
 
         # 3. Far-Right: Dedicated Soft & Professional Skills Visual
-        self.soft_skill_box = QGroupBox(_("In-Demand Soft & Professional Skills"))
+        self.soft_skill_box = QGroupBox(_("In-Demand Soft Skills"))
         soft_vbox = QVBoxLayout(self.soft_skill_box)
         soft_scroll = QScrollArea()
         soft_scroll.setWidgetResizable(True)
@@ -612,19 +617,34 @@ class InsightsTab(QWidget):
         self.soft_skill_chart.bar_clicked.connect(lambda label: self._on_bar_clicked('skill', label))
         soft_scroll.setWidget(self.soft_skill_chart)
         soft_vbox.addWidget(soft_scroll)
-        row_bars.addWidget(self.soft_skill_box, 1)
+        row_bars.addWidget(self.soft_skill_box, 1, 1)
+
+        self.professional_skill_box = QGroupBox(_("Professional & Domain Skills"))
+        professional_layout = QVBoxLayout(self.professional_skill_box)
+        professional_scroll = QScrollArea()
+        professional_scroll.setWidgetResizable(True)
+        professional_scroll.setFixedHeight(230)
+        self.professional_skill_chart = ScrollableBarChart(color_pair=("#8B5CF6", "#6D28D9"))
+        self.professional_skill_chart.bar_clicked.connect(lambda label: self._on_bar_clicked('skill', label))
+        professional_scroll.setWidget(self.professional_skill_chart)
+        professional_layout.addWidget(professional_scroll)
+        row_bars.addWidget(self.professional_skill_box, 1, 0)
 
         # Keep self.skill_chart alias pointing to tech_skill_chart for backwards compatibility
         self.skill_chart = self.tech_skill_chart
         self.skill_box = self.tech_skill_box
 
+        self.scope_help = QLabel(_("Employer industry describes the company, not the job function: a healthcare company can hire salespeople or engineers. Chart total is the full distribution in that doughnut; a highlighted slice is the selection. Skills and coverage use the selected jobs."))
+        self.scope_help.setWordWrap(True)
+        self.scope_help.setObjectName('SectionHelp')
+        self.grid.addWidget(self.scope_help)
         self.grid.addLayout(row_bars)
 
         # Row 3: Sponsorship Breakdown Table
         self.spon_box = QGroupBox(_("Sponsorship by Category"))
         spon_vbox = QVBoxLayout(self.spon_box)
         self.spon_table = QTableWidget(0, 5)
-        self.spon_table.setHorizontalHeaderLabels([
+        set_table_header_labels(self.spon_table, [
             _("Category"), _("Total"), _("Visa Yes"), _("Visa ?"), _("Reloc Yes")
         ])
         self.spon_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -680,7 +700,7 @@ class InsightsTab(QWidget):
         for index,key in enumerate(('All Sources','Direct Employers Only','Aggregators / Agencies Only')):
             self.source_combo.setItemText(index,_(key))
         self.source_combo.blockSignals(False)
-        self.spon_table.setHorizontalHeaderLabels(
+        set_table_header_labels(self.spon_table, 
             [_('Category'),_('Total'),_('Visa Yes'),_('Visa ?'),_('Reloc Yes')])
         self.refresh(auto_backfill=False)  # charts only, no hidden forced rebuild
 
@@ -852,7 +872,8 @@ class InsightsTab(QWidget):
                            else _(" (Filtered: %s)") % (active or cat_filter or dom_filter or skill_filter))
         self.cat_box.setTitle(_scoped_title(_("Jobs by Granular Category"), cat_filter))
         self.tech_skill_box.setTitle(_scoped_title(_("In-Demand Technical Skills & Tools"), skill_filter))
-        self.soft_skill_box.setTitle(_scoped_title(_("In-Demand Soft & Professional Skills"), skill_filter))
+        self.soft_skill_box.setTitle(_scoped_title(_("In-Demand Soft Skills"), skill_filter))
+        self.professional_skill_box.setTitle(_scoped_title(_("Professional & Domain Skills"), skill_filter))
 
         # 1. Coverage
         try:
@@ -861,8 +882,9 @@ class InsightsTab(QWidget):
             cat_pct = (cov["categorized_jobs"] / tot * 100) if tot else 0.0
             skl_pct = (cov["jobs_with_skills"] / tot * 100) if tot else 0.0
             self.coverage_label.setText(
-                _("Categorised: %d / %d (%.1f%%) | With Skills: %d (%.1f%%)")
+                _("Selected jobs: %d | Categorised: %d / %d (%.1f%%) | With Skills: %d (%.1f%%)")
                 % (
+                    tot,
                     cov["categorized_jobs"],
                     tot,
                     cat_pct,
@@ -886,6 +908,7 @@ class InsightsTab(QWidget):
             skills_dict = snapshot['skills_dict']
             self.tech_skill_chart.set_data(skills_dict.get("technical", []), selected_label=skill_filter)
             self.soft_skill_chart.set_data(skills_dict.get("soft", []), selected_label=skill_filter)
+            self.professional_skill_chart.set_data(skills_dict.get("professional", []), selected_label=skill_filter)
         except Exception as e:
             logger.debug("Error getting skills: %s", e)
 

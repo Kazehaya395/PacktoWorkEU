@@ -1,0 +1,1512 @@
+"""Scan pipeline: orchestrates the ATS + career scanners and ingests results.
+
+Design (locked with the project owner):
+
+* The scanners keep their proven CLI behaviour — they write their own CSV
+  artifacts (jobs, recruiter split, quarantine, per-run scan log) into
+  ``paths.SCAN_OUTPUT_DIR``.  Nothing in the scanners was rewritten; only
+  cooperative-cancel hooks and the progress shim were added.
+* This module runs them (ATS first — it is API-fast — then the career
+  crawler), then ingests the *accepted* job rows into the SQLite DB via
+  ``persistence.upsert_job`` and copies the per-company scan-log rows into
+  the ``scan_log`` table so the Tools tab can show per-scan evidence.
+* Quarantined rows are never ingested as jobs (they stay in the quarantine
+  CSV artifacts); their counts arrive via the scan-log rows.
+* ``eu_blue_card`` / ``has_relocation`` (legacy INTEGER columns) are derived
+  strictly from the verdict columns ('Y' -> 1, everything else -> 0), so
+  Unknown is never presented as a hard "No" in boolean contexts either.
+* ``sponsorship_score`` is derived from verdict + support confidence + the
+  seed's ``sponsorship_history`` (locked decision #3), so the Dashboard
+  "Sponsored" card and "strongest first" sorting keep working.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import logging
+import os
+import re
+import threading
+import time
+from pathlib import Path
+from typing import Callable
+
+from sponsorscout import paths
+from sponsorscout.application import seed_manager
+from sponsorscout.scanning.ats import ats_scanner as ats_module
+from sponsorscout.scanning.career import career_scanner as career_module
+from sponsorscout.scanning.common import recommended_workers
+from sponsorscout.core.activity import ingestion_task
+from sponsorscout.core.job_identity import posting_identity
+from sponsorscout.core.integrity import check_integrity
+from sponsorscout.core.location_country import country_from_location
+from sponsorscout.core.location_evidence import row_geography
+from sponsorscout.core import persistence
+from sponsorscout.db import database as db
+
+
+def _extract_category(title: str, text: str = "") -> str:
+    try:
+        from sponsorscout.insights.terms import classify_category
+        return classify_category(title, text)
+    except Exception:
+        return "Other"
+
+def _extract_domain(industry: str) -> str:
+    try:
+        from sponsorscout.insights.terms import classify_domain
+        return classify_domain(industry)
+    except Exception:
+        return "Unknown"
+
+def _extract_all_terms(title: str, loc: str, exp: str, text: str, ind: str, pre_skills: str = "") -> list[tuple[str, str]]:
+    try:
+        from sponsorscout.insights.terms import extract_terms
+        res = extract_terms(title, loc, exp, text, ind)
+        terms = res.get("terms", [])
+        if pre_skills:
+            for s in pre_skills.split(";"):
+                s = s.strip()
+                if s and ("skill", s) not in terms:
+                    terms.append(("skill", s))
+        return terms
+    except Exception:
+        return []
+
+logger = logging.getLogger(__name__)
+
+ProgressFn = Callable[[str], None]
+
+
+def _noop_progress(_msg: str) -> None:  # pragma: no cover
+    pass
+
+
+def lower_process_priority() -> bool:
+    """Best-effort: run the scan below normal priority.
+
+    The scan is a long background job; on a 2-core / 8 GB machine the desktop
+    must stay responsive while it runs.  Lowering the priority lets the OS
+    scheduler favour the UI (and whatever else the user is doing) whenever the
+    two compete for CPU.  Purely an optimisation: never fatal.
+
+    * Windows: ``BELOW_NORMAL_PRIORITY_CLASS`` via kernel32.
+    * POSIX:   ``os.nice(10)`` (only when permitted).
+    """
+    try:
+        import os
+
+        if os.name == "nt":
+            import ctypes
+
+            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetCurrentProcess()
+            return bool(kernel32.SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS))
+        try:
+            os.nice(10)
+            return True
+        except (AttributeError, OSError):
+            return False
+    except Exception:  # pragma: no cover - optimisation only
+        logger.debug("Could not lower process priority", exc_info=True)
+        return False
+
+
+# ── Score / verdict derivation ───────────────────────────────────────────────
+
+def derive_sponsorship_score(visa_verdict: str, confidence: float,
+                             sponsorship_history) -> int:
+    """Derive the 0-100 sponsorship score (locked decision #3).
+
+    verdict 'Y'      -> base 70 (+ confidence bonus + seed history bonus)
+    verdict Unknown  -> flat 35 (neutral: no bonuses from evidence the row
+                        does not have — confidence and seed history must not
+                        inflate an unevidenced verdict, nor drag it down)
+    verdict 'N'      -> 0
+    """
+    verdict = str(visa_verdict or "").strip().lower()
+    if verdict == "y":
+        base = 70
+    elif verdict == "n":
+        return 0
+    else:
+        return 35
+    try:
+        conf = max(0.0, min(1.0, float(confidence or 0)))
+    except (TypeError, ValueError):
+        conf = 0.0
+    try:
+        history = max(0, min(100, int(sponsorship_history or 0)))
+    except (TypeError, ValueError):
+        history = 0
+    score = base + conf * 20 + history * 0.10
+    return int(round(max(0, min(100, score))))
+
+
+def _as_verdict(value) -> str:
+    """Normalise a scanner verdict cell to 'Y' / 'N' / 'Unknown' / ''."""
+    v = str(value or "").strip()
+    low = v.lower()
+    if low in ("y", "yes", "true", "1"):
+        return "Y"
+    if low in ("n", "no", "false", "0"):
+        return "N"
+    if low in ("unknown", "possible", "maybe"):
+        return "Unknown"
+    return ""
+
+
+def _as_bool(verdict: str) -> int:
+    """Legacy boolean derivation: strictly 'Y' -> 1, everything else 0."""
+    return 1 if str(verdict or "").strip().lower() == "y" else 0
+
+
+def _norm_location(value) -> str:
+    v = str(value or "").strip()
+    return "" if v.lower() in ("unknown", "not specified") else v
+
+
+# Canonical country names (must match location_country.py output).
+_EU_COUNTRIES = frozenset({
+    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic",
+    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary",
+    "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta",
+    "Netherlands", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia",
+    "Spain", "Sweden",
+})
+_EMEA_COUNTRIES = _EU_COUNTRIES | frozenset({
+    "United Kingdom", "Switzerland", "Norway", "Iceland", "Turkey", "Israel",
+    "United Arab Emirates", "Saudi Arabia", "Qatar", "Kuwait", "Bahrain",
+    "Jordan", "Lebanon", "Egypt", "Morocco", "Tunisia", "Kenya", "Nigeria",
+    "Ghana", "South Africa",
+})
+
+
+# Work Mode tokens the scanners emit -> stored remote_type.
+# "Remote/Hybrid" means the posting advertises both; it is NOT fully remote,
+# so it is stored as hybrid (and the dashboard counts it there).
+_WORK_MODE_TOKENS = {
+    "remote": "remote", "fully remote": "remote", "100% remote": "remote",
+    "remote-first": "remote", "remote first": "remote",
+    "hybrid": "hybrid", "remote/hybrid": "hybrid", "hybrid/remote": "hybrid",
+    "onsite": "onsite", "on-site": "onsite", "on site": "onsite",
+    "in-office": "onsite", "in office": "onsite",
+    "unknown": "", "not specified": "", "": "",
+}
+
+
+def _sniff_work_mode(row: dict) -> str:
+    """Last resort for rows with no Work Mode column (older CSVs).
+
+    Only ever returns a verdict it can point at a word for. "No remote word
+    anywhere" is NOT evidence of an office job, so it returns "unknown" --
+    the previous code returned "onsite" there and silently labelled 8,004
+    rows of run 20261003T233023 as on-site without a shred of evidence.
+    """
+    hay = (f"{row.get('Job Type', '')} {row.get('Job Location', '')} "
+           f"{row.get('Raw Location', '')}").lower()
+    if "hybrid" in hay:
+        return "hybrid"
+    if "remote" in hay:
+        return "remote"
+    if re.search(r"\bon[- ]?site|in[- ]?office\b", hay):
+        return "onsite"
+    return "unknown"
+
+
+def _remote_type(row: dict) -> str:
+    """Map one scanner row to the stored ``jobs.remote_type``.
+
+    FIX UI-2 / P9 ROOT CAUSE. The dashboard's Remote card read 589 on a run
+    whose scanners had found 111 remote and 131 hybrid jobs. The card's SQL
+    was part of it, but the number itself was manufactured HERE: this
+    function never looked at the scanner's "Work Mode" column at all. It
+    grepped ``Job Type`` + ``Job Location`` + ``Raw Location`` for the
+    substring "remote", and ``Job Type`` is the career scanner's
+    ``f"{workload} / {work_mode}"`` string built from loose card-text
+    matching -- so "Internship / Remote" on a Paris internship, or a listing
+    page whose chrome contains the word "remote", became a remote job.
+    Replaying the run through the old code reproduces the exact screenshot:
+    remote_eu 356 + remote 214 + remote_emea 19 = 589, of which 433 are rows
+    whose own Work Mode column says Unknown.
+
+    The order of evidence is now:
+      1. "Work Mode" -- the scanner's dedicated, JD-derived verdict (P0-12).
+         If it says Unknown, the answer is "unknown". The scanner looked and
+         could not tell; inventing a verdict from page furniture is worse
+         than admitting that.
+      2. Only when the column is absent entirely (a CSV written before it
+         existed) fall back to the text sniff, which no longer guesses
+         "onsite" from the absence of a word.
+    Region refinement (remote_eu / remote_emea) is unchanged.
+    """
+    declared = str(row.get("Work Mode") or "").strip().casefold()
+    verdict = _WORK_MODE_TOKENS.get(declared)
+    if verdict is None:
+        # An unrecognised token is still evidence -- read its shape rather
+        # than dropping it on the floor the way the IN-list did.
+        if "hybrid" in declared:
+            verdict = "hybrid"
+        elif "remote" in declared:
+            verdict = "remote"
+        elif "site" in declared or "office" in declared:
+            verdict = "onsite"
+        else:
+            verdict = ""
+    if not verdict:
+        verdict = ("unknown" if "Work Mode" in row else _sniff_work_mode(row))
+    if verdict != "remote":
+        return verdict
+    # Remote: say WHERE it is remote from, as before.
+    hay = (f"{row.get('Job Type', '')} {row.get('Job Location', '')} "
+           f"{row.get('Raw Location', '')}").lower()
+    country = _job_country(row)
+    if country in _EU_COUNTRIES:
+        return "remote_eu"
+    if country in _EMEA_COUNTRIES:
+        return "remote_emea"
+    # Region word without a concrete country ("Remote - EU").
+    if re.search(r"\b(eu|e\.u\.|europe)\b", hay):
+        return "remote_eu"
+    if "emea" in hay:
+        return "remote_emea"
+    return "remote"
+
+
+def _job_country(row: dict) -> str:
+    """Observed posting country, with normalization provenance preserved."""
+    return row_geography(row)[1]
+
+
+def _exp_min_years(value) -> float | None:
+    """Scanner 'Experience Min Years' -> REAL (None = not stated)."""
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Scanner experience vocabulary -> app canonical vocabulary.
+#
+# The scanners deliberately emit employer-facing words ("Internship",
+# "Junior", "Executive") while the jobs table, its partial index
+# (idx_jobs_experience) and the UI filter all use the short canonical set in
+# ``db.EXPERIENCE_LEVELS`` / ``normalizer.detect_experience_level``:
+# Intern / Entry / Mid / Senior / Lead / Exec.  Canonicalise exactly once,
+# here at the ingestion boundary, so no scanner or UI has to know both.
+_EXP_LEVEL_CANON = {
+    "internship": "Intern",
+    "intern": "Intern",
+    "junior": "Entry",
+    "entry": "Entry",
+    "entry level": "Entry",
+    "mid": "Mid",
+    "mid level": "Mid",
+    "senior": "Senior",
+    "lead": "Lead",
+    "executive": "Exec",
+    "exec": "Exec",
+}
+
+
+def _exp_level(value) -> str:
+    """Scanner 'Experience Level' -> canonical level ('' = unclassified).
+
+    An unrecognised word yields '' rather than the raw token: the column is a
+    soft enum, and '' is the documented "not yet classified" state.
+    """
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "unknown":
+        return ""
+    return _EXP_LEVEL_CANON.get(raw.lower(), "")
+
+
+def _exp_required(value) -> str:
+    """Scanner 'Experience Required' -> stored text ('' = not stated)."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "unknown":
+        return ""
+    return raw
+
+
+def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str,
+                jd_lookup=None, jd_proof_lookup=None) -> dict | None:
+    """Map one 39-column scanner output row to an ``upsert_job`` dict.
+
+    Wrapper around ``_row_to_job_unverified`` that then applies the
+    location-aware integrity guards (``core.integrity``).  The split exists so
+    the raw mapping stays a pure function of the row, and the one place that
+    can DEMOTE a verdict is obvious and separately testable.
+    """
+    job = _row_to_job_unverified(row, source_subtype=source_subtype,
+                                 run_id=run_id, jd_lookup=jd_lookup, jd_proof_lookup=jd_proof_lookup)
+    if job is None:
+        return None
+    if callable(jd_proof_lookup):
+        proof = jd_proof_lookup(job['url'], job.get('description',''))
+        if proof:
+            job['support_evidence_type'] = str(job.get('support_evidence_type') or '') + '; ' + proof
+    from sponsorscout.core.job_identity import administrative_action
+    if administrative_action(job.get('url',''),job.get('title','')):
+        return None
+    job, violations = check_integrity(job)
+    if violations:
+        # Keep the reason visible in the row's own diagnostics rather than
+        # dropping it silently, so a suspicious verdict can be audited.
+        note = "; ".join(violations)
+        existing = str(job.get("support_evidence_type") or "").strip()
+        job["support_evidence_type"] = (
+            f"{existing}; integrity: {note}" if existing else f"integrity: {note}"
+        )
+    return job
+
+
+def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
+                           run_id: str, jd_lookup=None, jd_proof_lookup=None) -> dict | None:
+    """Raw 39-column scanner output row -> ``upsert_job`` dict (no guards)."""
+    url = str(row.get("Job URL") or "").strip()
+    title = str(row.get("Job Title") or "").strip()
+    if not url or not title or title.lower() == "unknown":
+        return None
+    company = (str(row.get("Hiring Company") or "").strip()
+               or str(row.get("Company Name") or "").strip()
+               or str(row.get("Seed Name") or "").strip())
+    if company.lower() == "unknown":
+        # Recruiter rows carry Hiring Company='Unknown'; fall back to the
+        # seed identity so the job is attributed to the scanned company.
+        company = (str(row.get("Company Name") or "").strip()
+                   or str(row.get("Seed Name") or "").strip() or "Unknown")
+    visa = _as_verdict(row.get("Visa Sponsorship"))
+    reloc = _as_verdict(row.get("Relocation Support"))
+    blue = _as_verdict(row.get("EU Blue Card"))
+    try:
+        confidence = float(row.get("Support Confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    try:
+        history = int(row.get("Sponsorship History Score") or 0)
+    except (TypeError, ValueError):
+        history = 0
+    # A merged main CSV carries direct and recruiter rows. The row is the
+    # authority, not the name of the file being ingested.
+    if str(row.get('Source Type') or '').strip().casefold() == 'recruiter':
+        source_subtype = 'recruiter'
+    industry = str(row.get("Industry Type") or "").strip()
+    if industry.lower() == "unknown":
+        industry = ""
+    desc = str(row.get("Raw Description") or "").strip()
+    if not desc and callable(jd_lookup):
+        try:
+            desc = str(jd_lookup(url) or "").strip()
+        except Exception:
+            desc = ""
+    return {
+        "external_id": str(row.get("Canonical Job ID") or "").strip(),
+        "title": title,
+        "company": company,
+        "country": _job_country(row),
+        "location": row_geography(row)[0],
+        "url": url,
+        "ats_source": str(row.get("Provider") or "").strip(),
+        "source_type": "verified",
+        "source_subtype": source_subtype,
+        "source_name": str(row.get("Seed Name") or "").strip(),
+        "description": desc,
+        "trust_score": 80,
+        "freshness_score": 0,
+        "sponsorship_score": derive_sponsorship_score(visa, confidence, history),
+        "match_score": 0,
+        "verified_active": True,
+        "is_expired": False,
+        "remote_type": _remote_type(row),
+        # Legacy derived booleans — strictly 'Y' -> 1 (Unknown is never a No).
+        "eu_blue_card": _as_bool(blue),
+        "has_relocation": _as_bool(reloc),
+        # Authoritative three-state evidence (Q4 decision).
+        "visa_sponsorship": visa,
+        "relocation_support": reloc,
+        "eu_blue_card_verdict": blue,
+        "relocation_required": _as_verdict(row.get("Relocation Required")),
+        "support_confidence": confidence,
+        "support_evidence": str(row.get("Support Evidence") or "").strip(),
+        "support_evidence_url": str(row.get("Support Evidence URL") or "").strip(),
+        "support_evidence_type": str(row.get("Support Evidence Type") or "").strip(),
+        "blue_card_evidence": str(row.get("Blue Card Evidence") or "").strip(),
+        "canonical_job_id": str(row.get("Canonical Job ID") or "").strip(),
+        "run_id": run_id,
+        "industry": industry,
+        "raw_location": str(row.get("Raw Location") or "").strip(),
+        "country_source": "job_location" if _job_country(row) else "none",
+        # FIX P0-30: scanner-extracted experience columns (additive),
+        # canonicalised to the app vocabulary here (see _EXP_LEVEL_CANON).
+        "experience_level": _exp_level(row.get("Experience Level")),
+        "experience_required": _exp_required(row.get("Experience Required")),
+        "experience_min_years": _exp_min_years(row.get("Experience Min Years")),
+        "experience_source": str(row.get("Experience Source") or "").strip(),
+        # Keep scan lightweight: Insights extracts category/domain/skills from
+        # SQLite JDs as a separate operation outside the scan loop.
+        "category": str(row.get("Category") or "").strip() or "Other",
+        "domain": str(row.get("Domain") or "").strip() or "Unknown",
+    }
+
+
+def _company_record(row: dict, job: dict) -> dict:
+    """Build the ``save_company`` record for one scanner output row.
+
+    Built ONLY from columns the 39-field jobs output actually carries
+    (``ats_scanner.OUTPUT_FIELDS``), so the registry is populated from real
+    scan evidence rather than invented values:
+
+    * ``name``        — the attributed company (same fallback chain as the job)
+    * ``country``     — the same derivation as the job row, i.e. the country
+                        read off the posting's own location. It deliberately
+                        does NOT fall back to the seed's Target Country (the
+                        same rule as ``_job_country``): a registry row that
+                        claims a country nobody observed is worse than one
+                        that admits it does not know yet.
+    * ``ats_type``    — the ATS/provider that served the row
+    * ``industry``    — the seed's industry tag; this is the one column
+                        ``upsert_job``'s backfill reads, which is why writing the
+                        registry at all restores that feature
+    * the three seed scores — carried straight through
+
+    ``careers_url`` is intentionally left empty: the jobs output has no seed-URL
+    column (only the per-company scan_log CSV does), and the schema declares it
+    NOT NULL.  ``save_company``'s ON CONFLICT clause COALESCEs an empty URL
+    against the stored value, so a later seed-backed write can still fill it
+    without this ever blanking an existing one.
+    """
+    name = str(job.get("company") or "").strip()
+    country = str(job.get("country") or "").strip()
+    industry = str(row.get("Industry Type") or "").strip()
+    if industry.lower() == "unknown":
+        industry = ""
+    return {
+        "name": name,
+        "country": country,
+        "ats_type": str(row.get("Provider") or "").strip(),
+        "careers_url": "",
+        "industry": industry,
+        "sponsorship_history": str(row.get("Sponsorship History Score") or "0"),
+        "english_friendly": str(row.get("English Friendly Score") or "0"),
+        "remote_score": str(row.get("Remote Score") or "0"),
+    }
+
+
+# ── Ingestion ────────────────────────────────────────────────────────────────
+
+#: Bytes read from the front of a CSV when we need its header row only.
+_HEADER_PROBE = 65536
+
+
+def _read_csv_window(path: Path, start_offset: int) -> tuple[list[str] | None, str, int]:
+    """Return ``(fieldnames, body_text, next_offset)`` for the records appended
+    after ``start_offset`` bytes of ``path``.
+
+    Only the newly appended bytes are read and decoded, so a tailing consumer
+    costs O(appended) per pass instead of O(file size).  The previous
+    implementation re-read the whole growing CSV and re-parsed every record on
+    every poll, skipping the already-consumed ones only at the row-processing
+    stage — so the disk read and CSV parse were still O(n) per poll and O(n^2)
+    across a scan, which is what made long scans progressively heavier.
+
+    ``start_offset`` must be 0 or a value previously returned as
+    ``next_offset``; if the file was truncated or replaced, it is clamped and
+    the file is read from the start again.
+
+    Only complete, newline-terminated records are returned.  Both scanners
+    append rows company-by-company while this runs, so the file can end
+    mid-record (OS buffer flush); a half-written row is left for the next pass
+    and is never ingested as a truncated job.  A newline is always a UTF-8
+    character boundary, so slicing at the last newline can never split a
+    multi-byte character.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        off = start_offset if 0 < start_offset <= size else 0
+        f.seek(0)
+        if off:
+            head = f.read(_HEADER_PROBE)
+            nl = head.find(b"\n")
+            header_bytes = head if nl < 0 else head[: nl + 1]
+            f.seek(off)
+            tail = f.read()
+            tail_start = off
+        else:
+            blob = f.read()
+            nl = blob.find(b"\n")
+            if nl < 0:
+                return None, "", 0
+            header_bytes = blob[: nl + 1]
+            tail = blob[nl + 1:]
+            # The body begins AFTER the header, so the next offset must be
+            # measured from there — not from byte 0, or the next pass would
+            # re-read the header as if it were data.
+            tail_start = nl + 1
+
+    if tail and not tail.endswith(b"\n"):
+        cut = tail.rfind(b"\n")
+        tail = tail[: cut + 1] if cut >= 0 else b""
+
+    # utf-8-sig strips the BOM the scanners write; a mid-file slice never has one.
+    fieldnames = next(csv.reader(io.StringIO(header_bytes.decode("utf-8-sig"))), None)
+    return fieldnames, tail.decode("utf-8"), tail_start + len(tail)
+
+
+def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
+                       seen_canonical: set,
+                       seen_fuzzy: set | None = None,
+                       skip_box: list | None = None,
+                       jd_lookup=None, failure_sink: list | None = None, refresh_reader=None, jd_proof_lookup=None) -> tuple[int, int]:
+    """Ingest accepted job rows from one scanner output CSV.
+
+    Returns (ingested, duplicates) for this run's trusted posting identities.
+    Repeated identities still upsert stronger evidence; same-title distinct
+    requisitions are never a merge criterion. Optional failure_sink exposes
+    each final-pass write/mapping failure to the run summary (not silent OK).
+
+    ``skip_box`` enables incremental tailing: pass a one-element list and the
+    reader resumes from the byte offset recorded by the previous pass, writing
+    the new offset back into it.  The live ingester uses this so a long scan
+    reads and parses only the rows appended since the last poll — it used to
+    re-read and re-parse the entire growing CSV every few seconds, which stayed
+    O(n) per poll (and so O(n^2) across a run) and was a major cause of the
+    machine becoming sluggish during scans.  A plain call
+    (``skip_box=None``) reads the file from the start, which the final bulk
+    pass relies on for its counts.
+
+    Timeline events raised while ingesting are buffered and written in one
+    transaction *after* this connection is closed.
+    """
+    if not path or not path.exists():
+        return 0, 0
+    if seen_fuzzy is None:
+        seen_fuzzy = set()
+    ingested = duplicates = 0
+    pending = 0
+    start_offset = int(skip_box[0]) if skip_box else 0
+    next_offset = start_offset
+    # BUGFIX: save_company() was the ONLY writer of the `companies` table and
+    # nothing ever called it, so the registry stayed permanently empty. That
+    # silently disabled two documented features: the Dashboard's "Total
+    # Companies" KPI and upsert_job()'s industry backfill (which SELECTs from
+    # companies).  Each newly seen company is now registered once per file,
+    # after the job rows are committed, from the metadata the scanners already
+    # emit per row — no new plumbing, no extra pass.
+    company_records: dict[str, dict] = {}
+    # BUGFIX: these used to be written inline via db.record_scan_event(), which
+    # opens its OWN connection and commits — while this one still held an
+    # uncommitted write transaction (rows accumulate towards the 500-row batch
+    # below).  WAL permits a single writer, so the nested call blocked for the
+    # whole busy_timeout (5 s, measured 5.46 s) and then raised
+    # "database is locked".  Nothing caught it here, so it escaped
+    # _ingest_output_csv and took the REST OF THE FILE with it: in the final
+    # bulk pass run_scan's `except` swallowed it and every remaining row was
+    # silently never ingested.  Buffering and flushing after close() removes
+    # both the stall and the data loss.
+    events: list[tuple[str, str, str, str]] = []
+    conn = db.get_connection(db_path)
+    try:
+        fieldnames, body, next_offset = _read_csv_window(path, start_offset)
+        if not fieldnames or not body:
+            return 0, 0
+        reader = csv.reader(io.StringIO(body))
+        for values in reader:
+            if len(values) != len(fieldnames):
+                # Never let an extra/missing column shift values into the
+                # wrong field (the header is the contract).
+                values = (values + [""] * len(fieldnames))[:len(fieldnames)]
+            row = dict(zip(fieldnames, values))
+            cid = str(row.get("Canonical Job ID") or "").strip()
+            # BUGFIX (B11): a per-row mapping failure must cost exactly ONE
+            # row, not the rest of the file.  This call was unguarded, so a
+            # single bad row (a NameError/TypeError inside the mapper) escaped
+            # the loop, and both callers silently swallowed it: the live
+            # ingester logged "Live ingestion cycle failed" and run_scan's
+            # final pass caught it too.  The result was a scan that reported
+            # "wrote=N" for every company and a `jobs` table with zero rows,
+            # so the Dashboard and Search tabs both rendered 0 with no visible
+            # cause.  Recording it as a run event makes the loss auditable
+            # ("Download Scan Log") instead of invisible.
+            if refresh_reader is not None:
+                refresh_reader.observe(row.get('Job URL',''), title=row.get('Job Title',''))
+            try:
+                job = _row_to_job(row, source_subtype=source_subtype,
+                                  run_id=run_id, jd_lookup=jd_lookup, jd_proof_lookup=jd_proof_lookup)
+            except Exception as exc:
+                if failure_sink is not None:
+                    failure_sink.append({'url':str(row.get('Job URL') or ''),'error':str(exc),'stage':'mapping'})
+                logger.exception("Row mapping failed for %s",
+                                 row.get("Job URL"))
+                events.append((
+                    "error", "ingest",
+                    str(row.get("Company Name") or row.get("Seed Name") or ""),
+                    "Row mapping failed: " + str(row.get("Job URL") or "")[:200]))
+                continue
+            if job is None:
+                if failure_sink is not None:
+                    failure_sink.append({'url':str(row.get('Job URL') or ''),'error':'Accepted CSV row could not be mapped','stage':'mapping'})
+                events.append((
+                    "warning", "ingest",
+                    str(row.get("Company Name") or row.get("Seed Name") or ""),
+                    "Skipped row (no valid URL / unparsable): "
+                    + str(row.get("Job Title") or "")[:120]))
+                continue
+            # Same-title requisitions are distinct. An observed URL/posting
+            # identity can count as a merge, but still UPSERT it to preserve
+            # stronger JDs, evidence and source markers from later phases.
+            if refresh_reader is not None:
+                job = refresh_reader.bind_revision(job['url'], job)
+            identity = posting_identity(job['url'])
+            already_seen = identity in seen_canonical
+            # Collect the company registry record the first time this run sees
+            # it.  The write itself happens AFTER the job loop commits (see
+            # below): save_company() commits internally, and calling it here
+            # would flush the open 500-row job batch on every new company and
+            # defeat the batch cadence this loop depends on.
+            company_name = str(job.get("company") or "").strip()
+            if company_name and company_name not in company_records:
+                company_records[company_name] = _company_record(row, job)
+            try:
+                persistence.upsert_job(conn, job, commit=False)
+            except Exception as exc:
+                if failure_sink is not None:
+                    failure_sink.append({'url':job.get('url',''),'error':str(exc),'stage':'persistence'})
+                logger.exception("Failed to upsert job %s", job.get("url"))
+                events.append((
+                    "error", "ingest", job.get("company", ""),
+                    f"Failed to ingest job {job.get('url')}"))
+                continue
+            seen_canonical.add(identity)
+            if already_seen:
+                duplicates += 1
+            else:
+                ingested += 1
+            pending += 1
+            if pending >= 500:
+                conn.commit()
+                pending = 0
+        if pending:
+            conn.commit()
+        # Company registry: written only now, with no open job transaction, so
+        # save_company()'s internal commit cannot flush a partial job batch.
+        # One row per distinct company per output file; a failure here must
+        # never discard the jobs already committed above, so it is logged into
+        # the event timeline instead of raised.
+        for company_name, record in company_records.items():
+            try:
+                persistence.save_company(conn, record)
+            except Exception:
+                logger.exception("Failed to save company %s", company_name)
+                events.append(("warning", "ingest", company_name,
+                               "Company registry write failed"))
+    finally:
+        conn.close()
+    # The connection is closed, so this second writer no longer contends for
+    # WAL's single writer lock.  One transaction for the whole batch.
+    if events:
+        try:
+            db.record_scan_events(db_path, run_id, events)
+        except Exception:  # pragma: no cover - evidence logging must not crash
+            logger.exception("Failed to record ingest events")
+    if skip_box is not None:
+        skip_box[0] = next_offset
+    return ingested, duplicates
+
+
+def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[int, dict]:
+    """Copy one scanner's per-run scan-log CSV into the scan_log table.
+
+    Returns ``(row_count, status_counts)`` where ``status_counts`` maps
+    Successful, empty, partial and error targets are separate. Retained and
+    merged rows preserve the final source-artifact reconciliation.
+    """
+    if not path or not path.exists():
+        return 0, {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    status_counts = {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
+    if rows:
+        db.record_scan_log_rows(db_path, run_id, scanner, rows)
+        # Elevate per-company failures into the event timeline so hidden errors
+        # that reduce job yield are visible in the downloaded scan analysis.
+        # Collected first and written in ONE transaction (batch).
+        events: list[tuple[str, str, str, str]] = []
+        for row in rows:
+            status = str(row.get("Status") or row.get("status") or "").lower()
+            err = (row.get("Error") or row.get("error") or "").strip()
+            status_counts['merged'] += int(row.get('Jobs Merged') or 0)
+            status_counts['retained'] += int(row.get('Jobs Retained',row.get('Jobs Found',0)) or 0)
+            if status == 'partial':
+                status_counts['partial'] += 1
+            elif status == "empty":
+                status_counts["empty"] += 1
+            elif status == "error" or (err and status not in ("ok", "partial")):
+                status_counts["error"] += 1
+            else:
+                # Only a genuinely complete successful target counts as OK.
+                status_counts["ok"] += 1
+            if status in ("error", "failed", "partial") or err:
+                events.append((
+                    "error", scanner,
+                    str(row.get("Company") or row.get("Seed Name") or ""),
+                    " | ".join(part for part in
+                               (err, str(row.get("Diagnostics") or "")) if part)[:2000]))
+        try:
+            db.record_scan_events(db_path, run_id, events)
+        except Exception:  # pragma: no cover - evidence logging must not crash
+            logger.exception("Failed to record scan-log events")
+    return len(rows), status_counts
+
+
+def _ingest_error_csv(db_path, path: Path, run_id: str, scanner: str) -> int:
+    """Copy one scanner's ``<output>_errors.csv`` rows into the run timeline.
+
+    Both scanners write a dedicated errors artifact (crash-safe: appended
+    immediately, so a mid-run abort still leaves evidence).  Those rows carry
+    detail the scan-log's single ``Error`` column cannot hold — the phase
+    (target / browser_fallback / detail / seed) and the exception type — so
+    they are surfaced in ``scan_events`` where the Tools tab's
+    "Download Scan Log" export can pick them up.
+
+    Returns the number of rows ingested.
+    """
+    if not path or not path.exists():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+    except OSError:
+        logger.exception("Failed to read error artifact %s", path)
+        return 0
+    count = 0
+    events: list[tuple[str, str, str, str]] = []
+    for row in rows:
+        message = " | ".join(
+            part for part in (
+                str(row.get("Error Type") or "").strip(),
+                str(row.get("Message") or "").strip(),
+            ) if part)
+        if not message:
+            continue
+        events.append((
+            "error",
+            f"{scanner}/{str(row.get('Phase') or 'error').strip()}",
+            str(row.get("Seed Name") or ""),
+            message[:2000],
+        ))
+        count += 1
+    try:
+        db.record_scan_events(db_path, run_id, events)
+    except Exception:  # pragma: no cover - evidence logging must not crash
+        logger.exception("Failed to record error events")
+    return count
+
+
+def _count_seed_rows(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            return max(0, sum(1 for _ in csv.DictReader(f)))
+    except OSError:
+        return 0
+
+
+class _ScanProgress:
+    """Count completed companies and emit machine-readable progress lines.
+
+    The scanners already print one result line per finished company
+    (``OK:/EMPTY:/ERROR: … wrote=…`` for ATS, ``OK <name>:/EMPTY …`` for
+    career).  This wrapper sniffs those lines and emits
+    ``PROGRESS: done/total:phase:label`` after each one, which the UI
+    turns into QProgressBar updates.  No scanner logic is touched — pure
+    transport.  Thread-safe: career workers complete concurrently.
+    """
+
+    PREFIX = "PROGRESS:"
+
+    def __init__(self, n_ats: int, n_career: int,
+                 base_ats: int = 0, base_career: int = 0):
+        self.n_ats = max(0, int(n_ats))
+        self.n_career = max(0, int(n_career))
+        # Resume support: companies already finished in a previous run.
+        # Ticks report the *overall* position (base + this run's count) so
+        # the bar continues from the checkpoint instead of restarting at 0.
+        self.base_ats = max(0, int(base_ats))
+        self.base_career = max(0, int(base_career))
+        self.total = self.n_ats + self.n_career + self.base_ats + self.base_career
+        self._lock = threading.Lock()
+        self._ats_done = 0
+        self._career_done = 0
+
+    def wrap(self, progress: ProgressFn) -> ProgressFn:
+        """Wrap a progress callback so company completions also emit ticks."""
+        tracker = self
+
+        def _wrapped(msg) -> None:
+            progress(msg)
+            if tracker.total <= 0:
+                return
+            try:
+                text = str(msg)
+            except Exception:
+                return
+            ticks: list[str] = []
+            with tracker._lock:
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith(tracker.PREFIX):
+                        continue  # never count our own tick lines
+                    # A company-start line changes the activity label, not
+                    # the completed-company count. 0% on the first company is
+                    # honest progress, but must not read as "Starting scan...".
+                    activity = re.match(r"\[(\d+)/(\d+)\]\s+(.+)", stripped)
+                    if activity:
+                        detail = activity.group(3)
+                        phase = "career" if " -> " in detail else "ats"
+                        done = (tracker.base_ats + tracker._ats_done
+                                + tracker.base_career + tracker._career_done)
+                        ticks.append(f"{tracker.PREFIX} {done}/{tracker.total}:{phase}:Scanning {detail}")
+                        continue
+                    upper = stripped.upper()
+                    if ("WROTE=" not in upper):
+                        continue
+                    if (upper.startswith("OK:") or upper.startswith("EMPTY:")
+                            or upper.startswith("ERROR:")):
+                        # ATS result line: "OK:/EMPTY:/ERROR: wrote=…"
+                        tracker._ats_done = min(
+                            tracker._ats_done + 1, tracker.n_ats)
+                        done = (tracker.base_ats + tracker._ats_done
+                                + tracker.base_career + tracker._career_done)
+                        phase_done = tracker.base_ats + tracker._ats_done
+                        phase_total = tracker.base_ats + tracker.n_ats
+                        ticks.append(
+                            f"{tracker.PREFIX} {done}/{tracker.total}:ats:"
+                            f"ATS {phase_done}/{phase_total}")
+                    elif (upper.startswith("OK ") or upper.startswith("EMPTY ")
+                          or upper.startswith("ERROR ")
+                          or upper.startswith("PARTIAL ")):
+                        # Career result line: "OK <name>: wrote=…"
+                        tracker._career_done = min(
+                            tracker._career_done + 1, tracker.n_career)
+                        done = (tracker.base_ats + tracker._ats_done
+                                + tracker.base_career + tracker._career_done)
+                        phase_done = tracker.base_career + tracker._career_done
+                        phase_total = tracker.base_career + tracker.n_career
+                        ticks.append(
+                            f"{tracker.PREFIX} {done}/{tracker.total}:career:"
+                            f"Career {phase_done}/{phase_total}")
+            for tick in ticks:
+                try:
+                    progress(tick)
+                except Exception:
+                    pass
+
+        # Preserve the _EventTee.flush() API the pipeline calls directly.
+        try:
+            _wrapped.flush = progress.flush  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        return _wrapped
+
+
+def _infer_level(msg: str) -> str:
+    low = msg.lower()
+    if "error" in low or "failed" in low or "exception" in low or "✗" in low:
+        return "error"
+    if low.startswith("warning") or " warn" in low:
+        return "warning"
+    return "info"
+
+
+def _infer_phase(msg: str) -> str:
+    low = msg.lower()
+    if low.startswith("scan "):
+        return "pipeline"
+    if "ats" in low:
+        return "ats"
+    if "career" in low:
+        return "career"
+    if "ingest" in low:
+        return "ingest"
+    return "pipeline"
+
+
+class _EventTee:
+    """Progress wrapper that also persists each line to the run timeline.
+
+    Batched on purpose.  The previous implementation called
+    ``db.record_scan_event`` for every single line, which opens a fresh SQLite
+    connection *and commits* per call — a chatty scan (thousands of per-company
+    / per-page lines) turned that into thousands of write transactions and a
+    serious I/O tax on low-end hardware.  Lines are now buffered and written in
+    one transaction per batch.
+    """
+
+    FLUSH_EVERY = 25
+    FLUSH_SECONDS = 2.0
+
+    def __init__(self, db_path, run_id: str, progress: ProgressFn):
+        self.db_path = db_path
+        self.run_id = run_id
+        self.progress = progress
+        self._buffer: list[tuple[str, str, str, str]] = []
+        self._lock = threading.Lock()
+        self._last = time.monotonic()
+
+    def __call__(self, msg: str) -> None:
+        self.progress(msg)
+        text = str(msg)
+        rows: list[tuple[str, str, str, str]] = []
+        with self._lock:
+            self._buffer.append(
+                (_infer_level(text), _infer_phase(text), "", text[:2000]))
+            now = time.monotonic()
+            if (len(self._buffer) >= self.FLUSH_EVERY
+                    or (now - self._last) >= self.FLUSH_SECONDS):
+                rows, self._buffer = self._buffer, []
+                self._last = now
+        if rows:
+            self._write(rows)
+
+    def flush(self) -> None:
+        """Write any buffered lines (called before the run is finalised)."""
+        with self._lock:
+            rows, self._buffer = self._buffer, []
+        if rows:
+            self._write(rows)
+
+    def _write(self, rows) -> None:
+        try:
+            db.record_scan_events(self.db_path, self.run_id, rows)
+        except Exception:  # pragma: no cover - event logging must not crash scans
+            pass
+
+
+def _event_tee(db_path, run_id: str, progress: ProgressFn) -> _EventTee:
+    """Wrap a progress callback so every line is also persisted to the run's
+    scan_events timeline (level/phase inferred from the message text)."""
+    return _EventTee(db_path, run_id, progress)
+
+
+class _LiveIngester(threading.Thread):
+    """Progressively ingest scanner CSV rows while the scan is still running.
+
+    Both scanners append accepted rows to their output CSVs company by
+    company, so tailing them lets the Dashboard show live numbers during a
+    scan instead of only after ingestion.  Ingestion is idempotent
+    (``upsert_job`` upserts on the normalized URL and shares the run's
+    ``seen_canonical`` dedup set), and the final bulk ingest at the end of
+    ``run_scan`` re-upserts everything, so no special bookkeeping is needed.
+    """
+
+    def __init__(self, db_path, run_id: str,
+                 csv_specs: list[tuple[Path, str]],
+                 seen_canonical: set,
+                 interval: float = 5.0,
+                 progress: ProgressFn | None = None,
+                 jd_lookup=None, refresh_reader=None, jd_proof_lookup=None):
+        super().__init__(name="LiveIngester", daemon=True)
+        self.db_path = db_path
+        self.run_id = run_id
+        self.csv_specs = csv_specs
+        self.seen_canonical = seen_canonical
+        self.interval = interval
+        self.progress = progress or _noop_progress
+        self.jd_lookup = jd_lookup
+        self.refresh_reader = refresh_reader
+        self.jd_proof_lookup = jd_proof_lookup
+        self._stop_event = threading.Event()
+        # Per-CSV byte offsets so each cycle reads and parses ONLY the rows
+        # appended since the previous poll.  Previously the poller re-read the
+        # entire (constantly growing) CSV every interval and skipped already
+        # consumed records only at the row-processing stage, so the disk read
+        # and the CSV parse were still O(n) per cycle and O(n^2) across a scan
+        # — a major cause of the machine becoming sluggish mid-scan.  The
+        # offsets are byte positions returned by pipeline._read_csv_window.
+        self._offsets: dict[str, list[int]] = {}
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        ingested_so_far = 0
+        last_reported = 0
+        while not self._stop_event.wait(self.interval):
+            try:
+                for path, subtype in self.csv_specs:
+                    box = self._offsets.setdefault(str(path), [0])
+                    ingested, _dups = _ingest_output_csv(
+                        self.db_path, path, self.run_id,
+                        source_subtype=subtype, seen_canonical=self.seen_canonical,
+                        skip_box=box, jd_lookup=self.jd_lookup, refresh_reader=self.refresh_reader, jd_proof_lookup=self.jd_proof_lookup)
+                    ingested_so_far += ingested
+                # Throttle: the 5s poller used to emit the same count dozens
+                # of times per company (e.g. ~200 identical Hays lines),
+                # flooding the chunk queue, the event-tee DB writes and the
+                # log widget.  Emit only when the count actually grew.
+                if ingested_so_far and ingested_so_far != last_reported:
+                    last_reported = ingested_so_far
+                    self.progress(
+                        f"Ingested live so far: {ingested_so_far} jobs "
+                        "(Dashboard 'Refresh' reflects these)")
+            except Exception:  # pragma: no cover - never kill the poller
+                logger.exception("Live ingestion cycle failed")
+
+
+# ── Orchestration ────────────────────────────────────────────────────────────
+
+def _normalize_names(names) -> list[str]:
+    """Trim a company-name list; empty / whitespace names are dropped."""
+    return [c.strip() for c in (names or []) if c and c.strip()]
+
+
+@ingestion_task
+def run_scan(method: str = "full",
+             db_path=None,
+             cancel_event: threading.Event | None = None,
+             pause_event: threading.Event | None = None,
+             only_companies: list | None = None,
+             progress: ProgressFn | None = None,
+             resume_from: str | None = None,
+             only_ats: list | None = None,
+             only_career: list | None = None,
+             run_ats: bool = True,
+             run_career: bool = True,
+             refresh_descriptions: bool = False) -> dict:
+    """Run a full scan campaign and ingest the results.
+
+    method:
+      * ``full``  — default.  ATS boards + career pages plus per-job
+                    detail-page evidence enrichment, so each job row is
+                    extracted as accurately as possible.
+      * ``quick`` — same coverage without the detail-page enrichment pass
+                    (dev CLI only; leaves some verdicts as ``Unknown``).
+
+    only_companies: optional list of company names — when given, only those
+      seed targets are scanned in BOTH phases (CLI --company).
+
+    only_ats / only_career: optional per-phase whitelists (custom scan).
+      ``only_ats`` filters the ATS phase, ``only_career`` the career phase.
+      ``run_ats`` / ``run_career`` toggle each phase on/off independently.
+      All default to the historical behaviour (both phases, all companies).
+      ``only_companies`` fans out to both phases when the per-phase lists
+      are not given.
+
+    resume_from: optional run_id of a stopped run.  Companies already
+      finished in that run (per its ``scan_log`` rows) are skipped — the
+      scanners never revisit them — and the progress bar is offset so it
+      continues from the checkpoint instead of restarting at 0. The saved
+      exact phase/route selection and detail mode override current seeds or
+      new selection arguments; missing legacy scope is refused. Completed
+      rows were already ingested into jobs, and re-ingestion upserts on
+      the canonical URL key, so nothing is lost or duplicated.
+
+    Must be called from a worker thread (it performs network I/O); the UI
+    layer receives progress via ``progress``, cancellation via the shared
+    ``cancel_event`` and suspension via ``pause_event`` (while set, the
+    scanners block at their control gates without ending the run, so Resume
+    continues in-place).  Returns a summary dict for the Tools tab.
+    """
+    method = "full" if method == "full" else "quick"
+    progress = progress or _noop_progress
+    cancel_event = cancel_event or threading.Event()
+    db_path = str(db_path or paths.DB_PATH)
+    out_dir = paths.ensure_scan_output_dir()
+    paths.ensure_user_data_dir()
+    # Keep the desktop responsive while a long scan competes for CPU.
+    lower_process_priority()
+
+    # Read the user's seed exactly as saved. Only a first-install missing-file
+    # copy is allowed here; seed reconciliation/upgrades belong to Data Management,
+    # never to the Scan button's critical path.
+    if not seed_manager.user_ats_path().exists() or not seed_manager.user_career_path().exists():
+        seed_manager.ensure_user_seeds()
+
+    # Make sure the schema (incl. scan_runs/scan_log + evidence columns) exists.
+    try:
+        db.initialize(db_path)
+    except TypeError:  # pragma: no cover - older signature fallback
+        db.initialize()
+
+    run_id = time.strftime("%Y%m%dT%H%M%S")
+    if db.get_scan_run(db_path, run_id) is not None:
+        # Rapid Stop/Resume must not overwrite the parent's same-second ID.
+        from uuid import uuid4
+        run_id += '_' + uuid4().hex[:8]
+    # Tee every progress line into the run's scan_events timeline for later
+    # download / analysis (phase + level inferred from the message text).
+    progress = _event_tee(db_path, run_id, progress)
+    ats_out = out_dir / f"{run_id}_ats_jobs.csv"
+    career_out = out_dir / f"{run_id}_career_jobs.csv"
+    detail = method == "full"
+
+    phase_errors: list[str] = []
+    cancelled = False
+    ats_csv = career_csv = None
+
+    summary = {
+        "run_id": run_id,
+        "method": method,
+        "cancelled": False,
+        "status": "completed",
+        "ingested": 0,
+        "duplicates": 0,
+        "log_rows": 0,
+        "artifacts": {},
+        "errors": phase_errors,
+    }
+
+    from sponsorscout.application.scan_scope import (
+        read_targets, load_plan, save_plan, remaining_targets, write_seed)
+    if resume_from:
+        plan = load_plan(db_path, resume_from)
+        if plan is None:
+            raise ValueError("This legacy run has no saved target scope. Resume refused to avoid adding unselected targets; start an explicitly selected custom scan.")
+        refresh_descriptions = bool(plan.get('refresh_descriptions', False))
+        method = plan['method']
+        detail = method == 'full'
+        remaining = remaining_targets(db_path, resume_from, plan)
+    else:
+        ats_selection = only_ats if only_ats is not None else only_companies
+        career_selection = only_career if only_career is not None else only_companies
+        plan = {'version': 1, 'method': method,
+                'ats': read_targets(seed_manager.user_ats_path(), _normalize_names(ats_selection) if ats_selection is not None else None) if run_ats else [],
+                'career': read_targets(seed_manager.user_career_path(), _normalize_names(career_selection) if career_selection is not None else None) if run_career else []}
+        plan['refresh_descriptions'] = bool(refresh_descriptions)
+        remaining = {phase: list(plan[phase]) for phase in ('ats', 'career')}
+    run_ats, run_career = bool(plan['ats']), bool(plan['career'])
+    full_ats, full_career = len(plan['ats']), len(plan['career'])
+    n_ats, n_career = len(remaining['ats']), len(remaining['career'])
+    wanted_ats = {r.get('seed_name') or r.get('name') for r in plan['ats']}
+    wanted_career = {r.get('seed_name') or r.get('name') for r in plan['career']}
+    # Scanners receive only frozen remaining rows. Names alone cannot distinguish
+    # two country/URL routes with the same company, nor protect against seed edits.
+    ats_seed = write_seed(out_dir / f'{run_id}_ats_scope.csv', remaining['ats'])
+    career_seed = write_seed(out_dir / f'{run_id}_career_scope.csv', remaining['career'])
+    scan_only_ats = [r.get('seed_name') or r.get('name') for r in remaining['ats']] if resume_from or only_ats is not None or only_companies is not None else None
+    scan_only_career = [r.get('seed_name') or r.get('name') for r in remaining['career']] if resume_from or only_career is not None or only_companies is not None else None
+    skipped_ats = full_ats - n_ats
+    skipped_career = full_career - n_career
+    skipped_targets = skipped_ats + skipped_career
+    run_method = ("custom" if (only_ats is not None or only_career is not None
+                              or not run_ats or not run_career) else method)
+    summary["method"] = run_method
+    seed_note = (f" (resuming {resume_from}: skipping {skipped_targets} finished companies)"
+                 if resume_from and skipped_targets else "")
+    # Structured PROGRESS: lines for the UI progress bar (one tick per
+    # finished company).  Wrapped outside the event tee so ticks land in
+    # the run timeline too.  base_* offsets resume runs so the bar
+    # continues from the checkpoint (e.g. 54%) instead of restarting at
+    # 0; _ScanProgress clamps each phase so a subset can never overflow.
+    # NOTE: the offset applies only to resume skips — a pure subset scan
+    # (no resume_from) keeps base 0 so its bar spans just the subset.
+    progress = _ScanProgress(
+        n_ats, n_career,
+        base_ats=max(0, full_ats - n_ats) if skipped_targets else 0,
+        base_career=max(0, full_career - n_career)
+        if skipped_targets else 0).wrap(progress)
+    from sponsorscout.scanning.progress_events import emit as emit_work, TaskReporter
+    emit_work(progress, 'configure', total=n_ats+n_career+(max(0, full_ats-n_ats)+max(0, full_career-n_career) if skipped_targets else 0),
+              base=(max(0, full_ats-n_ats)+max(0, full_career-n_career)) if skipped_targets else 0)
+    db.start_scan_run(db_path, run_id, run_method, n_ats, n_career)
+    save_plan(db_path, run_id, plan)
+
+    # Live ingestion: scanners write accepted rows to their CSVs company by
+    # company, so tail them into the DB while the scan runs. This makes the
+    # Dashboard's Refresh button show live numbers mid-scan. The final bulk
+    # ingest below re-upserts everything (idempotent), so counts stay exact.
+    active_scanners: dict[str, object | None] = {"ats": None, "career": None}
+
+    def _lookup_capture_proof(job_url, description):
+        from sponsorscout.core.saved_details import capture_proof, _validated_capture
+        candidates = [capture_proof(inst,job_url,description) for inst in active_scanners.values()]
+        candidates = [marker for marker in candidates if marker]
+        return max(candidates, key=lambda marker:_validated_capture({'description':description},marker), default='')
+
+    def _lookup_captured_jd(job_url: str) -> str:
+        if not job_url:
+            return ''
+        from sponsorscout.core.saved_details import capture_proof, _validated_capture
+        candidates = []
+        for inst in active_scanners.values():
+            getter = getattr(inst, 'get_captured_jd', None)
+            if callable(getter):
+                text = getter(job_url)
+                if not text:
+                    # Ingestion may retain authentic card text as unproven
+                    # evidence. Detail retrieval must not treat it as a JD.
+                    lock = getattr(inst, '_jd_lock', None)
+                    if lock is not None:
+                        with lock:
+                            exact = getattr(inst,'_captured_jds',{}).get(str(job_url).strip(),'')
+                            alias = getattr(inst,'_captured_jd_identities',{}).get(posting_identity(job_url),'')
+                            text = exact if len(exact)>=len(alias) else alias
+                if text:
+                    marker = capture_proof(inst,job_url,text)
+                    stamp = _validated_capture({'description':text},marker) if marker else ''
+                    candidates.append((stamp,len(text),text))
+        return max(candidates, default=('','',''))[2]
+
+    from sponsorscout.core.saved_details import SavedDetailReader
+    refresh_reader = SavedDetailReader(db_path, force_refresh=refresh_descriptions)
+    seen_canonical: set = set()
+    live = _LiveIngester(
+        db_path, run_id,
+        csv_specs=[
+            (ats_out, "direct"),
+            (ats_out.with_name(ats_out.stem + "_recruiter.csv"), "recruiter"),
+            (career_out, "direct"),
+            (career_out.with_name(career_out.stem + "_recruiter.csv"), "recruiter"),
+        ],
+        seen_canonical=seen_canonical,
+        progress=progress,
+        jd_lookup=_lookup_captured_jd, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof,
+    )
+    live.start()
+
+    progress(f"Scan {run_id} started: method={run_method}, "
+             f"ATS companies={n_ats}, career companies={n_career}{seed_note}")
+
+    # 1 ─ ATS scan (API-first, fast) ------------------------------------------
+    if wanted_ats is not None and not wanted_ats and not run_ats:
+        progress("ATS phase disabled — skipping ATS scan")
+    elif wanted_ats is not None and not n_ats:
+        progress("No ATS companies selected — skipping ATS phase")
+    elif n_ats > 0:
+        try:
+            scanner = ats_module.ATSScanner(
+                seed_file=str(ats_seed),
+                output_file=str(ats_out),
+                skip_preflight=True,
+                cancel_event=cancel_event,
+                pause_event=pause_event,
+                only_companies=scan_only_ats,
+            )
+            active_scanners["ats"] = scanner
+            scanner.run_id = run_id
+            ats_module.progress_cb = progress
+            with TaskReporter(scanner, 'ats', progress):
+                scanner.run()
+            ats_csv = ats_out
+            if cancel_event.is_set():
+                cancelled = True
+        except Exception as exc:  # preflight failure, seed errors, network down
+            logger.exception("ATS scan phase failed")
+            phase_errors.append(f"ATS: {type(exc).__name__}: {exc}")
+            progress(f"ATS scan failed: {exc}")
+    else:
+        progress("No ATS seed rows — skipping ATS phase")
+
+    # 2 ─ Career crawl (browser-heavy, starts immediately with zero extra test launch) ─
+    if wanted_career is not None and not run_career:
+        progress("Career phase disabled — skipping career crawl")
+    elif wanted_career is not None and not n_career:
+        progress("No career companies selected — skipping career phase")
+    elif n_career == 0:
+        progress("No career seed rows — skipping career phase")
+    elif cancel_event.is_set() and ats_csv is None:
+        # Cancelled during ATS with nothing produced: honour the stop fully.
+        cancelled = True
+    else:
+        # Instant zero-process Python import check (<0.05 ms — never spawns a
+        # dummy Chromium test browser before scanning starts).
+        try:
+            from sponsorscout.services.browser_fetcher import _playwright_import_error
+            _pw_err = _playwright_import_error()
+            if _pw_err:
+                progress(
+                    "WARNING: Chromium browser is not available — JS-rendered "
+                    "career portals (provider=auto / custom career pages) will "
+                    "return 0 jobs because the Playwright package is NOT importable "
+                    f"in this build ({_pw_err}); reinstall the full installer package."
+                )
+        except Exception:  # pragma: no cover - import check must never kill scans
+            logger.exception("Playwright import check failed")
+        try:
+            scanner = career_module.CareerPortalScanner(
+                input_csv=str(career_seed),
+                output_csv=str(career_out),
+                detail_scan=detail,
+                skip_preflight=True,
+                cancel_event=cancel_event,
+                pause_event=pause_event,
+                only_companies=scan_only_career,
+                max_workers=None,
+            )
+            from sponsorscout.core.saved_details import SavedDetailReader
+            scanner._saved_jd_reader = refresh_reader
+            scanner._saved_jd_reader.load_scopes(remaining['career'], cancel_event)
+            active_scanners["career"] = scanner
+            scanner.run_id = run_id
+            career_module.progress_cb = progress
+            with TaskReporter(scanner, 'career', progress):
+                scanner.execute_crawler()
+            career_csv = career_out
+            if cancel_event.is_set():
+                cancelled = True
+        except Exception as exc:
+            logger.exception("Career scan phase failed")
+            phase_errors.append(f"Career: {type(exc).__name__}: {exc}")
+            progress(f"Career scan failed: {exc}")
+
+    emit_work(progress, 'lifecycle', state='finalizing')
+    # 3 ─ Ingest accepted rows + scan logs into the DB ------------------------
+    # Detach the UI progress callbacks: the module-level ``progress_cb`` hooks
+    # would otherwise keep pointing at a window that may already be gone.
+    ats_module.progress_cb = None
+    career_module.progress_cb = None
+    # Persist any buffered timeline lines before the run is finalised.
+    try:
+        progress.flush()
+    except AttributeError:
+        pass
+    live.stop()
+    live.join(timeout=15)
+    # Deliberately a *fresh* dedup set: the final pass re-reads every row once
+    # so the summary counts match the previous bulk-only behaviour exactly
+    # (rows already ingested live are simply upserted again, idempotently).
+    seen_canonical: set = set()
+    ingested_total = dup_total = log_rows_total = 0
+    targets_ok = targets_empty = targets_error = targets_partial = merged_total = 0
+    final_ingest_failures = []
+    for csv_base, scanner_label in ((ats_csv, "ats"), (career_csv, "career")):
+        if csv_base is None:
+            continue
+        try:
+            ingested, dups = _ingest_output_csv(
+                db_path, csv_base, run_id,
+                source_subtype="direct", seen_canonical=seen_canonical,
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof)
+            rec_ing, rec_dups = _ingest_output_csv(
+                db_path, csv_base.with_name(csv_base.stem + "_recruiter.csv"),
+                run_id, source_subtype="recruiter",
+                seen_canonical=seen_canonical,
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof)
+            log_rows, status_counts = _ingest_scan_log(
+                db_path, csv_base.with_name(csv_base.stem + "_scan_log.csv"),
+                run_id, scanner_label)
+            # Crash-safe error artifact (new in the synced scanner versions):
+            # per-phase exception detail that the scan log cannot hold.
+            _ingest_error_csv(
+                db_path, csv_base.with_name(csv_base.stem + "_errors.csv"),
+                run_id, scanner_label)
+        except Exception as exc:
+            logger.exception("Ingestion failed for %s", csv_base)
+            phase_errors.append(
+                f"Ingest({scanner_label}): {type(exc).__name__}: {exc}")
+            continue
+        ingested_total += ingested + rec_ing
+        dup_total += dups + rec_dups
+        log_rows_total += log_rows
+        targets_ok += status_counts["ok"]
+        targets_empty += status_counts["empty"]
+        targets_error += status_counts["error"]
+        targets_partial += status_counts['partial']
+        merged_total += status_counts['merged']
+        summary["artifacts"][scanner_label] = {
+            "jobs": str(csv_base),
+            "recruiter": (str(csv_base.with_name(csv_base.stem + '_recruiter.csv'))
+                          if csv_base.with_name(csv_base.stem + '_recruiter.csv').exists() else ''),
+            "quarantine": str(csv_base.with_name(csv_base.stem + "_quarantine.csv")),
+            "scan_log": str(csv_base.with_name(csv_base.stem + "_scan_log.csv")),
+            "errors": str(csv_base.with_name(csv_base.stem + "_errors.csv")),
+        }
+
+    # F9 fix: quarantine totals come from the scan_log rows (the scanners
+    # are the authority on what they filtered); the Tools tab reads this key.
+    try:
+        quarantined_total = db.sum_scan_log_quarantined(db_path, run_id)
+    except Exception:
+        logger.exception("Failed to sum quarantined rows")
+        quarantined_total = 0
+
+    # Persist real blocked targets for the dedicated tab. This contains no
+    # visible-browser action and does not hold up other targets during a scan.
+    from sponsorscout.core.blocked_portals import blocked_portals_from_summary
+    summary['blocked_portals'] = blocked_portals_from_summary(summary, include_detail_issues=True)
+    summary['queue_persisted'] = not bool(summary['blocked_portals'])
+    if summary['blocked_portals']:
+        try:
+            db.enqueue_blocked_portals(db_path,summary['blocked_portals'],run_id=run_id)
+            summary['queue_persisted'] = True
+        except Exception as exc:
+            logger.warning('Could not save blocked portal queue: %s',exc)
+            summary['queue_error'] = str(exc)
+
+    summary['ingestion_failures'] = final_ingest_failures
+    if final_ingest_failures:
+        phase_errors.append(f"Final ingestion: {len(final_ingest_failures)} accepted row(s) could not be saved; see scan events and ingestion_failures")
+
+    summary["repeat_scan"] = refresh_reader.summary()
+    try:
+        import json
+        db.record_scan_events(db_path,run_id,[('info','repeat_scan','',json.dumps(summary['repeat_scan']))])
+    except Exception:
+        logger.exception('Could not record repeat-scan counters')
+    summary["ingested"] = ingested_total
+    summary["duplicates"] = dup_total
+    summary['merged'] = merged_total+dup_total
+    summary['targets_partial'] = targets_partial
+    summary["quarantined"] = quarantined_total
+    summary["log_rows"] = log_rows_total
+    summary["cancelled"] = cancelled
+    summary["resume_from"] = resume_from or ""
+    summary["resumed_skipped"] = skipped_targets if resume_from else 0
+    if phase_errors and ingested_total == 0:
+        summary["status"] = "error"
+    elif cancelled:
+        summary["status"] = "cancelled"
+    elif phase_errors or targets_error>0 or targets_partial>0:
+        # F9 fix: dead/error targets make the run partial, not completed.
+        summary["status"] = "partial"
+    else:
+        summary["status"] = "completed"
+
+    # Resume linkage (no schema migration): encode the parent run_id in the
+    # run's error/notes field so Scan History can show the chain.  Real
+    # phase errors are preserved alongside (parsed back by
+    # db.parse_resume_link).
+    _resume_tag = f"resumed_from:{resume_from}" if resume_from else ""
+    try:
+        _err_text = "; ".join(phase_errors)[:1900]
+        if _resume_tag:
+            _err_text = f"{_err_text}; {_resume_tag}" if _err_text else _resume_tag
+        db.finish_scan_run(
+            db_path, run_id,
+            targets_ok=targets_ok, targets_empty=targets_empty,
+            targets_error=targets_error,targets_partial=targets_partial,
+            jobs_merged=merged_total+dup_total,
+            jobs_found=ingested_total, jobs_quarantined=quarantined_total,
+            jobs_duplicates=dup_total, status=summary["status"],
+            error=_err_text[:2000],
+        )
+    except Exception:  # pragma: no cover - evidence logging must not crash
+        logger.exception("Failed to finalise scan_runs row")
+
+    # Parent promotion: a resume child that covered everything left turns
+    # the stopped parent into "resumed" (completed via this child).  A
+    # child that was itself stopped keeps the parent resumable.
+    summary["parent_promoted"] = False
+    if resume_from and summary["status"] in ("completed", "partial"):
+        try:
+            summary["parent_promoted"] = bool(
+                db.mark_scan_resumed(db_path, resume_from, run_id))
+        except Exception:
+            logger.exception("Failed to promote resumed parent run")
+
+    progress(f"Scan {run_id} finished: status={summary['status']}, "
+             f"ingested={ingested_total}, duplicates={dup_total}, "
+             f"quarantined={quarantined_total}, "
+             f"targets ok/empty/partial/error={targets_ok}/{targets_empty}/{targets_partial}/{targets_error}")
+    # Flush the final lines into the run timeline.
+    try:
+        progress.flush()
+    except AttributeError:
+        pass
+    return summary

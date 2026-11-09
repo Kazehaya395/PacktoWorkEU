@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "runtime_and_test_files_checked": 211,
+  "wheel_sha256": "3b4399d74d48378c07b7d46c578b124227af72d33996391dff7ecbce8751d650",
+  "sdist_sha256": "7a7a480ee0a047773d864fe392647aeda6f0f75a8645c48aafccaf9c9b212e06",
+  "isolated_wheel_import": "Isolated installed-wheel import, taxonomy and SQLite OK\n",
+  "isolated_wheel_browser_startup": "SponsorScout self-check (frozen=False)\npython=3.13.16 executable=/usr/local/bin/python\nPLAYWRIGHT_BROWSERS_PATH=<unset>\nplaywright import: OK\nchromium launch: OK\nself-check: OK\n",
+  "boundary": "Python wheel/sdist smoke check; not a native installer build or live portal test."
+}

@@ -300,6 +300,7 @@ def _repair_sponsorship_scores(conn):
         ('scan_log','jobs_merged','INTEGER NOT NULL DEFAULT 0'),
         ('scan_log','attempts','INTEGER NOT NULL DEFAULT 1'),
         ('blocked_portals','source_subtype',"TEXT NOT NULL DEFAULT 'direct'"),
+        ('blocked_portals','access_scope',"TEXT NOT NULL DEFAULT 'listing'"),
     ):
         try:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
@@ -1131,7 +1132,7 @@ def mark_scan_resumed(db_path, parent_run_id: str, child_run_id: str) -> bool:
     """Promote a stopped parent run to ``resumed`` once fully covered.
 
     Called when a resume child finishes: if the parent + child scan_log
-    rows jointly cover every current seed company (i.e. the parent has no
+    rows jointly cover every originally selected target (i.e. the parent has no
     remaining work left), the parent's ``cancelled`` status becomes
     ``resumed`` ("stopped, later completed via resume") and records which
     child completed it.  Returns True when the parent was promoted.
@@ -1150,28 +1151,17 @@ def mark_scan_resumed(db_path, parent_run_id: str, child_run_id: str) -> bool:
     finally:
         if conn:
             conn.close()
-    # Union of parent + child completions covers everything?
-    try:
-        parent_done = get_completed_scan_companies(db_path, parent_run_id)
-        child_done = get_completed_scan_companies(db_path, child_run_id)
-    except Exception:
-        return False
-    covered = set(parent_done.get("ats", set())) | set(
-        child_done.get("ats", set())) | set(
-        parent_done.get("career", set())) | set(
-        child_done.get("career", set()))
-    try:
-        from sponsorscout.application import seed_manager
-        names = set()
-        for path in (seed_manager.user_ats_path(),
-                     seed_manager.user_career_path()):
-            for r in seed_manager.read_seed_rows(path)["rows"]:
-                name = (r.get("name") or "").strip().lower()
-                if name:
-                    names.add(name)
-    except Exception:
-        return False
-    if names - covered:
+    # Coverage is against the parent's immutable scope, split by phase/route.
+    from sponsorscout.application.scan_scope import load_plan, remaining_targets
+    plan = load_plan(db_path, parent_run_id)
+    if plan is None:
+        return False  # A legacy subset cannot safely be reconstructed from today's seeds.
+    remaining = remaining_targets(db_path, child_run_id, plan)
+    parent_remaining = remaining_targets(db_path, parent_run_id, plan)
+    from sponsorscout.application.scan_scope import target_key
+    if any({target_key(r) for r in remaining[phase]} &
+           {target_key(r) for r in parent_remaining[phase]}
+           for phase in ('ats', 'career')):
         return False
     conn = None
     try:
@@ -1203,90 +1193,23 @@ def parse_resumed_by(error_text: str | None) -> str:
 
 
 def get_resumable_scan(db_path) -> dict | None:
-    """Find the newest stopped scan that still has unscanned companies.
+    """Newest unfinished immutable scope; never add current seeds or unselected phases.
 
-    Returns ``None`` when there is nothing to resume, else a checkpoint::
-
-        {"run_id": ..., "method": ...,
-         "remaining_ats": [names...], "remaining_career": [names...],
-         "done_ats": n, "done_career": n, "total_ats": n, "total_career": n,
-         "added_since_stop": n}
-
-    Name matching is by lower-cased company name against the *current* user
-    seeds, so seed edits between stop and resume are handled: newly added
-    companies join ``remaining`` (counted in ``added_since_stop``), removed
-    ones simply drop out.
+    Old runs have no saved subset/URLs. Fail closed rather than guess them.
+    A partial outcome is not itself unfinished company work.
     """
-    from sponsorscout.application import seed_manager
-
-    # Newest stopped run wins: a resume child stopped mid-way supersedes
-    # its parent (the parent's remainder is a subset of the child's view
-    # once the child's own completions are counted).  ``started_at`` has
-    # only 1s resolution and ties are possible in tests, so break them by
-    # rowid (insertion order) — later started = larger rowid.
-    conn = None
+    from sponsorscout.application.scan_scope import load_plan, checkpoint
+    conn = get_connection(db_path)
     try:
-        conn = get_connection(db_path)
-        runs = conn.execute(
-            """SELECT run_id, method, status, ats_companies, career_companies
-               FROM scan_runs
-               WHERE status IN ('cancelled', 'partial', 'error')
-               ORDER BY rowid DESC LIMIT 10"""
-        ).fetchall()
+        runs = conn.execute("SELECT run_id FROM scan_runs WHERE status IN ('cancelled','partial','error','running') ORDER BY rowid DESC LIMIT 25").fetchall()
     finally:
-        if conn:
-            conn.close()
-    if not runs:
-        return None
-    for run in runs:
-        run_id = run[0]
-        try:
-            done = get_completed_scan_companies(db_path, run_id)
-        except Exception:
-            continue
-        try:
-            ats_rows = seed_manager.read_seed_rows(
-                seed_manager.user_ats_path())["rows"]
-            career_rows = seed_manager.read_seed_rows(
-                seed_manager.user_career_path())["rows"]
-        except Exception:
-            continue
-        remaining_ats = [
-            (r.get("name") or "").strip()
-            for r in ats_rows
-            if (r.get("name") or "").strip()
-            and (r.get("name") or "").strip().lower() not in done["ats"]
-        ]
-        remaining_career = [
-            (r.get("name") or "").strip()
-            for r in career_rows
-            if (r.get("name") or "").strip()
-            and (r.get("name") or "").strip().lower() not in done["career"]
-        ]
-        if not remaining_ats and not remaining_career:
-            continue  # fully covered — nothing left to resume
-        total_ats = len([r for r in ats_rows if (r.get("name") or "").strip()])
-        total_career = len([r for r in career_rows
-                            if (r.get("name") or "").strip()])
-        done_ats = total_ats - len(remaining_ats)
-        done_career = total_career - len(remaining_career)
-        # Companies added to the seeds after the run stopped.
-        try:
-            planned = int(run[3] or 0) + int(run[4] or 0)
-            added = max(0, (total_ats + total_career) - planned)
-        except (TypeError, ValueError):
-            added = 0
-        return {
-            "run_id": run_id,
-            "method": run[1] or "full",
-            "remaining_ats": remaining_ats,
-            "remaining_career": remaining_career,
-            "done_ats": max(0, done_ats),
-            "done_career": max(0, done_career),
-            "total_ats": total_ats,
-            "total_career": total_career,
-            "added_since_stop": added,
-        }
+        conn.close()
+    for row in runs:
+        plan = load_plan(db_path, row[0])
+        if plan is not None:
+            result = checkpoint(db_path, row[0], plan)
+            if result:
+                return result
     return None
 
 
@@ -1614,14 +1537,14 @@ def enqueue_blocked_portals(db_path, portals, run_id: str = "") -> int:
                 subtype = portal.get('source_subtype') or (old['source_subtype'] if old else 'direct')
                 subtype = 'recruiter' if subtype=='recruiter' else 'direct'
                 conn.execute(
-                    """INSERT INTO blocked_portals(url_key,url,seed_name,phase,reason,run_id,source_subtype)
-                       VALUES (?,?,?,?,?,?,?)
+                    """INSERT INTO blocked_portals(url_key,url,seed_name,phase,reason,run_id,source_subtype,access_scope)
+                       VALUES (?,?,?,?,?,?,?,?)
                        ON CONFLICT(url_key) DO UPDATE SET
                          seed_name=excluded.seed_name, phase=excluded.phase,
-                         reason=excluded.reason, run_id=excluded.run_id,source_subtype=excluded.source_subtype,
+                         reason=excluded.reason, run_id=excluded.run_id,source_subtype=excluded.source_subtype,access_scope=excluded.access_scope,
                          status=CASE WHEN blocked_portals.status='running' THEN 'running' ELSE 'pending' END,
                          last_seen_at=CURRENT_TIMESTAMP""",
-                    (key,url,name,phase,str(portal.get('reason') or '')[:4000],str(run_id or portal.get('run_id') or ''),subtype))
+                    (key,url,name,phase,str(portal.get('reason') or '')[:4000],str(run_id or portal.get('run_id') or ''),subtype,'details' if portal.get('access_scope')=='details' else 'listing'))
                 count += 1
         return count
     finally:

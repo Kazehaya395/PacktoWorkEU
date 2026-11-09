@@ -138,36 +138,16 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
     Scaling policy:
     - **Strict conservative tier** (`cpu <= 4` OR `total_ram <= 8.5 GiB` OR
       `avail_ram < 2.5 GiB`): strictly caps threads and headless browsers so
-      dual/quad-core and <=8 GB laptops never stutter or swap.
+      dual/quad-core and <=8 GB laptops retain more desktop headroom.
     - **Capable desktop auto-boost tier** (`cpu > 4` AND `total_ram > 8.5 GiB`):
       automatically boosts multi-threaded company/HTTP pools and parallel
       background headless Chrome browsers while reserving >=2 CPU threads and
-      >=3.0 GiB of free RAM so normal PC usage stays completely lag-free.
+      >=3.0 GiB of free RAM as desktop responsiveness headroom.
     - **Optional High Performance (Turbo) override**: raises upper ceilings further
       on capable hardware while still preserving OS responsiveness headroom.
-    - Honors explicit `SPONSORSCOUT_MAX_WORKERS` (browser) and
-      `SPONSORSCOUT_HTTP_WORKERS` (http).
+    - Explicit worker settings may lower, never bypass, the hardware budget.
     """
     turbo = is_high_performance()
-
-    if kind in ("browser", "http"):
-        raw_env = os.environ.get(
-            "SPONSORSCOUT_MAX_WORKERS" if kind == "browser" else "SPONSORSCOUT_HTTP_WORKERS"
-        )
-        if raw_env:
-            try:
-                val = int(raw_env.strip())
-                if val >= 1:
-                    cap = 8 if kind == "browser" else (32 if turbo else 24)
-                    n = min(val, cap)
-                    if requested is not None:
-                        try:
-                            n = max(1, min(int(requested), n))
-                        except (TypeError, ValueError):
-                            pass
-                    return n
-            except (ValueError, TypeError):
-                pass
 
     cpu, ram_total, ram_avail = host_workers_limits()
     gib = 1024 ** 3
@@ -182,7 +162,7 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
         elif kind == "company":
             n = 2 if very_tight else (5 if turbo else 4)
         else:  # browser
-            n = 1 if very_tight else 2
+            n = 1  # one browser on the strict tier; reserve desktop headroom
     else:
         # Capable machine (>4 cores and >8 GB RAM): reserve OS/desktop headroom
         # so background scans never cause UI/desktop lag.
@@ -207,6 +187,18 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
             by_cpu = max(2, (usable_cpu * 2 // 3) if turbo else (usable_cpu // 2))
             cap = 8 if turbo else 6
             n = max(2, min(by_cpu, by_ram, cap))
+
+    env_name = {"browser": "SPONSORSCOUT_MAX_WORKERS",
+                "http": "SPONSORSCOUT_HTTP_WORKERS",
+                "company": "SPONSORSCOUT_MAX_WORKERS"}.get(kind)
+    raw_env = os.environ.get(env_name) if env_name else None
+    if raw_env:
+        try:
+            override = int(raw_env.strip())
+            if override >= 1:
+                n = min(n, override)
+        except (TypeError, ValueError):
+            pass
 
     if requested is not None:
         try:
@@ -351,15 +343,52 @@ def is_dns_failure(*messages) -> bool:
         'name or service not known','nodename nor servname','eai_again','dns lookup failed'))
 
 
+def is_transient_transport_failure(*messages) -> bool:
+    """True when a recorded failure belongs to the attempt, not to the portal.
+
+    Issue 005 P2. Run 20261029T114134 wrote 6 rows to its errors CSV for a run whose
+    scan log held 2 blocked portals: `Autogrill`, `Bending Spoons` and `Camst Group` each
+    logged `seed page did not load` on a first attempt that a later attempt replaced, and
+    all three finished `ok`/`partial`. Only DNS rows were retracted, because that was the
+    one class the retractor knew about. A navigation timeout, a connection reset or a
+    missing route is the same class of event: it says the machine could not reach the page
+    *on that attempt*. Anything naming a wall, challenge or 4xx access refusal is not
+    transient and must survive retraction, so a real block is never edited away.
+    """
+    text = ' '.join(str(value or '') for value in messages).casefold()
+    if not text:
+        return False
+    if is_dns_failure(text):
+        return True
+    if any(marker in text for marker in (
+            'blocked', 'challenge', 'captcha', 'access denied', 'verification',
+            'human verification', ' 403', '403 ', '(403)', '429', 'bot protection',
+            'access wall', 'access blocked')):
+        return False
+    return any(marker in text for marker in (
+        'err_internet_disconnected', 'err_internet_failed', 'err_network_changed',
+        'err_connection_',
+        'err_address_unreachable', 'err_empty_response', 'err_timed_out',
+        'err_socket', 'err_ssl', 'connectionreseterror', 'remotedisconnected',
+        'protocolerror', 'eof occurred', 'operation timed out', 'timed out',
+        'timeout', 'seed page did not load', 'seed page unreachable',
+    ))
+
+
 def completion_status(found: int,error: str = '',diagnostics=()) -> str:
     import re
+    if str(error or '').startswith('ScanCancelled:'):
+        return 'cancelled'
     if error:
         return 'partial' if found else 'error'
     if not found:
+        text=' | '.join([diagnostics] if isinstance(diagnostics,str) else map(str,diagnostics or []))
+        if re.search(r'(?i)JSONDecodeError|(?:API|provider)[^|]*(?:invalid JSON|malformed response|failed to decode)|listing incomplete:|listing[^|]*time budget[^|]*exhausted',text):
+            return 'error'
         return 'empty'
     pieces = [diagnostics] if isinstance(diagnostics,str) else list(diagnostics or [])
     listing = ' | '.join(str(piece) for piece in pieces if not re.search(
-        r'(?i)^(?:\[?detail\]?|jd enrichment|enrichment activity|detail activity)',str(piece)))
+        r'(?i)^(?:\[?detail\]?|jd enrichment|enrichment activity|detail activity|verification snapshot:)',str(piece)))
     incomplete = re.search(
         r'(?i)(?:blocked access:|blocked by bot protection:|challenge page served instead of|JD coverage incomplete:|listing completeness unverified|listing incomplete:|page\s+cap[^|]*reached|(?:dom|listing|row)\s+cap[^|]*(?:reached|more)|'
         r'pagination\s+(?:stopped|cap|incomplete)|\bboard has more pages\b|'
@@ -402,6 +431,14 @@ def reconcile_scan_artifacts(scan_log_csv,main_csv,quarantine_csv,run_id='',merg
         choices = [i for i in current if str(rows[i].get('Seed Name') or rows[i].get('Company') or '').strip().casefold() in names]
         if not choices:
             return None
+        source_url=str(job.get('Seed URL') or '')
+        if source_url:
+            exact=[i for i in choices if rows[i].get('Seed URL')==source_url]
+            if exact:return exact[0]
+        # Legacy rows without a route may only choose among routes that actually
+        # discovered jobs. A blocked/empty sibling must not win an all-zero tie.
+        discovered=[i for i in choices if int(rows[i].get('Jobs Found') or 0)>0]
+        if discovered:choices=discovered
         company = str(job.get('Company Name') or '').strip().casefold()
         direct = [i for i in choices if str(rows[i].get('Seed Name') or '').strip().casefold()==company]
         if direct:
@@ -439,7 +476,8 @@ def reconcile_scan_artifacts(scan_log_csv,main_csv,quarantine_csv,run_id='',merg
         row['Quarantined'] = quarantined[i]
         row['Jobs Retained'] = retained[i]
         row['Jobs Merged'] = merged[i]
-        row['Status'] = completion_status(int(row.get('Jobs Found') or 0),row.get('Error') or '',[row.get('Diagnostics') or ''])
+        if row.get('Status') != 'cancelled':
+            row['Status'] = completion_status(int(row.get('Jobs Found') or 0),row.get('Error') or '',[row.get('Diagnostics') or ''])
         # Keep repeated reconciliations idempotent.
         diagnostic = str(row.get('Diagnostics') or '').split(' | final: found=')[0]
         row['Diagnostics'] = diagnostic + (
@@ -453,3 +491,15 @@ def reconcile_scan_artifacts(scan_log_csv,main_csv,quarantine_csv,run_id='',merg
     return {'written':len(jobs),'quarantined':sum(quarantined.values()),
             'merged':sum(merged.values()),'targets':len(current),
             'partial':sum(rows[i].get('Status')=='partial' for i in current)}
+
+
+def final_seed_reference_counts(path,run_id=''):
+    """Snapshot finalized source references, not pre-finalization discoveries."""
+    from collections import Counter
+    from sponsorscout.core.job_identity import read_job_csv
+    counts=Counter()
+    for row in read_job_csv(path):
+        if run_id and row.get('Run ID') and row['Run ID']!=run_id:continue
+        names={n.strip() for n in str(row.get('Seed Name') or row.get('Company Name') or '').split(';') if n.strip()}
+        counts.update(names)
+    return dict(counts)

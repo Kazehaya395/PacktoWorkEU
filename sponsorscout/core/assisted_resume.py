@@ -59,6 +59,12 @@ def _identity(conn,url,data):
 
 def _validate(conn,url,data):
     _identity(conn,url,data)
+    if 'refresh_descriptions' in data and not isinstance(data['refresh_descriptions'],bool):
+        raise ValueError('Invalid saved description refresh policy')
+    if data.get('refresh_started_at'):
+        stamp=datetime.fromisoformat(data['refresh_started_at'])
+        if stamp.tzinfo is None or stamp>datetime.now(timezone.utc):
+            raise ValueError('Invalid saved description campaign time')
     rows=data.get('rows')
     if not isinstance(rows,list)or not rows or len(rows)>MAX_BATCH_ROWS:raise ValueError(_('Saved JD batch is empty or invalid. Run Assisted listing ingestion first.'))
     urls=[];validator=None
@@ -100,10 +106,12 @@ def _snapshot(path,data):
 
 
 def save_batch(conn,url,seed_name,rows,*,run_id,listing_completed,pages,loads=0,
-               source_subtype='direct',stop_reason='',root_run_id='',continuation=None,stated_total=None):
+               source_subtype='direct',stop_reason='',root_run_id='',continuation=None,stated_total=None,
+               refresh_descriptions=False,refresh_started_at=''):
     if not rows:return None
     if len(rows)>MAX_BATCH_ROWS:raise ValueError('Assisted saved batch exceeds the bounded row limit')
     data=dict(version=2,database=database_key(conn),portal_key=portal_queue_key(url),url=url,
+        refresh_descriptions=bool(refresh_descriptions),refresh_started_at=refresh_started_at,
         seed_name=seed_name,source_subtype=source_subtype,run_id=_run(run_id),root_run_id=root_run_id or run_id,
         listing_completed=bool(listing_completed),pages=int(pages),loads=int(loads),stop_reason=stop_reason,
         saved_at=datetime.now(timezone.utc).isoformat(),continuation=continuation or{},stated_total=stated_total,rows=rows)
@@ -254,12 +262,15 @@ def observed_url_in_scope(root,target):
     Pagination keys/path segments may differ, but no URL is constructed here.
     Opaque live-only widget/session state is not a serializable continuation.
     """
-    paging={'p','page','pg','pagenumber','pagenum','currentpage','offset','start','pagina','seite'}
+    paging={'p','page','pg','pagenumber','pagenum','currentpage','offset','start','from','pagina','seite'}
     try:
         a,b=urlsplit(root),urlsplit(target)
         if (a.scheme.casefold(),a.netloc.casefold())!=(b.scheme.casefold(),b.netloc.casefold()):return False
         route=lambda p:re.sub(r'/page/\d+(?=/|$)','',p,flags=re.I).rstrip('/')or'/'
         if route(a.path)!=route(b.path):return False
+        from sponsorscout.core.job_identity import split_career_posting
+        if split_career_posting(root) and split_career_posting(target,root):
+            return a.fragment==b.fragment and not sensitive_url(target)
         def contains_filters(original,current):
             keys={k for k,v in parse_qsl(original,keep_blank_values=True)if k.casefold()not in paging}
             return all([v for k,v in parse_qsl(original,keep_blank_values=True)if k==key]==[v for k,v in parse_qsl(current,keep_blank_values=True)if k==key]for key in keys)
@@ -282,6 +293,14 @@ def listing_continuation(batch):
         type(state.get('page'))is not int or state['page']<=int(batch.get('pages',0))or
         portal_queue_key(target)==batch['portal_key']):
         raise ValueError(_('No auditable observed listing continuation is saved. Start a fresh listing run; no page URL was guessed.'))
+    from sponsorscout.core.blocked_portals import _paging_position, _forward_paging_url
+    position = _paging_position(target)
+    source = state.get('source_url')
+    if ((source and (not observed_url_in_scope(batch.get('url') or batch['portal_key'], source)
+                     or not _forward_paging_url(source, target)))
+            or (not source and position and position[0] == 'page'
+                and position[1] < int(batch.get('pages', 0)))):
+        raise ValueError(_('No auditable observed listing continuation is saved. Start a fresh listing run; no page URL was guessed.'))
     return state
 
 
@@ -290,7 +309,8 @@ def existing_records(conn,batch):
     pairs=[]
     for original in batch['rows']:
         row=dict(original);url=row['url']
-        saved=conn.execute('SELECT * FROM jobs WHERE url=? OR posting_key=? ORDER BY (url=?) DESC,id LIMIT 1',(url,posting_identity(url),url)).fetchone()
+        from sponsorscout.core.job_identity import find_existing_posting
+        saved=find_existing_posting(conn,url)
         record=dict(saved)if saved is not None else None
         if record is not None:
             record['url']=url

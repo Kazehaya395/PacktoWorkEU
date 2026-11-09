@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.application import seed_manager as sm
-from sponsorscout.i18n import _
+from sponsorscout.i18n import _, set_table_header_labels
 
 # FIX UI-5: the grid was hard-coded to the v6 column list (base + extra, 15
 # names). The seeds have 12 columns and none of them is "ats_type", so the
@@ -39,6 +39,13 @@ _HINT_SRC = (
     "scanned via their job-board APIs; career portals are crawled on "
     "the company site.  Edits are saved to your personal seed files "
     "and take effect on the next scan.")
+
+
+def _column_caption(column):
+    # The displayed label is localized; self.columns and CSV keys never change.
+    keys = {"name": "Company name", "careers_url": "Careers URL",
+            "source_type": "Source type", "scope_policy": "Scope policy"}
+    return _(keys.get(column, column.replace("_", " ").title()))
 
 
 class SeedRowDialog(QDialog):
@@ -72,7 +79,7 @@ class SeedRowDialog(QDialog):
             edit = QLineEdit(str(row.get(col) or "").strip())
             edit.setPlaceholderText("0–100")
             self.score_edits[col] = edit
-            form.addRow(_(col.replace("_", " ").title()), edit)
+            form.addRow(_column_caption(col), edit)
 
         advanced = QGroupBox(_("Advanced (optional)"))
         adv_form = QFormLayout(advanced)
@@ -85,15 +92,17 @@ class SeedRowDialog(QDialog):
                     "board_slug", "notes"):
             edit = QLineEdit(str(row.get(col) or "").strip())
             self.adv_edits[col] = edit
-            adv_form.addRow(_(col.replace("_", " ").title()), edit)
+            adv_form.addRow(_column_caption(col), edit)
         source_combo = QComboBox()
-        source_combo.addItems(["", *sm.SOURCE_TYPES])
-        source_combo.setCurrentText(str(row.get("source_type") or "").strip())
+        for code in ("", *sm.SOURCE_TYPES):
+            source_combo.addItem(_(code), code)
+        source_combo.setCurrentIndex(max(0, source_combo.findData(str(row.get("source_type") or "").strip())))
         self.adv_combos["source_type"] = source_combo
         adv_form.addRow(_("Source type"), source_combo)
         scope_combo = QComboBox()
-        scope_combo.addItems(["", *sm.SCOPE_POLICIES])
-        scope_combo.setCurrentText(str(row.get("scope_policy") or "").strip())
+        for code in ("", *sm.SCOPE_POLICIES):
+            scope_combo.addItem(_(code), code)
+        scope_combo.setCurrentIndex(max(0, scope_combo.findData(str(row.get("scope_policy") or "").strip())))
         self.adv_combos["scope_policy"] = scope_combo
         adv_form.addRow(_("Scope policy"), scope_combo)
         form.addRow(advanced)
@@ -124,7 +133,7 @@ class SeedRowDialog(QDialog):
         for col, edit in self.adv_edits.items():
             data[col] = edit.text().strip()
         for col, combo in self.adv_combos.items():
-            data[col] = combo.currentText().strip()
+            data[col] = combo.currentData() or ""
         return data
 
 class SeedEditor(QWidget):
@@ -154,7 +163,7 @@ class SeedEditor(QWidget):
 
         self.columns = list(FALLBACK_COLUMNS)
         self.table = QTableWidget(0, len(self.columns))
-        self.table.setHorizontalHeaderLabels(self.columns)
+        set_table_header_labels(self.table, [_column_caption(col) for col in self.columns])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -200,6 +209,7 @@ class SeedEditor(QWidget):
 
     # ── i18n ─────────────────────────────────────────────────────────────────
     def retranslate(self):
+        set_table_header_labels(self.table, [_column_caption(col) for col in self.columns])
         self.add_btn.setText(_("Add…"))
         self.edit_btn.setText(_("Edit…"))
         self.delete_btn.setText(_("Delete"))
@@ -215,7 +225,7 @@ class SeedEditor(QWidget):
         self.rows = data["rows"]
         self.columns = list(data.get("columns") or FALLBACK_COLUMNS)
         self.table.setColumnCount(len(self.columns))
-        self.table.setHorizontalHeaderLabels(self.columns)
+        set_table_header_labels(self.table, [_column_caption(col) for col in self.columns])
         self.file_label.setText(str(self.path))
         # An old personal seed still carrying the removed v6 column is
         # migrated on read; say so rather than let it look like data loss.
@@ -229,6 +239,7 @@ class SeedEditor(QWidget):
         self._populate()
 
     def _populate(self):
+        self.table.clearSpans()
         self.table.setRowCount(len(self.rows))
         bold_cols = {"name", "provider", "careers_url"}
         companies = 0
@@ -247,7 +258,6 @@ class SeedEditor(QWidget):
                 self.table.setItem(r, 0, item)
                 self.table.setSpan(r, 0, 1, max(len(self.columns), 1))
                 continue
-            self.table.setSpan(r, 0, 1, 1)
             companies += 1
             for c, col in enumerate(self.columns):
                 item = QTableWidgetItem(str(row.get(col, "") or ""))

@@ -106,8 +106,14 @@ def test_smartrecruiters_moved_to_career_seed():
             return [r["name"] for r in csv.DictReader(fh)]
     ats_names = names(SEEDS / "company_ATS_seed.csv")
     career_names = names(SEEDS / "company_Career_seed.csv")
-    assert "SmartRecruiters" not in ats_names
-    assert career_names.count("SmartRecruiters") == 1
+    # The current catalog intentionally retains the user's ATS route. Reading
+    # Career must never migrate this ATS-only row into the selected phase.
+    from sponsorscout.scanning.career.career_scanner import CareerPortalScanner
+    path=SEEDS / "company_Career_seed.csv";before=path.read_bytes()
+    actual=CareerPortalScanner(input_csv=str(path),skip_preflight=True).read_seed_file()
+    assert {r["seed_name"]for r in actual}=={n.strip() for n in career_names if n.strip() and not n.strip().startswith("#")}
+    assert "SmartRecruiters" in ats_names and "SmartRecruiters" not in {r["seed_name"]for r in actual}
+    assert path.read_bytes()==before
     # Positive control: real ATS rows are untouched.
     assert "Smartly.io" in ats_names and "Nexthink" in ats_names
 

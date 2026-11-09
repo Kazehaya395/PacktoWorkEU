@@ -1,0 +1,19 @@
+{
+  "issue_status": "OPEN; behaviour unchanged",
+  "controlled_local_observations": [
+    {
+      "locale": "en",
+      "stored_note_before": "Retain this existing note",
+      "notes_input_after_selection": "",
+      "status_after": "interview",
+      "stored_note_after": ""
+    },
+    {
+      "locale": "it",
+      "stored_note_before": "Retain this existing note",
+      "notes_input_after_selection": "",
+      "status_after": "interview",
+      "stored_note_after": ""
+    }
+  ]
+}

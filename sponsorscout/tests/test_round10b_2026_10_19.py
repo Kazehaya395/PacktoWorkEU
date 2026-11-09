@@ -86,14 +86,15 @@ def test_heading_slug_link_is_accepted_only_via_heading_method():
 
 
 def test_card_resolver_prefers_heading_link_over_data_id():
-    # The fallback that turned data-id 4735 into /vacancies/jobs/4735 must come
-    # after a real heading link.
+    # Approved 2026-11-03: guessing /jobs/<DOM id> is now removed entirely.
+    # Observed heading hrefs remain ahead of data-href and onclick routes.
     h = SRC.index("const headingA = scope.querySelector")
-    d = SRC.index("const dataInfo =")
+    d = SRC.index("const dataHref =")
     assert h < d
+    block = SRC[SRC.index("const pickJobUrl ="):SRC.index("const synthJobUrl =")]
+    assert "base + '/jobs/' + dataInfo" not in block
+    assert "const dataInfo =" not in block
 
-
-# ── 3: one-word slug after a posting id ──────────────────────────────────────
 
 def test_one_word_slug_after_posting_id_is_the_title():
     # The scan calls the class method (the module-level helper is a different one).
@@ -201,8 +202,12 @@ def test_browser_path_raises_on_challenge_instead_of_empty():
     # 2026-10-28: the wording is decided by listing_block_message(), which only
     # claims a bot-protection wall when the response actually carried challenge
     # evidence. A bare 403 on the listing is reported as an access failure.
-    i = SRC.index("_challenge = self._bot_challenge_reason(page)")
-    window = SRC[i:i + 300]
+    # 2026-11-05: transient verification gets a bounded observation period;
+    # an unresolved wall must still raise before any job-card extraction.
+    i = SRC.index("_challenge = self._observe_seed_verification(")
+    end = SRC.index("self.wait_for_job_cards_to_load(page)", i)
+    window = SRC[i:end]
+    assert "self._bot_challenge_reason(page)" in window
     assert "raise RuntimeError(listing_block_message(_challenge))" in window
 
 

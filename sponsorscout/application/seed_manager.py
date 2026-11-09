@@ -64,7 +64,9 @@ SUPPORTED_ATS_TYPES = (
 )
 
 SCOPE_POLICIES = ("global", "seed_url", "job_location")
-SOURCE_TYPES = ("direct_employer", "recruiter")
+# Preserve the government category already present in the bundled Career seed.
+# The editor uses this same enum; collectors retain the source value unchanged.
+SOURCE_TYPES = ("direct_employer", "recruiter", "government")
 
 
 def _bundled_dir() -> Path:

@@ -15,7 +15,7 @@ class ReviewModel(QAbstractTableModel):
         if not index.isValid()or role not in(Qt.DisplayRole,Qt.ToolTipRole):return None
         row=self.rows[index.row()]
         labels={'fill_country':_('Fill missing country'),'exclude_non_job':_('Exclude non-job action'),'protected':_('Protected'),'unresolved':_('Still unresolved')}
-        values=(labels.get(row.get('action')or row.get('status'),''),row.get('company'),row.get('title'),row.get('location'),row.get('country')or'Unknown',row.get('new_country')or'',row.get('reason'))
+        values=(labels.get(row.get('action')or row.get('status'),''),row.get('company'),row.get('title'),row.get('location'),row.get('country')or _('Unknown'),row.get('new_country')or'',row.get('reason'))
         return str(values[index.column()]or'')
     def headerData(self,section,orientation,role=Qt.DisplayRole):
         if role==Qt.DisplayRole and orientation==Qt.Horizontal:

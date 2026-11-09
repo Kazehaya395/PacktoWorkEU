@@ -1,0 +1,72 @@
+[
+  {
+    "path": "sponsorscout/ui/tabs/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 9
+  },
+  {
+    "path": "sponsorscout/scanning/ats/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 2
+  },
+  {
+    "path": "sponsorscout/scanning/career/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 4
+  },
+  {
+    "path": "sponsorscout/services/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 2
+  },
+  {
+    "path": "sponsorscout/scanning/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 9
+  },
+  {
+    "path": "sponsorscout/application/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 5
+  },
+  {
+    "path": "sponsorscout/insights/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 4
+  },
+  {
+    "path": "sponsorscout/core/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 29
+  },
+  {
+    "path": "sponsorscout/ui/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 6
+  },
+  {
+    "path": "sponsorscout/tests/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 106
+  },
+  {
+    "path": "sponsorscout/db/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 3
+  },
+  {
+    "path": "sponsorscout/__pycache__",
+    "reason": "Generated Python bytecode cache.",
+    "files": 4
+  },
+  {
+    "path": ".pytest_cache",
+    "reason": "Generated test or Python-package build output.",
+    "files": 5
+  },
+  {
+    "path": "sponsorscout.egg-info",
+    "reason": "Generated test or Python-package build output.",
+    "files": 6
+  }
+]

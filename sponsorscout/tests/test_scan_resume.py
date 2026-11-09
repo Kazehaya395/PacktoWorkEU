@@ -32,6 +32,17 @@ def resume_db(tmp_path, monkeypatch):
         encoding="utf-8")
     monkeypatch.setattr(seed_manager, "user_ats_path", lambda: ats)
     monkeypatch.setattr(seed_manager, "user_career_path", lambda: career)
+    # New runs persist their ORIGINAL scope, not the current seeds at resume.
+    from sponsorscout.application.scan_scope import save_plan, read_targets, load_plan
+    original_start = db.start_scan_run
+    def start(path, run_id, method, n_ats, n_career):
+        original_start(path, run_id, method, n_ats, n_career)
+        parent = load_plan(path, 'R1') if run_id == 'C9' else None
+        plan = parent or {'version': 1, 'method': method,
+                          'ats': read_targets(ats)[:n_ats],
+                          'career': read_targets(career)[:n_career]}
+        save_plan(path, run_id, plan)
+    monkeypatch.setattr(db, 'start_scan_run', start)
     return db_path
 
 
@@ -41,7 +52,7 @@ def _log(db_path, run_id, scanner, company):
         "target_country": "Global", "status": "ok", "provider": "x",
         "jobs_found": 1, "quarantined": 0, "duplicates": 0,
         "rejected_scope": 0, "error": "", "diagnostics": "",
-        "duration_sec": 1.0, "seed_url": "https://example.com",
+        "duration_sec": 1.0, "seed_url": f"https://{company.lower()}.example.com",
     }])
 
 
@@ -73,7 +84,7 @@ def test_no_resume_when_nothing_stopped_or_all_done(resume_db):
     assert db.get_resumable_scan(resume_db) is None
 
 
-def test_seed_added_after_stop_joins_remaining(resume_db, tmp_path):
+def test_seed_added_after_stop_never_joins_remaining(resume_db, tmp_path):
     db.start_scan_run(resume_db, "R1", "full", 2, 3)
     _log(resume_db, "R1", "ats", "A1")
     _log(resume_db, "R1", "ats", "A2")
@@ -82,8 +93,8 @@ def test_seed_added_after_stop_joins_remaining(resume_db, tmp_path):
     with open(seed_manager.user_career_path(), "a", encoding="utf-8") as f:
         f.write("C4,https://c4.example.com,auto,,direct,Global,global,,,\n")
     cp = db.get_resumable_scan(resume_db)
-    assert sorted(cp["remaining_career"]) == ["C1", "C2", "C3", "C4"]
-    assert cp["added_since_stop"] == 1
+    assert sorted(cp["remaining_career"]) == ["C1", "C2", "C3"]
+    assert cp["added_since_stop"] == 0
 
 
 def test_resume_link_parsers():

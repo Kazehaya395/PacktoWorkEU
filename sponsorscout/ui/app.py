@@ -2,7 +2,7 @@
 
 Replaces the Tkinter-era monolith.  Each tab is an independent QWidget in
 ``sponsorscout.ui.tabs``; this file only builds the header, assembles the
-5 tabs, and relays cross-tab signals (status bar, language switching,
+8 tabs, and relays cross-tab signals (status bar, language switching,
 data refreshed, scan requested) between them.
 """
 
@@ -25,7 +25,7 @@ from sponsorscout.ui.async_load import AsyncLoader
 from sponsorscout.db import database as db
 from sponsorscout.i18n import (
     _, get_available_locales, get_locale, get_locale_name, load_saved_locale,
-    set_locale,
+    set_locale, retranslate_widget_literals, sync_qt_locale,
 )
 from sponsorscout.paths import DB_PATH
 from sponsorscout.ui.tabs import (
@@ -48,12 +48,14 @@ if sys.platform == "win32":
 
 
 class SponsorScoutApp(QMainWindow):
-    """Main window: navy header + 5-tab workspace (Dashboard / Search /
-    Applications / Tools / Data Management)."""
+    """Main window: navy header + eight-tab workspace (Dashboard / Search /
+    Applications / Tools / Data Management / AI Prompt Kit / Insights /
+    Assisted Ingestion)."""
 
     def __init__(self, db_path: str | None = None):
         super().__init__()
         load_saved_locale()
+        sync_qt_locale()
         self.db_path = db_path or str(DB_PATH)
         self._dirty_views = set()
         self._closing = False
@@ -348,6 +350,9 @@ class SponsorScoutApp(QMainWindow):
             retranslate = getattr(tab, "retranslate", None)
             if callable(retranslate):
                 retranslate()
+        # Covers anonymous labels/buttons and tooltips omitted by tab-specific
+        # handlers. Never rewrite user inputs, table contents or worker state.
+        retranslate_widget_literals(self)
 
     def closeEvent(self,event):
         # Do not destroy a live QObject/QThread while it is committing jobs.

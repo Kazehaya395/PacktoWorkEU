@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from sponsorscout.db import database as db
 from sponsorscout.ui.async_load import AsyncLoader
-from sponsorscout.i18n import _
+from sponsorscout.i18n import _, set_table_header_labels
 
 APP_STATUSES = ["saved", "applied", "interview", "offer", "rejected"]
 
@@ -81,7 +81,7 @@ class ApplicationsTab(QWidget):
 
         # ── Applications table ───────────────────────────────────────────────
         self.table = QTableWidget(0, len(HEADERS))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -112,7 +112,8 @@ class ApplicationsTab(QWidget):
         form_lay = QHBoxLayout(self.form)
         form_lay.addWidget(QLabel(_("Status:")))
         self.status_combo = QComboBox()
-        self.status_combo.addItems(APP_STATUSES)
+        for status in APP_STATUSES:
+            self.status_combo.addItem(_(status), status)
         form_lay.addWidget(self.status_combo)
         form_lay.addSpacing(12)
         form_lay.addWidget(QLabel(_("Notes:")))
@@ -171,6 +172,8 @@ class ApplicationsTab(QWidget):
                     for col, value in enumerate((company, title, status, (applied_at or '')[:10], job_url, notes)):
                         item = QTableWidgetItem(str(value or ''))
                         if col == COL_STATUS:
+                            item.setData(Qt.UserRole, status)
+                            item.setText(_(str(status or "")))
                             self._style_status(item, status)
                         self.table.setItem(row, col, item)
                     if job_url == selected_url:
@@ -197,8 +200,12 @@ class ApplicationsTab(QWidget):
         row = self.table.currentRow()
         if row < 0:
             return None
-        return [self.table.item(row, c).text() if self.table.item(row, c)
-                else "" for c in range(self.table.columnCount())]
+        values = [self.table.item(row, c).text() if self.table.item(row, c)
+                  else "" for c in range(self.table.columnCount())]
+        status_item = self.table.item(row, COL_STATUS)
+        if status_item is not None:
+            values[COL_STATUS] = status_item.data(Qt.UserRole) or values[COL_STATUS]
+        return values
 
     def _on_select(self):
         v = self._selected_row_values()
@@ -206,7 +213,7 @@ class ApplicationsTab(QWidget):
             return
         self._editing_url = v[COL_URL]
         status = v[COL_STATUS] if v[COL_STATUS] in APP_STATUSES else "saved"
-        self.status_combo.setCurrentText(status)
+        self.status_combo.setCurrentIndex(self.status_combo.findData(status))
         self.notes_edit.clear()
         self.form.show()
 
@@ -222,7 +229,7 @@ class ApplicationsTab(QWidget):
         if not v:
             return
         old_status = v[COL_STATUS]
-        new_status = self.status_combo.currentText()
+        new_status = self.status_combo.currentData()
         notes = self.notes_edit.text().strip()
         db.upsert_application(
             self.db_path,
@@ -241,9 +248,9 @@ class ApplicationsTab(QWidget):
     def _log_change(self, company, title, old_status, new_status, notes):
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         if old_status == new_status:
-            change = _("status {s} (unchanged)").format(s=new_status)
+            change = _("status {s} (unchanged)").format(s=_(new_status))
         else:
-            change = _("{old} → {new}").format(old=old_status, new=new_status)
+            change = _("{old} → {new}").format(old=_(old_status), new=_(new_status))
         line = f"[{stamp}]  {company} — {title}: {change}"
         if notes:
             line += f"  ·  {notes}"
@@ -274,4 +281,10 @@ class ApplicationsTab(QWidget):
         self.form.setTitle(_(" Edit selected "))
         self.save_btn.setText(_("Save"))
         self.cancel_btn.setText(_("Cancel"))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
+        for index in range(self.status_combo.count()):
+            self.status_combo.setItemText(index, _(self.status_combo.itemData(index)))
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, COL_STATUS)
+            if item is not None:
+                item.setText(_(item.data(Qt.UserRole) or item.text()))

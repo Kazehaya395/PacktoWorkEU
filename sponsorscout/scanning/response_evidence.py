@@ -4,8 +4,34 @@ Pure inspection only: no I/O, probes, hostname presets or browser launch. Passiv
 SDK/apply-form CAPTCHA markup is not evidence that a job page is blocked.
 """
 from __future__ import annotations
-import re,json
+import re,json,unicodedata
 from html import unescape
+
+AUTOMATIC_VERIFICATION_PATTERN = (
+    r'performing (?:a )?security verification|security verification (?:is )?in progress|'
+    r'verifying (?:your|the) (?:browser|connection)|website verifies (?:that )?you are not a bot')
+
+
+# Locale phrases describe visible verification, never a company or hostname.
+LOCALIZED_WAIT_TITLE_PATTERN = (
+    r'(?:ci siamo quasi|un momento|solo un momento|espere un momento|'
+    r'einen moment(?: bitte)?|bitte warten|veuillez patienter|un instant|'
+    r'aguarde um momento|um momento|even geduld)')
+LOCALIZED_VERIFICATION_PATTERN = (
+    r'verifica (?:di sicurezza|in corso|di essere (?:un essere )?umano|che tu sia (?:un essere umano|umano))|'
+    r'verificando (?:que eres humano|su navegador)|(?:verifica|comprueba) que eres humano|'
+    r'(?:verificación|comprobación) de seguridad|'
+    r'sicherheitsüberprüfung|überprüfung (?:ihres|deines) browsers|'
+    r'bestätigen sie,? dass sie ein mensch sind|'
+    r'vérification de sécurité|vérifi(?:ez|cation) que vous êtes humain|'
+    r'verificação de segurança|verifique se você é humano|'
+    r'beveiligingscontrole|verifiëren dat u een mens bent|'
+    r'sprawdzanie,? czy jesteś człowiekiem|säkerhetskontroll')
+
+
+def normalized_access_text(value):
+    """NFKC also makes the single Unicode ellipsis comparable to three dots."""
+    return ' '.join(unicodedata.normalize('NFKC', str(value or '')).split()).casefold()
 
 
 def visible_text(html):
@@ -38,7 +64,9 @@ def challenge_reason(html='',*,title='',body='',frame_urls=(),status=0,subject='
     heading=re.search(r'(?is)<h[12]\b[^>]*>(.*?)</h[12]>',clean)
     heading=visible_text(heading[1]) if heading else ''
     text=' '.join(str(body or visible_text(clean)).split())
-    low=text.casefold();title=' '.join(str(title).split()).casefold()
+    low=normalized_access_text(text);title=normalized_access_text(title)
+    try:status=int(status or 0)
+    except (TypeError,ValueError):status=0
     primary=re.split(r'\s*[|]\s*',title,maxsplit=1)[0].strip()
     interstitial=bool(re.fullmatch(
         r'(?:just a moment\.{0,3}|even geduld\.{0,3}|attention required!?|'
@@ -55,8 +83,11 @@ def challenge_reason(html='',*,title='',body='',frame_urls=(),status=0,subject='
     challenge_frame=any(s in frames+' '+iframe_sources for s in
         ('challenges.cloudflare.com','captcha-delivery.com','perimeterx.net','px-cloud.net','/_incapsula_resource'))
     captcha=any(s in widgets for s in ('g-recaptcha','h-captcha','frc-captcha','cf-turnstile','google.com/recaptcha','hcaptcha.com'))
-    foreground=any(prompt.search(visible_text(fragment)) for fragment in re.findall(
-        r'''(?is)<(?:div|section|dialog)\b[^>]*(?:aria-modal\s*=\s*["']true|position\s*:\s*fixed)[^>]*>(.{0,6000}?)</(?:div|section|dialog)>''',clean))
+    foreground_fragments = re.findall(
+        r'''(?is)<(?:div|section|dialog)\b[^>]*(?:aria-modal\s*=\s*["']true|position\s*:\s*fixed)[^>]*>(.{0,6000}?)</(?:div|section|dialog)>''',clean)
+    foreground=any(prompt.search(visible_text(fragment)) for fragment in foreground_fragments)
+    automatic_foreground=any(re.search(AUTOMATIC_VERIFICATION_PATTERN,
+        visible_text(fragment), re.I) for fragment in foreground_fragments)
     json_posting=False;json_wall=False
     if html.lstrip().startswith('{'):
         try:
@@ -78,7 +109,25 @@ def challenge_reason(html='',*,title='',body='',frame_urls=(),status=0,subject='
                   and not real_posting and len(text)<1000
                   and not (heading and not re.search(r'(?i)challenge|verif|checking',heading)
                            and len(text)>=250))
-    wall=json_wall or interstitial or active_id or client_shell or (active_prompt and (captcha or challenge_frame or re.search(r'(?i)press\s+(?:&|and)\s+hold|using automation tools',text))) or (challenge_frame and len(text)<160 and not real_posting)
+    # A short foreground verification document may have no clickable CAPTCHA
+    # and its widget may not have mounted yet. Passive SDKs remain insufficient.
+    automatic_pending = automatic_foreground or (bool(re.search(
+        AUTOMATIC_VERIFICATION_PATTERN, title+' '+heading+' '+low, re.I))
+        and not real_posting and len(text)<1500)
+    localized_title = bool(re.fullmatch(LOCALIZED_WAIT_TITLE_PATTERN+r'[.!…]*', primary))
+    localized_foreground = any(re.search(LOCALIZED_VERIFICATION_PATTERN,
+        normalized_access_text(fragment), re.I) for fragment in
+        (visible_text(value) for value in foreground_fragments))
+    localized_prompt = bool(re.search(LOCALIZED_VERIFICATION_PATTERN,
+        normalized_access_text(heading)+' '+low, re.I))
+    # A translated "one moment" title alone (or passive SDK) is not a wall.
+    # Require current verification evidence on a short non-posting shell, or
+    # an explicit foreground. A stale title on recovered content stays harmless.
+    localized_wall = localized_foreground or (not real_posting and len(text)<1500 and (
+        (localized_title and (localized_prompt or active_id or challenge_frame or captcha
+            or ('cloudflare' in low and status in (401,403,429,503))))
+        or (localized_prompt and status in (401,403,429,503))))
+    wall=localized_wall or automatic_pending or json_wall or interstitial or active_id or client_shell or (active_prompt and (captcha or challenge_frame or re.search(r'(?i)press\s+(?:&|and)\s+hold|using automation tools',text))) or (challenge_frame and len(text)<160 and not real_posting)
     try:status=int(status or 0)
     except (TypeError,ValueError):status=0
     if not wall:
@@ -95,12 +144,16 @@ def challenge_reason(html='',*,title='',body='',frame_urls=(),status=0,subject='
     elif 'captcha-delivery.com' in evidence or 'datadome' in evidence:vendor='DataDome'
     elif 'incapsula' in evidence:vendor='Imperva'
     elif any(s in evidence for s in ('akamai','_abck','bm_sv','edgesuite','aka_sis')):vendor='Akamai'
+    elif localized_wall:vendor='Verification'
+    elif automatic_pending:vendor='Automatic verification'
     elif not re.search(r'(?i)human|captcha|robot|press\s+(?:&|and)\s+hold|checking (?:your|the) browser',title+' '+low):
         return f'HTTP {status} access blocked (human verification not confirmed)' if status else 'Access blocked: access-denied wall (human verification not confirmed)'
     else:vendor='Human verification'
+    pending = ('; automatic verification pending (human action not inferred)' if automatic_pending else
+               '; verification pending (human action not inferred)' if localized_wall else '')
     if str(subject or '').casefold()=='detail':
-        return f'{vendor} challenge page served instead of the job detail text; no job description could be read'
-    return f'{vendor} challenge page served instead of the job list; no listing could be read'
+        return f'{vendor} challenge page served instead of the job detail text; no job description could be read'+pending
+    return f'{vendor} challenge page served instead of the job list; no listing could be read'+pending
 
 
 def response_metadata(html='',*,status=0,transport='HTTP'):
@@ -140,6 +193,8 @@ def listing_block_message(reason) -> str:
     evidence instead of blaming a bot detector.
     """
     reason = str(reason or '').strip()
+    if reason.startswith('verification unresolved:'):
+        return 'listing access blocked: ' + reason
     if is_confirmed_wall(reason):
         return 'blocked by bot protection: ' + reason
     return ('listing access blocked: '
@@ -177,12 +232,12 @@ def listing_continuation(html,observed):
         return f'stated job total {total} exceeds {observed} observed'
     for m in re.finditer(r'(?i)(?:showing|displaying|results?|jobs?|vacancies)\s*[: ]*\d+\s*[-–]\s*\d+\s+(?:of|out of)\s+(\d+)',text):
         if int(m[1])>observed:return f'stated result total {m[1]} exceeds {observed} observed'
-    for m in re.finditer(r'(?i)\b(\d+)\s+(?:jobs?|vacancies|vacatures|open positions|openings)\b',text):
+    for m in re.finditer(r'(?i)\b(\d+)\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference)\b)|vacancies|vacatures|open positions|openings)\b',text):
         if int(m[1])>observed:return f'stated job total {m[1]} exceeds {observed} observed'
     for m in re.finditer(r'(?is)<(?:button|a)\b([^>]*)>(.*?)</(?:button|a)>',html):
         attrs=m[1];label=visible_text(m[2]).casefold()
         if re.search(r'(?i)\bdisabled\b|aria-disabled\s*=\s*["\']true',attrs):continue
-        if re.fullmatch(r'(?i)(?:show|load|see|view)\s+(?:more|all)(?:\s+(?:jobs?|results?|vacancies))?(?:\s*\(\d+\))?|next(?: page)?|volgende|mostra (?:ancora|altro|altri)|carica (?:altro|altri)',label):
+        if re.fullmatch(r'(?i)(?:show|load|see|view)\s+(?:more|all)(?:\s+(?:jobs?|results?|vacancies|positions))?(?:\s*\(\d+\))?|next(?: page)?|volgende|mehr laden|meer laden|mostra (?:ancora|altro|altri)|carica (?:altro|altri)',label):
             return 'enabled pagination/load-more control requires DOM continuation'
     return ''
 
@@ -192,7 +247,30 @@ def stated_job_total(html):
     number=r'(?:\d{1,3}(?:[,. \u00a0]\d{3})+|\d+)'
     match=re.search(r'(?i)(?:showing|displaying|results?|jobs?|vacancies)\s*[: ]*'+number+r'\s*[-–]\s*'+number+r'\s+(?:of|out of)\s+('+number+r')',text)
     if not match:
-        match=re.search(r'(?i)\b('+number+r')\s+(?:jobs?|vacancies|vacatures|open positions|openings)\b',text)
+        match=re.search(r'(?i)\b('+number+r')\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference)\b)|vacancies|vacatures|open positions|openings)\b',text)
+    if not match:
+        match=re.search(r'(?i)\b('+number+r')\s+(?:Möglichkeiten\s+bei\b|Stellenangebote\b|offene\s+Stellen\b)',text)
     if match:return int(re.sub(r'[^0-9]','',match[1]))
     match=re.search(r"""(?i)\bdata-total-(?:jobs|results|count)\s*=\s*["'](\d+)""",str(html or ''))
     return int(match[1]) if match else None
+
+
+def is_plain_http_refusal(reason, status=0):
+    """Only a status-only refusal, never a detected challenge/interstitial.
+
+    Conservative exact wording keeps an explicit wall protected even when its
+    status is also 403/429. No hostname, identity or verification workaround.
+    """
+    return int(status or 0) in (403, 429) and str(reason or '').strip().casefold() == (
+        f'http {int(status)} access blocked (human verification not confirmed)')
+
+
+def timeout_listing_error(html, *, timed_out=False, page_url=''):
+    """Zero extracted cards after timeout is not proof of an empty board."""
+    if not timed_out:
+        return ''
+    web_page = str(page_url or '').lower().startswith(('http://', 'https://'))
+    if web_page and stated_job_total(html) == 0 and not challenge_reason(html):
+        return ''  # A publisher explicitly reported zero vacancies.
+    return ('seed navigation timed out; no readable job listing or explicit '
+            'zero-vacancy result was established; not a verified empty board')

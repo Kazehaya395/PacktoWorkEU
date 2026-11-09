@@ -16,7 +16,7 @@ Guards four bugs:
    one click + Search (no All -> Search detour).
 
 4. Filter option values are ABSOLUTE (English / raw data) in every app
-   language: the sentinel stays "All" (never "Tutti") and Experience
+   language: the sentinel VALUE stays "All" (caption may be "Tutti") and Experience
    values stay "None"/"?"/"mo", so filters keep working after a
    language switch.
 
@@ -193,17 +193,18 @@ def test_italian_locale_keeps_absolute_filter_values(db_path):
         set_locale("it")
         tab = _make_tab(db_path)
         tab.populate_static_filters()
-        # The sentinel is ABSOLUTE: "All" even in Italian, never "Tutti".
+        # Canonical SQL value remains All even when its caption is Tutti.
         for combo in (tab.country_combo, tab.remote_combo,
                       tab.experience_combo):
-            assert combo.itemText(0) == "All"
+            assert combo.itemText(0) == "Tutti"
+            assert combo.itemData(0) == "All"
         tab.run_search()
         # Regression: SQL used to receive 'Tutti' -> zero rows.
         assert tab.table.rowCount() == 2
 
         # Experience values are absolute English in every language...
         options = _combo_values(tab.experience_combo)
-        assert options[0] == "All"
+        assert options[0] == "Tutti"
         assert "4+" in options and "None" in options
         assert "Nessuna" not in options and "mesi" not in options
         column_values = {tab.table.item(r, 4).text()
@@ -229,7 +230,8 @@ def test_language_switch_between_populate_and_search(db_path):
     try:
         set_locale("it")
         tab.retranslate()  # labels switch; combo VALUES stay absolute
-        assert tab.country_combo.itemText(0) == "All"
+        assert tab.country_combo.itemText(0) == "Tutti"
+        assert tab.country_combo.itemData(0) == "All"
         tab.run_search()
         # Regression: the old code compared currentText() against
         # _("All") == "Tutti" and filtered every row away in this state.

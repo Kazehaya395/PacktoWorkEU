@@ -42,6 +42,7 @@ if __name__ == "__main__":
     if _here not in _sys.path:
         _sys.path.insert(0, _here)
 from sponsorscout.core.job_identity import POSTING_CONTEXT_PATTERN
+from sponsorscout.core.job_metadata import load_job_json, header_metadata_locations
 
 progress_cb = None
 def _notify(msg):
@@ -54,6 +55,10 @@ def print(*args, **kwargs):
 # ───────────────────────── JS HELPERS ──────────────────────────
 # Upgraded with high-precision regex matching and robust card scoping to prevent 
 # matching large layout containers and extracting generic page texts.
+from sponsorscout.scanning.career.evidence import CATEGORY_LABELS, category_label, card_metadata_title, generated_family_card, provider_slug
+from sponsorscout.scanning.career.http_schedule import HttpSchedule
+from sponsorscout.scanning.response_evidence import is_plain_http_refusal, timeout_listing_error
+
 JS_HELPERS = r"""
 const querySelectorAllDeep = (selector, root = document) => {
     const out = [];
@@ -137,14 +142,32 @@ const hasJobQuery = (href) => /[?&](job|jobid|job_id|jid|gh_jid|req|reqid|requis
 // and the detail pages under /jobangebote/<slug>, /stellenangebote/<slug>, etc.
 // Never let the listing slug itself pass the generic /jobs/<slug> rule.
 const listingPathRe = /\/(?:jobs?|careers?)\/(?:all[-_]?jobs?|open[-_]?jobs?|open[-_]?positions?|current[-_]?openings?|jobangebote|jobangebot|offene[-_]?jobangebote|offene[-_]?stellen(?:angebote)?|stellenangebote|stellenanzeigen|vacancies|vacature(?:s)?|offres?(?:-d-emploi)?|offres-d-emploi|offerte(?:-di-lavoro)?|offerte-di-lavoro|posizioni-aperte|annunci(?:-di-lavoro)?|ofertas?(?:-de-empleo|-de-trabajo)?|empleos?|puestos?)(?:[/?#]|$)/i;
+// E2a: Teddy's real posting lives in a hash route on the SAME root as the
+// listing. Only its observed numeric ad-detail route escapes self-listing;
+// ads-list, arbitrary hashes and other hosts retain the existing gates.
+const isTeddyDetailRoute = (href) => {
+    try {
+        const u = new URL(href, window.location.href);
+        return u.protocol === 'https:' && u.host === 'www.teddycareers.it'
+            && !u.username && !u.password && u.pathname === '/' && !u.search
+            && /^#\/public-area\/careers\/ad-detail\/[1-9]\d{0,9}$/i.test(u.hash);
+    } catch(e) { return false; }
+};
 const isSelfListingUrl = (href) => {
     const clean = href.split('#')[0].split('?')[0].toLowerCase().replace(/\/$/, '');
     if (/#job=/i.test(href)) return false;
     if (hasJobQuery(href)) return false;
+    if (isTeddyDetailRoute(href)) return false;
     return clean === currentClean;
 };
 const looksJobUrl = (href) => {
     if (!href || !String(href).startsWith('http')) return false;
+    // The observed aggregator card links to an actual provider posting, not
+    // an invented same-origin detail path or an arbitrary external URL.
+    try {
+        const source=new URL(window.location.href),target=new URL(href);
+        if(source.protocol==='https:' && source.hostname==='jobs.workinlithuania.com' && target.protocol==='https:' && /^(?:www\.)?cvbankas\.lt$/.test(target.hostname) && !target.username && !target.password && /^\/[^/]+\/1-[1-9][0-9]{3,}\/?$/.test(target.pathname))return true;
+    } catch(e) {}
     // Trust context-bound job identity before broad /legal or /about exclusions.
     let explicitPosting = false;
     try {
@@ -153,9 +176,13 @@ const looksJobUrl = (href) => {
         const context = seg.slice(0,-1).some(s=>postingContextRe.test(s));
         const queryId = Array.from(u.searchParams).some(([k,v])=>v.trim() && (/^(?:jobid|job_id|gh_jid|reqid|requisitionid|career_job_req_id|postingid|vacancyid)$/i.test(k) || (context && /^(?:id|jid)$/i.test(k))));
         const opaque = seg.slice(1).some(s=>/^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,64})$/i.test(s));
-        explicitPosting = queryId || (context && (opaque || /(?:[-_/])(?:[A-Za-z]{0,3}[-_]?)?\d{4,}(?:\/|$)/.test(u.pathname)));
+        explicitPosting = queryId || (context && (opaque || /(?:^|[-_])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(seg[seg.length-1] || '') || /(?:[-_/])(?:[A-Za-z]{0,3}[-_]?)?\d{4,}(?:\/|$)/.test(u.pathname)));
     } catch(e) {}
     if (explicitPosting && !/facebook|linkedin|twitter|instagram|youtube|mailto:|tel:/i.test(href)) return true;
+    try {
+        const p=new URL(href,window.location.href);
+        if ((!p.pathname.replace(/\//g,'') && !p.search && !p.hash) || /^\/@|\/(?:go\/[^/]+\/\d+|careers?\/[^/]+\/profile|careers?\/jobs_by_[^/]+|lp\/[^/]+\/[^/]+)\/?$/i.test(p.pathname)) return false;
+    } catch(e) {return false;}
     if (badUrlRe.test(href)) return false;
     if (isSelfListingUrl(href)) return false;
     if (listingPathRe.test(href)) return false;
@@ -177,7 +204,7 @@ const firstGoodLine = (text) => {
     for (const line of lines) {
         if (line.length < 4 || line.length > 150) continue;
         if (!/[A-Za-zÀ-ÿ]/.test(line)) continue;
-        if (genericTextRe.test(line)) continue;
+        if (genericTextRe.test(line) || categoryTitle(line)) continue;
         if (uiTextRe.test(line)) continue;
         if (/^[^A-Za-zÀ-ÿ0-9]+$/.test(line)) continue;
         if (roleWordRe.test(line)) return line;
@@ -186,7 +213,7 @@ const firstGoodLine = (text) => {
     for (const line of lines) {
         if (line.length < 4 || line.length > 150) continue;
         if (!/[A-Za-zÀ-ÿ]/.test(line)) continue;
-        if (genericTextRe.test(line)) continue;
+        if (genericTextRe.test(line) || categoryTitle(line)) continue;
         if (uiTextRe.test(line)) continue;
         if (/^[^A-Za-zÀ-ÿ0-9]+$/.test(line)) continue;
         // FIXED: skip lines that are pure locations (e.g. "Emilia-Romagna", "Berlin")
@@ -196,6 +223,17 @@ const firstGoodLine = (text) => {
     }
     return '';
 };
+const categoryLabels = new Set(__CAREER_CATEGORY_LABELS__);
+const categoryTitle = t => categoryLabels.has(cleanText(t).toLowerCase());
+const isTitleMetadataNode = (node, scope) => {
+    // Only metadata INSIDE this card: a category-page ancestor is not
+    // evidence that all its individual role headings are taxonomy.
+    for (let p=node; p && p!==scope; p=p.parentElement) {
+        const attrs = getClassName(p)+' '+(p.getAttribute?.('data-testid') || '');
+        if (/category|sector|industry|job-family/i.test(attrs)) return true;
+    }
+    return false;
+};
 const titleFromScope = (scope) => {
     if (!scope) return '';
     const titleSelectors = [
@@ -203,7 +241,6 @@ const titleFromScope = (scope) => {
         '[data-automation-id="jobTitle"]',
         '[data-ph-at-id="job-title"]',
         '[data-testid*="job-title" i]',
-        '[data-testid*="title" i]',
         '[data-qa*="job-title" i]',
         '[class*="job-title" i]',
         '[class*="jobTitle" i]',
@@ -213,16 +250,17 @@ const titleFromScope = (scope) => {
         '[class*="role-title" i]',
         '[itemprop="title" i]',
         '[data-title]', '[data-job-title]', '[data-position-title]',
-        '[class*="title" i]',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        '[data-testid*="title" i]', '[class*="title" i]',
         'strong', 'b'
     ];
     for (const sel of titleSelectors) {
         const nodes = querySelectorAllDeep(sel, scope);
         for (const n of nodes) {
             if (!isVisible(n)) continue;
-            const t = firstGoodLine(n.innerText || n.textContent || '');
-            if (!t) continue;
+            if (isTitleMetadataNode(n, scope)) continue;
+            const t = firstGoodLine(n.getAttribute?.('data-job-title') || n.getAttribute?.('data-position-title') || n.innerText || n.textContent || '');
+            if (!t || categoryTitle(t)) continue;
             // FIXED: never use a pure location or boilerplate/department text as a title
             if ((locationRe.test(t) && !roleWordRe.test(t))) continue;
             if (badLocationRe.test(t) && !roleWordRe.test(t)) continue;
@@ -382,24 +420,9 @@ const pickJobUrl = (scope) => {
             if (looksJobUrl(full)) return full;
         } catch(e) {}
     }
-    const dataInfo =
-        scope.getAttribute?.('data-info') ||
-        scope.getAttribute?.('data-slug') ||
-        scope.getAttribute?.('data-id') ||
-        scope.getAttribute?.('data-job-id') ||
-        scope.getAttribute?.('data-posting-id');
-    if (dataInfo && dataInfo.length > 3) {
-        try {
-            const base = window.location.href.split('?')[0].split('#')[0].replace(/\/$/, '');
-            if (base.endsWith('/jobs')) {
-                return base + '/' + dataInfo;
-            }
-            if (base.includes('/jobs/')) {
-                return base + '/' + dataInfo;
-            }
-            return base + '/jobs/' + dataInfo;
-        } catch(e) {}
-    }
+    // An arbitrary DOM data-id is not an observed detail URL. Keep a
+    // card identity via the existing evidenced-card fallback, never guess
+    // /jobs/<id> (e.g. SAVE ROLE buttons supplied unrelated DOM IDs).
     const clickable = scope.querySelector?.('[onclick]') || (scope.hasAttribute?.('onclick') ? scope : null);
     if (clickable) {
         const oc = clickable.getAttribute('onclick') || '';
@@ -413,12 +436,23 @@ const pickJobUrl = (scope) => {
     }
     return '';
 };
+const insideLinkedPostingCard = (node) => {
+    let parent = node.parentElement;
+    for (let depth=0; parent && depth<5; depth++, parent=parent.parentElement) {
+        if (['BODY','MAIN'].includes(parent.tagName)) break;
+        const text=cleanText(parent.innerText || '');
+        if (text.length>3000) break;
+        if (parent.matches?.('[data-job-id],[data-jobid],[data-posting-id],article,li,[class*="job-card" i],[class*="job-item" i],[class*="posting" i]')
+                && distinctJobLinkCount(parent)===1 && looksJobUrl(pickJobUrl(parent))) return true;
+    }
+    return false;
+};
 const synthJobUrl = (title, loc) => {
     const titleSlug = cleanText(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 70);
     const locSlug = cleanText(loc || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40);
     return window.location.href.split('?')[0].split('#')[0] + '#job=' + titleSlug + '--' + locSlug;
 };
-""".replace('__POSTING_CONTEXT_PATTERN__', json.dumps(POSTING_CONTEXT_PATTERN))
+""".replace('__POSTING_CONTEXT_PATTERN__', json.dumps(POSTING_CONTEXT_PATTERN)).replace('__CAREER_CATEGORY_LABELS__', json.dumps(sorted(CATEGORY_LABELS)))
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-29: HOST-ADAPTIVE RESOURCE GOVERNOR (low-end laptop safety)
 #
@@ -515,40 +549,19 @@ def _host_free_mb():
     return avail
 from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
 from sponsorscout.core.job_identity import (
-    posting_identity,metadata_title,evergreen_title,explicit_detail_url,
+    posting_identity,metadata_title,evergreen_title,explicit_detail_url,administrative_action,
     merge_sources,merge_job_rows,finalize_job_csvs,read_job_csv,write_job_csv,
 )
-from sponsorscout.scanning.common import completion_status,is_dns_failure,reconcile_scan_artifacts
+from sponsorscout.scanning.common import completion_status,is_dns_failure,is_transient_transport_failure,reconcile_scan_artifacts
 from sponsorscout.scanning.detail_state import DetailRequestState
+from sponsorscout.scanning.progress_events import final_diagnostics
 from sponsorscout.scanning.response_evidence import challenge_reason, http_error_reason, ListingDiagnostic, listing_continuation, stated_job_total, BlockedResponseError, response_metadata, listing_block_message
 from sponsorscout.core.location_evidence import row_geography, apply_row_geography
-# REBASE 2026-10-03 (R3): identical knob to ats_scanner.py so the two
-# scanners still size themselves the same way. common.recommended_workers only
-# ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
-# the one way to raise it, opt-in, hard-capped.
-#
-# MERGE FIX (v0.2.0): the stand-alone local sizer is DELETED. It was a
-# NameError-rescue re-implementation that shadowed the shared one and sized
-# the HTTP pool from stale heuristics (6 fetchers on a 2-core box on top of a
-# Chromium) -- exactly the divergence
-# test_career_scanner_uses_the_shared_worker_sizer pins against. Delegation
-# keeps the R3 knob and makes common the single source of sizing truth,
-# same pattern as ats_scanner.py.
+# One sizing policy for Career, ATS, pipeline and Assisted detail tabs.
+# Environment settings are downward clamps, never a hardware-budget bypass.
 def recommended_workers(kind="browser", requested=None):
-    n = _common_recommended_workers(kind, requested)
-    if kind not in ("browser", "http"):
-        return n
-    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
-                         else "SPONSORSCOUT_HTTP_WORKERS")
-    if not raw:
-        return n
-    try:
-        want = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return n
-    if want < 1:
-        return n
-    return min(want, 8 if kind == "browser" else 24)
+    return _common_recommended_workers(kind, requested)
+
 def describe_host_budget():
     """One-line host summary for the run header (helps users self-diagnose)."""
     cpus = _host_cpu_count()
@@ -628,6 +641,8 @@ def _job_country_from_record(rec):
 class ProductionScannerConfig:
     ACTION_TIMEOUT_MS = 18000
     STABILIZATION_DELAY_SEC = 2.0
+    VERIFICATION_OBSERVE_SEC = 30.0  # Same-page observation only; never solve/reload.
+    ACCESS_READINESS_OBSERVE_SEC = 2.0  # Ambiguous initial HTTP refusal; shares the above deadline.
     MAX_PAGINATION_PAGES = 250  # hard cap; loop also self-terminates earlier (see below)
     # 2026-10-19: 900 -> 1800. The per-company clock must exceed the LIST budget
     # below, or a long board is cut by the company clock first. Work in Austria
@@ -1577,6 +1592,11 @@ class ProductionScannerConfig:
         os.environ.get("SPONSORSCOUT_ASSISTED_HTTP_REPROBE_COOLDOWN_SEC") or 60))
     # P65 / A1: 8 min could not finish 1,228 JDs even at 24 HTTP workers,
     # so the biggest boards would silently keep blank verdicts.
+    # Issue 005 P5: charged to time actually spent INSIDE detail fetches, not to the wall
+    # clock since the first detail was reserved. Counting wall clock let a slow listing
+    # phase spend the whole budget before a board's descriptions started (Hays Germany:
+    # 3 detail requests, 1,896 postings skipped, 1,523 s seed time). See
+    # scanning/detail_state.py allowed()/_charge().
     DETAIL_SCAN_TIME_BUDGET_SEC = max(60, int(
         os.environ.get("SPONSORSCOUT_DETAIL_BUDGET") or 900))
     MAIN_HEARTBEAT_SEC = 30             # main thread prints how many companies are still running
@@ -1601,7 +1621,7 @@ class ProductionScannerConfig:
     #     set SPONSORSCOUT_DETAIL_PER_COMPANY=1000
     #     set SPONSORSCOUT_DETAIL_TOTAL=12000
     # Note the per-company scan is ALSO bounded by
-    # DETAIL_SCAN_TIME_BUDGET_SEC (8 min), which keeps one huge board from
+    # DETAIL_SCAN_TIME_BUDGET_SEC (default 900 s), which keeps one huge board from
     # eating the whole run however high this is set.
     # P65 / A1: 300 would have left GDIT's 1,228 rows (and IC Resources'
     # 970) with sponsorship read from the title only, which is exactly the
@@ -2366,7 +2386,7 @@ def _title_from_url_slug(url):
         segment = re.sub(r'[-_](?:[A-Za-z]{0,3}[-_]?)?\d{4,}$','',segment)
         words = re.sub(r'[^\w]+',' ',segment).strip().casefold()
         after_id = index>0 and bool(_SLUG_ID_SEGMENT_RE.fullmatch(segments[index-1]))
-        if len(words)<3 or len(words.split())>14 or not re.search(r'[^\W\d_]{3}',words):
+        if len(words)<3 or len(words.split())>(40 if after_id else 14) or len(words)>200 or not re.search(r'[^\W\d_]{3}',words):
             continue
         if len(words.split())<2 and not after_id:
             continue
@@ -2804,7 +2824,7 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
         _block=http_error_reason(exc)
         if _block:
             return [], ListingDiagnostic(f"static: access blocked (HTTP {_code}); browser fallback will report what it sees",needs_dom=True,block_reason=_block)
-        return [], f"static: fetch failed ({type(exc).__name__})"
+        return [], f"static: fetch failed ({type(exc).__name__})" + f": {' '.join(str(exc).split())[:350]}"
     if _raw_html_is_bot_challenge(html):
         return [], ListingDiagnostic("static: blocked (bot challenge HTML); browser fallback will report what it sees",needs_dom=True,block_reason=challenge_reason(html))
     # Hydration shell. FIX P28: before handing the company to the browser,
@@ -2896,6 +2916,7 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
     _more = ""
     if _pages >= _STATIC_MAX_PAGES and _static_next_page_url(_page_html, _page_url):
         _more = f"; page cap {_STATIC_MAX_PAGES} reached, board has more pages"
+        return jobs,ListingDiagnostic(f"static HTML: {len(jobs)} ({_pages} page(s){_more}); listing incomplete: observed forward page remains",needs_dom=True,complete=False,expected_total=stated_job_total(html))
     if _interrupted:
         return jobs,ListingDiagnostic(f'static HTML: {len(jobs)} ({_pages} page(s)); listing incomplete: {_interrupted}',needs_dom=True,block_reason=_static_block,complete=False)
     continuation = listing_continuation(_page_html,len(jobs))
@@ -3219,7 +3240,8 @@ def classify_workload(employer_field="", title="", text=""):
         if _WL_PERMANENT_RE.search(src):
             return "Full-time"
     # 2. prose, boilerplate sentences discarded.
-    if _WL_INTERN_RE.search(body):
+    from sponsorscout.core.workload_evidence import internship_role_evidence
+    if internship_role_evidence(body):
         return "Internship"
     part = _wl_declared(body, _WL_PART_RE)
     full = _wl_declared(body, _WL_FULL_RE)
@@ -3400,6 +3422,37 @@ def _is_dns_error(exc: Exception) -> bool:
         "11001",  # Windows: getaddrinfo failed
         "dns", "nameserver", "name resolution",
     ))
+# ── Issue 005 P3: "the machine is offline" must not look like "the board is hostile" ──
+# Run 20261027T231035 recorded 63 career error seeds; 53 of them were
+# net::ERR_INTERNET_DISCONNECTED on the scanning machine, spread over the run's last
+# 79 positions, each burning GOTO_RETRIES attempts plus 2 s and 4 s of backoff to prove
+# the same dead route again. `_offline_streak` counts consecutive no-route seeds; once
+# it passes the limit the scanner stops retrying navigation, and one clear line in each
+# seed's diagnostics says why.
+_OFFLINE_STREAK_LIMIT = 3
+_OFFLINE_MARKERS = ('ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_CHANGED', 'ERR_INTERNET_FAILED',
+                    'ERR_ADDRESS_UNREACHABLE', 'ERR_CONNECTION_TIMED_OUT', 'ERR_NAME_NOT_RESOLVED')
+
+
+def seed_page_failure_text(url, reason="", *, offline=False):
+    """Wording for a seed page that never loaded (Issue 005 C2/P3).
+
+    Run 20261027T231035 wrote 53 seeds as `seed page did not load: <url>` with no reason at
+    all: the machine had lost its route to the internet, each seed had already burned
+    `GOTO_RETRIES` attempts plus 2 s and 4 s of backoff, and the diagnosis a reader needed
+    sat two lines earlier in `diagnostics`, where it never reached the log's `Error` column.
+    So a local outage looked like 53 companies whose careers page will not load.
+    `offline=True` is reserved for the no-route family - a name that failed to resolve is not
+    a portal's bot wall - and the captured reason is carried into both messages.
+    """
+    detail = " ".join(str(reason or "").split())[:150]
+    tail = " [" + detail + "]" if detail else ""
+    if offline:
+        return ("seed page unreachable: no network route from the scanning machine to "
+                + str(url) + tail
+                + "; this is a local connectivity failure, not bot protection")
+    return "seed page did not load: " + str(url) + tail
+
 # ─────────────────────── GAZETTEER (P0-9) ───────────────────────
 # Replaces the hand-maintained ~600-entry city allowlist. Optional dependency:
 # `pip install geonamescache`. If absent the scanner behaves exactly as before.
@@ -4275,8 +4328,14 @@ class CareerPortalScanner:
         self._detail_host_lock = threading.Lock()
         self._error_lock = threading.Lock()
         self._detail_state = DetailRequestState()
+        self._http_schedule = HttpSchedule(total=recommended_workers("http"), per_host=2)
         self._captured_jd_identities = {}
         self._detail_host_failures = {}
+        self._detail_security_failures = {}
+        self._detail_transport_circuits = {}
+        self._detail_http_probe_counts = {}
+        self._detail_browser_failures = {}
+        self._detail_browser_failed_hosts = set()
         self._detail_blocked_hosts = set()
         self._detail_blocked_urls = set()
         self._worker_browsers_tls = threading.local()
@@ -4721,13 +4780,7 @@ class CareerPortalScanner:
     def _company_pool(self):
         """Hardware-aware company concurrency: strict 2-4 on <=4-core / <=8 GB PCs,
         scaling automatically on stronger multi-core / high-RAM systems."""
-        raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS")
-        if raw:
-            try:
-                return min(24, max(1, int(raw)))
-            except ValueError:
-                pass
-        return max(2, recommended_workers("company"))
+        return recommended_workers("company")
 
     @property
     def _current_seed_url(self):
@@ -4767,10 +4820,35 @@ class CareerPortalScanner:
         else:
             tls.embedded_notes = list(val) if val is not None else []
 
-    def store_captured_jd(self, url, text):
+    def _forget_saved_capture(self, url):
+        """Drop only saved-derived aliases; never discard a real current-run read."""
+        identity = posting_identity(url)
+        lock = getattr(self, '_jd_lock', None)
+        if lock is None:
+            return
+        with lock:
+            urls = getattr(self, '_saved_capture_urls', {}).pop(identity, set())
+            if not urls:
+                return
+            urls.add(str(url).strip())
+            marker = getattr(self, '_capture_proofs', {}).get(identity, '')
+            saved_stamps = [(self._detail_state.metadata.get(key) or {}).get('captured_at') for key in urls]
+            if any(stamp and ('jd_captured_at=' + stamp) in marker for stamp in saved_stamps):
+                self._capture_proofs.pop(identity, None)
+            for key in urls:
+                self._captured_jds.pop(key, None)
+            self._captured_jd_identities.pop(identity, None)
+        with self._detail_state.lock:
+            for key in urls:
+                self._detail_state.results.pop(key, None)
+                self._detail_state.metadata.pop(key, None)
+
+    def store_captured_jd(self, url, text, *, authoritative=False):
         """Persist captured full JD text in memory for SQLite ingestion."""
         if not url or not text:
             return
+        if authoritative:
+            self._forget_saved_capture(url)
         cleaned = str(text).strip()
         if not cleaned:
             return
@@ -4789,6 +4867,9 @@ class CareerPortalScanner:
             aliases = getattr(self,'_captured_jd_identities',None)
             if aliases is not None and len(cleaned)>len(aliases.get(identity,'')):
                 aliases[identity] = cleaned
+        if authoritative:
+            from sponsorscout.core.saved_details import remember_capture
+            remember_capture(self, url, text)
 
     def get_captured_jd(self, url):
         if not url:
@@ -4800,7 +4881,50 @@ class CareerPortalScanner:
         with lock:
             exact = store.get(str(url).strip(),'')
             alias = getattr(self,'_captured_jd_identities',{}).get(posting_identity(url),'')
-            return exact if len(exact)>=len(alias) else alias
+            text = exact if len(exact)>=len(alias) else alias
+        from sponsorscout.core.saved_details import capture_proof
+        reader = getattr(self, '_saved_jd_reader', None)
+        saved_urls = getattr(self, '_saved_capture_urls', {}).get(posting_identity(url), set())
+        if (saved_urls and callable(getattr(reader, 'rejects_previous', None))
+                and (reader.rejects_previous(url) or not capture_proof(self,url,text))):
+            self._forget_saved_capture(url)
+            text = ''
+        from sponsorscout.core.saved_details import capture_proof
+        if len(text.strip()) >= self.JD_BROWSER_THIN_CHARS and (reader is None or capture_proof(self,url,text)):
+            return text
+        # Unproven cards/teasers are not a completed JD under the shared policy.
+        if reader is not None:
+            text = ''
+        record = reader.read(url) if callable(getattr(reader, 'read', None)) else None
+        saved = str(record['description']) if record else (reader(url) if callable(reader) else '')
+        if len(saved.strip()) >= self.JD_BROWSER_THIN_CHARS:
+            # Reuse prose, not another browser's clearance or stored verdicts.
+            # No host-health reset and no fabricated current HTTP success.
+            if record and len(saved.strip()) > 32000:
+                from sponsorscout.core.saved_details import remember_capture
+                remember_capture(self,url,saved,captured_at=record['jd_captured_at'])
+                return saved.strip()  # Do not clip a proven saved JD or preload it.
+            if record:
+                with lock:
+                    store[str(url).strip()] = saved.strip()
+                    self._captured_jd_identities[posting_identity(url)] = saved.strip()
+            else:
+                self.store_captured_jd(url, saved)
+            with lock:
+                saved_text = store.get(str(url).strip(), '')
+            if record:
+                from sponsorscout.core.saved_details import remember_capture
+                remember_capture(self,url,saved_text,captured_at=record['jd_captured_at'])
+                with lock:
+                    if not hasattr(self, '_saved_capture_urls'):
+                        self._saved_capture_urls = {}
+                    self._saved_capture_urls.setdefault(posting_identity(url), set()).add(str(url).strip())
+                self._detail_state.put(url, (saved_text, '', ''), metadata={
+                    'titles': [record['title']] if record.get('title') else [],
+                    'listing': False, 'saved_detail': True,
+                    'captured_at': record['jd_captured_at']})
+            return saved_text
+        return text
 
     def _get_or_launch_worker_browser(self):
         """Return a warm thread-local headless Chromium browser for this worker thread.
@@ -4821,10 +4945,19 @@ class CareerPortalScanner:
                     return bro
             except Exception:
                 pass
-            self._retire_worker_browser_entry(entry)
-            tls.entry = None
+            self._close_current_worker_browser()
         pw = sync_playwright().start()
-        bro = pw.chromium.launch(headless=True, args=BROWSER_ARGS)
+        try:
+            bro = pw.chromium.launch(headless=True, args=BROWSER_ARGS)
+        except BaseException:
+            # A failed launch still leaves a started Playwright driver/loop.
+            # Stop it on its owning worker thread before another target reuses
+            # that thread. Do not let cleanup hide the original launch error.
+            try:
+                pw.stop()
+            except BaseException:
+                pass
+            raise
         entry = {"pw": pw, "browser": bro, "uses": 1}
         tls.entry = entry
         lock = getattr(self, "_worker_browsers_lock", None)
@@ -4850,6 +4983,50 @@ class CareerPortalScanner:
                 pw.stop()
         except Exception:
             pass
+
+    def _close_current_worker_browser(self):
+        """Retire Sync Playwright resources on their owning pool thread."""
+        tls = getattr(self, "_worker_browsers_tls", None)
+        entry = getattr(tls, "entry", None) if tls is not None else None
+        if entry is None:
+            return
+        try:
+            self._retire_worker_browser_entry(entry)
+        finally:
+            tls.entry = None
+            with self._worker_browsers_lock:
+                self._worker_browsers_all[:] = [
+                    item for item in self._worker_browsers_all if item is not entry]
+
+    def _finish_worker_pool(self, pool, workers, futures):
+        """Join target writers, close on every owner, then stop pool threads.
+
+        A barrier keeps cleanup tasks on distinct live workers. Submitting N
+        unconstrained callbacks could otherwise run all N on one idle thread,
+        leaving other threads' warm browsers alive. Warm reuse during the scan
+        and existing browser/concurrency/request limits remain unchanged.
+        """
+        import concurrent.futures as cf
+        try:
+            for future in futures:
+                future.cancel()
+            if futures:
+                cf.wait(futures)
+            with self._worker_browsers_lock:
+                have_browsers = bool(self._worker_browsers_all)
+            if have_browsers:
+                barrier = threading.Barrier(workers)
+                def close_on_owner():
+                    try:
+                        barrier.wait(timeout=5)
+                    except threading.BrokenBarrierError:
+                        pass
+                    self._close_current_worker_browser()
+                cleanup = [pool.submit(close_on_owner) for _ in range(workers)]
+                for future in cleanup:
+                    future.result()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
 
     def _close_all_worker_browsers(self):
         lock = getattr(self, "_worker_browsers_lock", None)
@@ -5110,49 +5287,9 @@ class CareerPortalScanner:
         Now: vendor IDs first, then text, then the same sweep across child
         frames, and callers re-invoke it after navigation.
         """
-        selectors = list(self._CMP_SELECTORS) + [
-            # FIX P0-5: Italian cookie-consent verbs (blocking overlays hide
-            # the job list entirely on many .it portals).
-            "button:has-text('Acconsento')",
-            "button:has-text('Accetta e chiudi')",
-            "button:has-text('Accetta tutti i cookie')",
-            "button:has-text('Ho capito')",
-            "button:has-text('Consenti tutti')",
-            "button:has-text('Accetto')",
-            "button:has-text('Accept all')",
-            "button:has-text('Accept All')",
-            "button:has-text('Accept')",
-            "button:has-text('Agree')",
-            "button:has-text('Allow all')",
-            "button:has-text('Allow All')",
-            "button:has-text('Allow')",
-            "button:has-text('Consent')",
-            "button:has-text('Accept All Cookies')",
-            "button:has-text('Allow Cookies')",
-            "button:has-text('Accetta tutti')",
-            "button:has-text('Accetta')",
-            "button:has-text('Alle akzeptieren')",
-            "button:has-text('Akzeptieren')",
-            "button:has-text('Accepteer alles')",
-            "button:has-text('Accepteer')",
-            "button:has-text('Accepter tout')",
-            "button:has-text('Aceptar todo')",
-            "button:has-text('OK')",
-            "button:has-text('Got it')",
-            "button:has-text('I agree')",
-            "button:has-text('I understand')",
-            "button:has-text('Continue')",
-            "#onetrust-accept-btn-handler",
-            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
-            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowallSelection",
-            ".cc-accept",
-            ".cookie-accept",
-            "button[id*='cookie' i]",
-            "button[class*='cookie' i]",
-            "button[id*='accept' i]",
-            "button[class*='accept' i]",
-            "button[data-testid*='accept']",
-        ]
+        # Known CMP actions retain priority. Generic cookie/accept class
+        # substrings are not actions: they can identify settings buttons.
+        selectors = list(self._CMP_SELECTORS) + [".cc-accept", ".cookie-accept"]
         # Text labels are also matched on <a> and role=button, not just
         # <button> — many Italian/German banners use anchors or divs.
         _TEXTS = (
@@ -5167,35 +5304,73 @@ class CareerPortalScanner:
             "Godkänn alla", "Zaakceptuj", "Souhlasím",
             "OK", "Got it", "I understand", "Continue",
         )
+        def _safe_action(btn, known_cmp=False):
+            try:
+                return btn.evaluate(r"""(el, known) => {
+                    // Informational links must never navigate the crawler away
+                    // from its listing, even when styled as consent buttons.
+                    const anchor = el.closest('a[href]');
+                    if (anchor) {
+                        const href = (anchor.getAttribute('href') || '').trim();
+                        if (href && !href.startsWith('#') &&
+                            !/^javascript:\s*(?:void\s*\(\s*0\s*\)|;?)\s*;?$/i.test(href)) return false;
+                    }
+                    const name = (el.innerText || el.textContent ||
+                        el.getAttribute('aria-label') || '').trim();
+                    if (/cookie\s*(?:policy|settings|preferences)|privacy\s*policy|politica\s+sui\s+cookies/i.test(name)) return false;
+                    if (known) return true;
+                    // Generic OK/Continue/Accept controls are meaningful only
+                    // inside a consent UI, not application/search workflows.
+                    for (let node = el; node && node !== document.body &&
+                         node !== document.documentElement; node = node.parentElement) {
+                        const marker = String(node.id || '') + ' ' +
+                            String(node.className || '') + ' ' +
+                            String(node.getAttribute('aria-label') || '');
+                        if (/cookie|consent|gdpr|onetrust|didomi|usercentrics|iubenda|cmp[-_]/i.test(marker)) return true;
+                        if ((node.getAttribute('role') === 'dialog' ||
+                             node.getAttribute('aria-modal') === 'true') &&
+                            /cookie|consent|gdpr/i.test(node.textContent || '')) return true;
+                    }
+                    return false;
+                }""", known_cmp)
+            except Exception:
+                return False
+
+        def _click_first_safe(candidates, known_cmp=False):
+            # Bound candidate inspection, but do not let one hidden/stale
+            # candidate hide the actual visible consent control.
+            for index in range(min(candidates.count(), 12)):
+                btn = candidates.nth(index)
+                try:
+                    if btn.is_visible(timeout=200) and _safe_action(btn, known_cmp):
+                        btn.click(timeout=1000)
+                        return True
+                except Exception:
+                    continue
+            return False
+
         def _sweep(scope):
-            clicked = 0
             for sel in selectors:
                 try:
-                    btn = scope.locator(sel).first
-                    if btn.is_visible(timeout=250):
-                        btn.click(timeout=1000)
-                        clicked += 1
-                        try:
-                            scope.wait_for_timeout(300)
-                        except Exception:
-                            pass
+                    if _click_first_safe(scope.locator(sel), known_cmp=True):
+                        # The DOM may change after dismissal. Never continue a
+                        # stale page-wide sweep into footer/navigation links.
+                        return 1
                 except Exception:
                     continue
             for label in _TEXTS:
+                # Anchored, case-insensitive matching preserves multilingual
+                # labels without matching OK inside coOKie or Accept in a
+                # longer, unrelated action name.
+                exact_label = re.compile(r"^[\W_]*" + r"\s+".join(
+                    re.escape(part) for part in label.split()) + r"[\W_]*$", re.I)
                 for role in ("button", "link"):
                     try:
-                        btn = scope.get_by_role(role, name=label, exact=False).first
-                        if btn.is_visible(timeout=200):
-                            btn.click(timeout=1000)
-                            clicked += 1
-                            try:
-                                scope.wait_for_timeout(300)
-                            except Exception:
-                                pass
-                            break
+                        if _click_first_safe(scope.get_by_role(role, name=exact_label)):
+                            return 1
                     except Exception:
                         continue
-            return clicked
+            return 0
         total = 0
         try:
             total += _sweep(page)
@@ -5396,6 +5571,8 @@ class CareerPortalScanner:
             text = text.replace(bad, good)
         return text
     def has_job_identifier_query(self, url):
+        from sponsorscout.core.job_identity import split_career_posting
+        if split_career_posting(url):return True
         try:
             parsed = urlparse(url)
             q = parsed.query.lower()
@@ -5411,6 +5588,19 @@ class CareerPortalScanner:
             return True
         # Generic id= is identity only on an explicitly job-shaped path (e.g. Coop view-job.php?id=...).
         return bool(re.search(r"(^|&)id=", q, re.I) and re.search(r"job|vacanc|position", path, re.I))
+    @staticmethod
+    def _is_teddy_detail_route(url):
+        """Only the observed Teddy numeric hash route selects a real posting."""
+        try:
+            p = urlparse(url)
+            return (p.scheme.lower() == "https"
+                    and p.netloc.lower() == "www.teddycareers.it"
+                    and p.path in ("", "/") and not p.params and not p.query
+                    and bool(re.fullmatch(
+                        r"/public-area/careers/ad-detail/[1-9][0-9]{0,9}",
+                        p.fragment, re.I)))
+        except ValueError:
+            return False
     def clean_page_identity(self, url):
         p = urlparse(url)
         return f"{p.scheme}://{p.netloc}{p.path}".rstrip("/").lower()
@@ -5421,6 +5611,8 @@ class CareerPortalScanner:
             return False
         if self.has_job_identifier_query(job_url):
             return False
+        if self._is_teddy_detail_route(job_url):
+            return False
         return self.clean_page_identity(job_url) == self.clean_page_identity(seed_url)
     def clean_and_normalize_url(self, url):
         if not url:
@@ -5429,6 +5621,11 @@ class CareerPortalScanner:
         if not url.startswith(("http://", "https://")):
             return ""
         parsed = urlparse(url)
+        from sponsorscout.core.job_identity import split_career_posting
+        if split_career_posting(url):
+            # The observed PID and tenant/filter query select this posting.
+            # Dropping them turns distinct native selections into the board.
+            return urlunparse(parsed._replace(scheme=parsed.scheme.lower(),netloc=parsed.netloc.lower()))
         keep_keys = {
             "job", "jobid", "job_id", "jid", "gh_jid", "req", "reqid",
             "requisition", "requisitionid", "career_job_req_id", "posting",
@@ -5436,13 +5633,33 @@ class CareerPortalScanner:
         }
         if re.search(r"job|vacanc|position", parsed.path, re.I):
             keep_keys.add("id")
+        raw_query = parse_qsl(parsed.query, keep_blank_values=True)
+        # E2a: Allibo's *observed* job-offer link carries tenant/context
+        # fields around ID. Preserve just these bounded, non-secret fields on
+        # this exact detail host/path, in their original order. Never turn
+        # generic tracking parameters into persistent job identity.
+        allibo_detail = (parsed.scheme.lower() == "https"
+                         and parsed.netloc.lower() == "joblink.allibo.com"
+                         and bool(re.fullmatch(r"/ats[0-9]{1,3}/job-offer\.aspx",
+                                               parsed.path, re.I)))
+        context_shapes = {"dm": r"[0-9]{1,20}", "ft": r"[0-9]{1,20}",
+                          "sg": r"[0-9]{1,20}", "ln": r"[A-Za-z]{2,5}"}
+        counts = collections.Counter(k.lower() for k, _ in raw_query) if allibo_detail else {}
+        allibo_detail = (allibo_detail and counts.get("id") == 1
+                         and bool(re.fullmatch(r"[0-9]{1,20}", next(
+                             (v for k, v in raw_query if k.lower() == "id"), ""))))
         kept_query = [
-            (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-            if k.lower() in keep_keys
+            (k, v) for k, v in raw_query
+            if k.lower() in keep_keys or (
+                allibo_detail and counts[k.lower()] == 1
+                and k.lower() in context_shapes
+                and re.fullmatch(context_shapes[k.lower()], v))
         ]
         query = urlencode(kept_query, doseq=True)
         fragment = ""
-        if parsed.fragment and re.search(r"(?:^|/)(?:job|jobs|position|vacancy)[=/]", parsed.fragment, re.I):
+        if self._is_teddy_detail_route(url):
+            fragment = parsed.fragment
+        elif parsed.fragment and re.search(r"(?:^|/)(?:job|jobs|position|vacancy)[=/]", parsed.fragment, re.I):
             fragment = parsed.fragment
         elif parsed.fragment.lower().startswith("job="):
             fragment = parsed.fragment
@@ -5955,7 +6172,11 @@ class CareerPortalScanner:
         core = re.sub(r"\([^)]*\)", " ", v)
         core = re.sub(r"(?i)\b(remote|hybrid|on-?site|telework|"
                       r"work\s+from\s+home)\b", " ", core)
-        core = re.sub(r"\s+", " ", core).strip(" \t,;|-")
+        # Employment badges and remote modifiers are not part of a city.
+        # Preserve Raw Location verbatim; clean only the display candidate.
+        core = re.sub(r"(?i)\b(?:full[ -]?time|part[ -]?time|permanent|contract|internship)\b", " ", core)
+        core = re.sub(r"[•·]", " ", core)
+        core = re.sub(r"\s+", " ", core).strip(" \t,;|&-–—")
         # A title glued to a place ("Franchise Partner - Specialty Foods
         # from Austria, Lower Austria Region") is not a location string;
         # neither is a whole sentence.
@@ -5981,7 +6202,11 @@ class CareerPortalScanner:
             return False
         t = re.sub(r"\s+", " ", title).strip()
         low = t.casefold()
-        if metadata_title(t):
+        if metadata_title(t) or card_metadata_title(t):
+            return False
+        if category_label(t):
+            return False
+        if t.upper().endswith(' HQ') and not self.config.ROLE_WORD_PATTERN.search(t):
             return False
         # Evergreen/pipeline vacancies are intentional accepted postings, not
         # navigation. Require a plausible posting URL; generic join-us chrome
@@ -6093,7 +6318,11 @@ class CareerPortalScanner:
             "expert", "owner", "quality", "officer", "specialist",
             "analyst", "engineer",
         }
-        if low in hard or low in dept or low in generic_single:
+        if low in hard or low in dept:
+            return False
+        # A short role is not a department when bound to an explicit
+        # requisition. Navigation/location checks above still apply.
+        if low in generic_single and not explicit_detail_url(url):
             return False
         if low in self.KNOWN_PLACES or self._norm(low) in self.NORM_KNOWN:
             return False
@@ -6371,7 +6600,8 @@ class CareerPortalScanner:
     def is_valid_job_url(self, url):
         if not url or not url.startswith("http"):
             return False
-        from sponsorscout.core.job_identity import administrative_action
+        from sponsorscout.core.job_identity import administrative_action,source_bound_external_posting
+        if source_bound_external_posting(url,self._current_seed_url):return True
         if administrative_action(url):
             return False
         strong_detail = self.has_job_identifier_query(url) or explicit_detail_url(url)
@@ -8882,6 +9112,7 @@ class CareerPortalScanner:
                     "location_hint": place,
                     "card_context": ctx[:800],
                     "jd_text": _jd_plain(it.get("description") or "")[:20000],
+                    "jd_truncated": len(_jd_plain(it.get("description") or "")) > 20000,
                     "extraction_method": "jobsinnetwork_api",
                 })
             page += 1
@@ -8983,7 +9214,7 @@ class CareerPortalScanner:
     def _fetch_provider_jobs(self, target_row):
         """Provider APIs first. Returns (jobs, diagnostic)."""
         provider = (target_row.get("provider") or "auto").lower()
-        slug = (target_row.get("board_slug") or "").strip()
+        slug = provider_slug(target_row.get("board_slug"), target_row.get("careers_url"), provider)
         # FIX P34: a JobsinNetwork board serves no job links in its HTML, so
         # it must go through the API or it yields nothing usable. Detected by
         # host so `provider=auto` seeds are covered without a seed edit.
@@ -9103,31 +9334,40 @@ class CareerPortalScanner:
                     })
                 return jobs, f"personio API: {len(jobs)}"
             data = json.loads(raw)
+            from sponsorscout.core.saved_details import observed_revision
             if provider == "greenhouse":
                 for it in data.get("jobs") or []:
                     loc = (it.get("location") or {}).get("name") or ""
                     content = re.sub(r"<[^>]+>", " ", it.get("content") or "")
-                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("absolute_url") or "", "location_hint": loc, "card_context": content[:1200], "jd_text": _jd_plain(it.get("content")), "extraction_method": "greenhouse_api"})
+                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("absolute_url") or "", "location_hint": loc, "card_context": content[:1200], "jd_text": _jd_plain(it.get("content")), "listing_revision": observed_revision(it), "extraction_method": "greenhouse_api"})
             elif provider == "ashby":
                 for it in data.get("jobs") or []:
-                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("jobUrl") or it.get("applyUrl") or "", "location_hint": it.get("location") or "", "card_context": " | ".join(filter(None, [it.get("department"), it.get("employmentType"), it.get("workplaceType")])), "jd_text": _jd_plain(it.get("descriptionPlain") or it.get("descriptionHtml")), "extraction_method": "ashby_api"})
+                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("jobUrl") or it.get("applyUrl") or "", "location_hint": it.get("location") or "", "card_context": " | ".join(filter(None, [it.get("department"), it.get("employmentType"), it.get("workplaceType")])), "jd_text": _jd_plain(it.get("descriptionPlain") or it.get("descriptionHtml")), "listing_revision": observed_revision(it), "extraction_method": "ashby_api"})
             elif provider == "lever":
                 for it in data:
                     cats = it.get("categories") or {}
                     loc = cats.get("location") or cats.get("allLocations") or ""
                     if isinstance(loc, list): loc = ", ".join(loc)
-                    jobs.append({"job_title": it.get("text") or "", "job_url": it.get("hostedUrl") or "", "location_hint": str(loc), "card_context": " | ".join(filter(None, [cats.get("team"), cats.get("commitment"), it.get("workplaceType")])), "jd_text": _jd_plain(it.get("descriptionPlain") or it.get("description")), "extraction_method": "lever_api"})
+                    jobs.append({"job_title": it.get("text") or "", "job_url": it.get("hostedUrl") or "", "location_hint": str(loc), "card_context": " | ".join(filter(None, [cats.get("team"), cats.get("commitment"), it.get("workplaceType")])), "jd_text": _jd_plain(it.get("descriptionPlain") or it.get("description")), "listing_revision": observed_revision(it), "extraction_method": "lever_api"})
             elif provider == "recruitee":
                 for it in data.get("offers") or []:
-                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("careers_url") or "", "location_hint": it.get("location") or "", "card_context": it.get("department") or "", "jd_text": _jd_plain(it.get("description") or it.get("requirements")), "extraction_method": "recruitee_api"})
+                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("careers_url") or "", "location_hint": it.get("location") or "", "card_context": it.get("department") or "", "jd_text": _jd_plain(it.get("description") or it.get("requirements")), "listing_revision": observed_revision(it), "extraction_method": "recruitee_api"})
             elif provider == "workable":
                 for it in data.get("jobs") or []:
                     loc = ", ".join(filter(None, [it.get("city") or "", it.get("country") or ""]))
-                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("url") or "", "location_hint": loc, "card_context": " | ".join(filter(None, [it.get("department"), it.get("employment_type")])), "jd_text": _jd_plain(it.get("description")), "extraction_method": "workable_api"})
+                    jobs.append({"job_title": it.get("title") or "", "job_url": it.get("url") or "", "location_hint": loc, "card_context": " | ".join(filter(None, [it.get("department"), it.get("employment_type")])), "jd_text": _jd_plain(it.get("description")), "listing_revision": observed_revision(it), "extraction_method": "workable_api"})
             return jobs, f"{provider} API: {len(jobs)}"
         except Exception as exc:
             return [], f"{provider} API failed: {type(exc).__name__}: {exc}"
     def extract_visible_jobs(self, target):
+        from sponsorscout.core.job_identity import split_career_posting
+        if split_career_posting(str(getattr(target,'url',''))):
+            from sponsorscout.core.split_careers import observed_split_cards
+            # Recognized native split boards must not fall through to invented
+            # #job fragments or stale selected server schema on discovery failure.
+            return [dict(job_title=t,job_url=u,card_context=c,
+                         extraction_method='native_selected_card')
+                    for t,u,c in observed_split_cards(target,cancel_event=self.cancel_event)]
         all_results = []
         seen = set()
         extractors = [
@@ -9446,6 +9686,7 @@ class CareerPortalScanner:
             }
             cards.forEach(card => {
                 if (!card || !isVisible(card) || isBadScope(card)) return;
+                if (distinctJobLinkCount(card) > 1) return; // list container, not a single posting
                 const fullText = cleanText(card.innerText || card.textContent || '');
                 if (fullText.length < 8 || fullText.length > 3000) return;
                 const linkCount = querySelectorAllDeep('a[href]', card).length;
@@ -9473,7 +9714,8 @@ class CareerPortalScanner:
                     // job semantics. The old rule accepted any role-word
                     // inside an <article>, turning news content into fake jobs.
                     if ((hasJobAttr || explicitJobText) && (loc || hasEmploymentSignal)) {
-                        jobUrl = synthJobUrl(title, loc);
+                        if (insideLinkedPostingCard(card)) return;
+                    jobUrl = synthJobUrl(title, loc);
                     }
                 }
                 if (!jobUrl) return;
@@ -9593,6 +9835,7 @@ class CareerPortalScanner:
             ].join(','));
             candidates.forEach(card => {
                 if (!card || !isVisible(card) || isBadScope(card)) return;
+                if (distinctJobLinkCount(card) > 1) return; // list container, not a single posting
                 const text = cleanText(card.innerText || card.textContent || '');
                 if (text.length < 15 || text.length > 2500) return;
                 const title = titleFromScope(card);
@@ -9615,6 +9858,7 @@ class CareerPortalScanner:
                     const hasJobAttr = /(job|position|posting|opening|vacancy|role|requisition|stelle|offerta|offre|vacature)/i.test(attrs);
                     const hasEmploymentSignal = /(full[- ]?time|part[- ]?time|fulltime|parttime|intern|trainee|werkstudent|praktikum|vollzeit|teilzeit|unbefristet|befristet|remote|hybrid|onsite|on-site|tempo pieno|tempo parziale|temps plein|temps partiel|cdi|cdd|vast|tijdelijk)/i.test(text);
                     if (!(hasJobAttr || explicitJobText) || !(loc || hasEmploymentSignal)) return;
+                    if (insideLinkedPostingCard(card)) return;
                     jobUrl = synthJobUrl(title, loc);
                 }
                 const key = (title + '|' + jobUrl + '|' + loc).toLowerCase();
@@ -9667,7 +9911,7 @@ class CareerPortalScanner:
             new_height = target.evaluate("document.body.scrollHeight")
             if new_height <= prev_height:
                 return False
-            for step in [0.5, 1.0]:
+            for step in [0.25, 0.5, 0.75, 1.0]:
                 target.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step})")
                 page.wait_for_timeout(300)
             return target.evaluate("document.body.scrollHeight") > prev_height
@@ -9695,6 +9939,14 @@ class CareerPortalScanner:
     def click_load_more_repeatedly(self, page, target):
         clicks = 0
         for _ in range(self.config.MAX_LOAD_MORE_CLICKS):
+            check_cancelled(self.cancel_event)
+            from sponsorscout.core.blocked_portals import _native_append_advance
+            native = _native_append_advance(target)
+            if native is False:
+                break
+            if native is True:
+                clicks += 1
+                continue
             js = r"""
             () => {
             } """ + JS_HELPERS + r"""
@@ -9800,6 +10052,43 @@ class CareerPortalScanner:
     # FIXED: Added a robust global Next Button Fallback.
     # If standard, structured pagination blocks don't exist, we scan the whole page for visible standalone 
     # button/link elements with 'Next', REL='next', or localized equivalent text, and click them!
+    _PAGINATION_SIGNATURE_JS = r"""() => {
+        const links = Array.from(document.querySelectorAll('a[href]'))
+          .filter(a => /\/(?:jobs?|careers?|vacanc(?:ies|y)?|roles?|positions?|o)\/[^/?#]+/i.test(a.getAttribute('href') || '')
+              && !/^(?:next|previous|prev|back|load more|\d+)$/i.test((a.textContent || '').trim())
+              && !a.closest('nav, [role="navigation"], [class*="paginat" i]'));
+        return JSON.stringify(links.map(a => [a.href, (a.textContent || '').trim().slice(0,200)]));
+    }"""
+
+    def _wait_for_listing_transition(self,page,target,before):
+        """Wait for changed posting links, not merely a changed URL/header.
+
+        Missing/ambiguous signatures retain the old wait and quiet fallback.
+        A changed batch still gets the existing DOM-quiet settling check.
+        The transition wait replaces the original delay; quiet retains its allowance.
+        """
+        if isinstance(before,str) and before and before != '[]':
+            _wait_t0=time.monotonic()
+            try:
+                predicate = """before => {
+                    const signature = (SIGNATURE)();
+                    const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"]'))
+                        .some(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+                    return document.readyState === 'complete' && !busy && signature !== '[]' && signature !== before;
+                }""".replace('SIGNATURE',self._PAGINATION_SIGNATURE_JS)
+                target.wait_for_function(predicate,arg=before,
+                    timeout=self.config.PAGINATION_WAIT_MS)
+                self.wait_for_dom_quiet(page,target,timeout_ms=self.config.DOM_QUIET_MS)
+                return
+            except Exception:
+                # Unsupported API / immediate frame failure must not skip the
+                # old render delay. A real readiness timeout already spent it.
+                _remaining=self.config.PAGINATION_WAIT_MS-(time.monotonic()-_wait_t0)*1000
+                if _remaining>0:page.wait_for_timeout(_remaining)
+        else:
+            page.wait_for_timeout(self.config.PAGINATION_WAIT_MS)
+        self.wait_for_dom_quiet(page,target,timeout_ms=self.config.DOM_QUIET_MS)
+
     def execute_advanced_pagination(self, page, target, current_page_num, seed_query_params=None):
         # FIXED: keep the seed page's filter params (e.g. IKEA orgIds=22908) when
         # following pagination links, so the regional scope isn't lost mid-crawl.
@@ -9954,10 +10243,13 @@ class CareerPortalScanner:
         try:
             import json as _json
             js_fixed = js_fixed.replace("__SEED_PARAMS__", _json.dumps(seed_query_params))
+            try:
+                _before = target.evaluate(self._PAGINATION_SIGNATURE_JS)
+            except Exception:
+                _before = None
             result = target.evaluate(js_fixed, str(current_page_num + 1))
             if result:
-                page.wait_for_timeout(self.config.PAGINATION_WAIT_MS)
-                self.wait_for_dom_quiet(page, target, timeout_ms=self.config.DOM_QUIET_MS)
+                self._wait_for_listing_transition(page,target,_before)
                 return True
         except Exception:
             pass
@@ -10145,19 +10437,39 @@ class CareerPortalScanner:
             os.environ.get('SPONSORSCOUT_LOC_RESOLVE_MAX') or 400)),
             max(0,self.config.MAX_DETAIL_SCAN_PER_COMPANY-budget))
         pending = pending + loc_only[:loc_budget]
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            pending = []
+            loc_budget = 0
+            diagnostics.append('scope re-check: network resolution skipped after cancellation; offline scope decisions retained')
         workers = recommended_workers("http")
+        remaining_time = self._detail_state.remaining_seconds(
+            (pending[0].get('Job URL') or '') if pending else '', self.config)
+        # Unlike enrichment, this pool previously had NO admission deadline,
+        # and submitted hundreds of location tasks even after budget exhaustion.
+        scope_deadline = time.monotonic() + remaining_time if remaining_time is not None else None
         def _resolve(rec):
+            if check_control(self.cancel_event, self.pause_event):
+                return rec, None
             url = rec.get("Job URL") or ""
             if not url.startswith("http") or "#job=" in url.lower():
                 return rec, None
+            previous_stage=getattr(self._tls,'detail_stage','other')
+            previous_deadline=getattr(self._tls,'detail_deadline',None)
+            self._tls.detail_stage='scope_http'
+            self._tls.detail_deadline=scope_deadline
             try:
                 # FIX P53: HTTP only in the pool -- see _browser_sweep below.
                 return rec, self._detail_location_from_url(
                     url, allow_browser=False)
             except Exception:
                 return rec, None
+            finally:
+                self._tls.detail_stage=previous_stage
+                self._tls.detail_deadline=previous_deadline
         def _browser_sweep(unresolved):
             out = {}
+            if check_control(self.cancel_event, self.pause_event):
+                return out
             cap = min(max(0,int(os.environ.get('SPONSORSCOUT_SCOPE_BROWSER_MAX') or 150)),
                       self.config.DETAIL_BROWSER_FALLBACK_PER_COMPANY)
             unresolved = [rec for rec in unresolved if self._detail_can_browser(rec.get('Job URL') or '')][:cap]
@@ -10182,13 +10494,41 @@ class CareerPortalScanner:
             return out
         recovered = 0
         _static_done, _needs_browser = [], []
+        _scope_http_t0=time.monotonic()
         with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            for rec, res in ex.map(_resolve, pending):
-                if res:
-                    _static_done.append((rec, res))
-                else:
-                    _needs_browser.append(rec)
+            todo = iter(pending)
+            futures = set()
+            def submit_next():
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    return False
+                if scope_deadline is not None and time.monotonic() >= scope_deadline:
+                    return False
+                try:
+                    rec = next(todo)
+                except StopIteration:
+                    return False
+                futures.add(ex.submit(_resolve, rec))
+                return True
+            for _ in range(workers):
+                if not submit_next(): break
+            while futures:
+                completed, _ = _cf.wait(futures, return_when=_cf.FIRST_COMPLETED)
+                for future in completed:
+                    futures.remove(future)
+                    rec, res = future.result()
+                    if res:
+                        _static_done.append((rec, res))
+                    else:
+                        _needs_browser.append(rec)
+                    submit_next()
+            # Unsubmitted records remain in the offline verdict pass below;
+            # they are never marked fetched/readable or dropped from the census.
+
+        _scope_http_seconds=time.monotonic()-_scope_http_t0
+        _scope_browser_t0=time.monotonic()
         _swept = _browser_sweep(_needs_browser)
+        _scope_browser_seconds=time.monotonic()-_scope_browser_t0
+        _scope_decisions_t0=time.monotonic()
         _results = _static_done + [(r, _swept.get(id(r)))
                                    for r in _needs_browser]
         if _results:
@@ -10353,13 +10693,18 @@ class CareerPortalScanner:
             stats["rejected_scope"] += 1
             dropped += 1
         diagnostics.append(
-            f"scope re-check: {len(pending)} unproven row(s) fetched "
+            f"scope re-check: {len(pending)} unproven row(s) considered "
             f"({loc_budget} for location only, P35), "
             f"{recovered} location(s) recovered, {dropped} quarantined")
         if _kept_unscoped:
             diagnostics.append(
                 f"P64: {_kept_unscoped} row(s) kept that the old country "
                 f"filter would have discarded")
+        diagnostics.append('scope phase seconds: '+json.dumps({
+            'http_pool':round(_scope_http_seconds,3),
+            'browser_sweep_including_wait':round(_scope_browser_seconds,3),
+            'decisions':round(time.monotonic()-_scope_decisions_t0,3)},sort_keys=True))
+
     def _detail_enrich_one(self,page,url,company_jobs,browser_timeout_ms=None) -> str:
         self._detail_state.register(url,getattr(self._tls,'detail_scope',''))
         with self._detail_state.gate(url):
@@ -10384,11 +10729,14 @@ class CareerPortalScanner:
                 _timeout = int(browser_timeout_ms or self.config.DETAIL_SCAN_TIMEOUT_MS)
                 _dresp = page.goto(url,wait_until="domcontentloaded",timeout=_timeout)
                 page._last_nav_status = _dresp.status if _dresp is not None else 0
+                if page._last_nav_status == 429:
+                    headers = getattr(_dresp, 'headers', {}) or {}
+                    self._http_schedule.defer(url, headers.get('retry-after') or headers.get('Retry-After'))
                 page.wait_for_timeout(500)
-                _block = self._bot_challenge_reason(page,subject='detail')
+                _block = self._observe_detail_access(page,url)
                 if _block:
-                    self._note_detail_failure(url, _block, blocked=True,transport='browser',status=page._last_nav_status)
-                    return "bot_blocked"
+                    self._note_detail_failure(url, _block, blocked=True,transport='browser',status=page._last_nav_status,title=str((getattr(page,'_ss_current_detail_snapshot',None)or{}).get('title')or''))
+                    return "access_refused" if is_plain_http_refusal(_block, page._last_nav_status) else "bot_blocked"
                 # NOTE: raw string — the JS below contains regex/string escapes
                 # (\s, \n). In a non-raw Python literal \n would be turned into a
                 # REAL newline inside a single-quoted JS string literal, which is a
@@ -10450,7 +10798,7 @@ class CareerPortalScanner:
                     return out;
                 }""") or {}
             except Exception as exc:
-                self._note_detail_failure(url,f'browser detail failed ({type(exc).__name__})')
+                self._note_detail_failure(url,f'browser detail failed ({type(exc).__name__})', transport='browser')
                 print(f"      detail failed {url}: {type(exc).__name__}: {exc}")
                 return "network_fail" if self._is_network_error(exc) else "other_fail"
         desc=(data.get("desc") or "").strip()
@@ -10462,7 +10810,7 @@ class CareerPortalScanner:
         self._detail_state.put(url,(desc,data.get('loc') or '', ''))
         if len(desc) >= self.JD_BROWSER_THIN_CHARS:
             rec["_jd_complete"] = True
-        self._note_detail_success(url)
+            self._note_detail_success(url)
         sup=self.detector.detect(
             desc, self._other_company_names(rec.get("Company Name") or ""))
         visa=sup["visa"]["verdict"]
@@ -10596,12 +10944,17 @@ class CareerPortalScanner:
                 0 if weak_verdict else 1,
                 0 if weak_evidence else 1,
                 0 if weak_experience else 1)
+    def _repeat_detail_priority(self, rec):
+        reader = getattr(self, '_saved_jd_reader', None)
+        priority = reader.priority(rec.get('Job URL','')) if callable(getattr(reader,'priority',None)) else 0
+        return (priority,) + self._detail_priority(rec)
+
     def _needs_browser_detail(self, rec):
         """Unknown after a complete JD is a valid result, not a fetch failure."""
         url = rec.get("Job URL") or ""
         return (not rec.get("_jd_complete")
                 and len(self.get_captured_jd(url)) < self.JD_BROWSER_THIN_CHARS
-                and not self._detail_host_unavailable(url)
+                and not self._detail_host_unavailable(url, browser=True)
                 and not self._detail_url_blocked(url)
                 and not str(rec.get("Support Evidence") or "").strip()
                 and str(rec.get("Visa Sponsorship") or "").strip().lower() in ("", "unknown"))
@@ -10618,6 +10971,9 @@ class CareerPortalScanner:
         """
         if not self.detail_scan or not company_jobs:
             return
+        _reporter = getattr(self, '_progress_reporter', None)
+        if _reporter:
+            _reporter.stage(getattr(self._tls, 'progress_key', None), 'details')
         rows = [r for r in company_jobs.values() if not r.get("_jd_complete")]
         if not rows:
             return
@@ -10648,7 +11004,7 @@ class CareerPortalScanner:
         # Weak-evidence rows first: the per-company cap is spent where a visit
         # can actually change a verdict/location (stable sort keeps crawl
         # order within equal priority).
-        ordered.sort(key=lambda _p: self._detail_priority(_p[1]))
+        ordered.sort(key=lambda _p: self._repeat_detail_priority(_p[1]))
         _cap=self.config.MAX_DETAIL_SCAN_PER_COMPANY
         urls=[u for u, _ in ordered[:_cap]]
         _browser_cap = max(0, int(getattr(self.config, "DETAIL_BROWSER_FALLBACK_PER_COMPANY", 12)))
@@ -10679,10 +11035,13 @@ class CareerPortalScanner:
                 break
             self._last_activity=time.monotonic()
             host = urlparse(url).netloc.lower()
+            if self._http_schedule.is_cooling(url):
+                self._detail_state.count(url, 'rate_limit_deferred')
+                continue  # Retry-After also applies to the caller-owned browser path.
             # FIX W2-6: skipped URLs used to consume the global detail budget
             # before they were skipped, so a dead host could burn thousands of
             # the 5,000 allowance and silently starve later companies.
-            if (host in tripped_hosts or self._detail_host_unavailable(url)
+            if (host in tripped_hosts or self._detail_host_unavailable(url, browser=True)
                     or self._detail_url_blocked(url)):
                 continue
             if _is_download_url(url):
@@ -10764,7 +11123,7 @@ class CareerPortalScanner:
             html, re.DOTALL | re.IGNORECASE,
         ):
             try:
-                data = json.loads(m.group(1))
+                data = load_job_json(m.group(1))
             except Exception:
                 continue
             # FIX P63 (2026-10-08): `data.get("@graph")` returns None for a
@@ -10871,6 +11230,21 @@ class CareerPortalScanner:
         `subject='detail'` keeps a job-detail wall from being reported as a
         listing failure: the wording here is what the Assisted queue reads.
         """
+        if subject == 'detail':
+            from sponsorscout.core.browser_evidence import inspect_page,public_snapshot
+            snapshot=inspect_page(page,kind='detail',status=getattr(page,'_last_nav_status',0),validator=self.is_valid_job_url)
+            page._ss_current_detail_snapshot=snapshot
+            if snapshot is not None:
+                # Current visible primary/foreground evidence, shared with
+                # Assisted. A stale navigation status/title is not an active wall.
+                if snapshot.get('reason') or getattr(page,'_last_nav_status',0) in (401,403,429):
+                    with self._detail_host_lock:
+                        store=getattr(self,'_detail_browser_snapshots',None)
+                        if store is None:self._detail_browser_snapshots=store={}
+                        key=posting_identity(str(getattr(page,'url','')))
+                        store[key]=public_snapshot(snapshot)
+                        while len(store)>64:store.pop(next(iter(store)))
+                return str(snapshot.get('reason')or'')
         try:
             html=page.content() or ''
             title=page.title() or ''
@@ -10883,6 +11257,81 @@ class CareerPortalScanner:
                                     subject=subject)
         except Exception:
             return ''
+    def _observe_detail_access(self,page,url):
+        """Bounded passive observation only: no reload, click or new request.
+
+        Use the existing readiness budget and existing detail deadline. An
+        unresolved foreground wall keeps its original host-breaker semantics.
+        """
+        check_cancelled(self.cancel_event)
+        reason=self._bot_challenge_reason(page,subject='detail')
+        status=int(getattr(page,'_last_nav_status',0)or 0)
+        if status==429:
+            return reason or challenge_reason('',status=429,subject='detail')
+        now=time.monotonic()
+        budget=max(0,float(getattr(self.config,'ACCESS_READINESS_OBSERVE_SEC',2.0)))
+        remaining=self._detail_state.remaining_seconds(url,self.config)
+        if remaining is not None:budget=min(budget,remaining)
+        deadline=min(now+budget,getattr(self._tls,'detail_deadline',None)or float('inf'))
+        while reason and getattr(page,'_ss_current_detail_snapshot',None) is not None and time.monotonic()<deadline:
+            check_cancelled(self.cancel_event)
+            page.wait_for_timeout(max(1,min(200,int((deadline-time.monotonic())*1000))))
+            check_cancelled(self.cancel_event)
+            reason=self._bot_challenge_reason(page,subject='detail')
+        check_cancelled(self.cancel_event)
+        if not reason:
+            final=str(getattr(page,'url',''))
+            if final.startswith(('http://','https://')) and posting_identity(final)!=posting_identity(url):
+                raise ValueError('detail redirected to a different posting; identity unproven')
+        return reason
+
+    def _verification_snapshot(self, page, phase, state):
+        from sponsorscout.scanning.access_readiness import verification_snapshot
+        return verification_snapshot(page, phase, state)
+
+    def _observe_seed_verification(self, page, reason, diagnostics, started, state):
+        """Shared bounded readiness; successful clearance only permits extraction."""
+        from sponsorscout.scanning.access_readiness import observe_verification
+        return observe_verification(
+            page, reason, diagnostics, started, state,
+            max_company_seconds=self.config.MAX_COMPANY_TIME_SEC,
+            verification_seconds=self.config.VERIFICATION_OBSERVE_SEC,
+            readiness_seconds=getattr(self.config, 'ACCESS_READINESS_OBSERVE_SEC', 2.0),
+            cancel_event=self.cancel_event, monotonic=time.monotonic,
+            snapshot=self._verification_snapshot)
+
+    @staticmethod
+    def _served_listing_error(page):
+        """A zero-job page's explicit server failure, never a posting verdict.
+
+        A served 5xx (or the narrow temporary-error document observed on
+        Unieuro Sede) cannot certify a board with zero vacancies. Only call
+        this after the ordinary extractors found no jobs; a readable listing
+        is not thrown away because an intermediate response had a bad status.
+        Active 401/403/429 walls are classified by the existing wall path.
+        """
+        try:
+            status = int(getattr(page, "_last_nav_status", 0) or 0)
+        except (TypeError, ValueError):
+            status = 0
+        if 500 <= status <= 599:
+            return f"HTTP {status} server error; no job listing could be read"
+        if status in (401, 403, 429):
+            return ""
+        try:
+            # Read at most the first 1,000 *visible* characters; never retain
+            # page HTML, cookies, headers, tokens or an unrelated job JD.
+            body = str(page.evaluate(
+                "() => (document.body?.innerText || '').slice(0, 1000)") or "")[:1000]
+        except Exception:
+            return ""
+        if (len(body) <= 700
+                and re.search(r"(?im)^\s*Error:\s*Server Error\s*$", body)
+                and re.search(r"(?i)the server encountered a temporary error "
+                              r"and could not complete your request", body)):
+            return "temporary server error page; no job listing could be read"
+        return ""
+
     def _page_looks_like_listing(self, html, page_url):
         """FIX 8t: a category page LINKS to jobs; a job page carries an
         apply affordance. Three-plus same-host job-shaped anchors and no
@@ -10960,6 +11409,8 @@ class CareerPortalScanner:
         """
         if not url or not url.startswith("http"):
             return ""
+        if check_control(self.cancel_event, self.pause_event) or "#job=" in url.lower():
+            return ""
         cached_metadata = self._detail_state.get_metadata(url)
         if cached_metadata is None:
             cap = max(0,int(os.environ.get('SPONSORSCOUT_TITLE_RESCUE_MAX') or 200))
@@ -10990,6 +11441,7 @@ class CareerPortalScanner:
         return ""
 
     def _remember_detail_html(self,url,html,transport="parsed response",status=0):
+        _parse_t0 = time.monotonic()
         result = self._parse_detail_html(html)
         listing = self._page_looks_like_listing(html,url) and not re.search(r'(?i)[\"\']JobPosting[\"\']',html)
         if listing:
@@ -11023,6 +11475,15 @@ class CareerPortalScanner:
         self._detail_state.observe(url,result[0],reason='detail URL returned a listing, not a posting' if listing else '',
             transport=transport,status=status,title=re.sub('<[^>]+>',' ',str(cands[0] if cands else '')))
 
+        if result[0] and not listing:
+            from sponsorscout.core.session_details import parse_detail
+            from sponsorscout.core.saved_details import remember_capture
+            proven = parse_detail(html,url,url,self)
+            if proven.status == 'readable' and normalize_jd_text(result[0]) == proven.text:
+                remember_capture(self,url,result[0])
+        if getattr(self, '_http_schedule', None) is not None:
+            self._http_schedule.note('generic_parse_seconds', time.monotonic()-_parse_t0,
+                scope=self._detail_state.owner(url),phase=getattr(self._tls,'detail_stage','other'))
         return result
     def _explicit_country_name(self, location):
         """The RIGHTMOST explicitly named country in a string, else "".
@@ -11234,17 +11695,25 @@ class CareerPortalScanner:
         """Location consumes the same saved text/cache/breaker/quota as a JD."""
         if _is_download_url(url):
             return None
+        _local_t0=time.monotonic()
         captured = self.get_captured_jd(url)
         location = self._saved_detail_location(captured)
+        self._http_schedule.note('location_saved_parse_seconds',time.monotonic()-_local_t0,
+            scope=self._detail_state.owner(url),phase=getattr(self._tls,'detail_stage','other'))
         if location:
             self._detail_state.count(url,'reused')
             return location,'detail'
         result = self._fetch_jd_text(url,timeout_ms,allow_browser=False)
-        for value in (result[1] if result else '',self._saved_detail_location(result[0] if result else '')):
-            if value:
-                parsed = self.extract_location(value)
-                if parsed not in ('Unknown','Not Specified',''):
-                    return parsed,'detail'
+        _local_t0=time.monotonic()
+        try:
+            for value in (result[1] if result else '',self._saved_detail_location(result[0] if result else '')):
+                if value:
+                    parsed = self.extract_location(value)
+                    if parsed not in ('Unknown','Not Specified',''):
+                        return parsed,'detail'
+        finally:
+            self._http_schedule.note('location_result_parse_seconds',time.monotonic()-_local_t0,
+                scope=self._detail_state.owner(url),phase=getattr(self._tls,'detail_stage','other'))
         if allow_browser and self._detail_can_browser(url):
             rendered = self._fetch_jd_text_browser(url,timeout_ms,browser_page=browser_page)
             if rendered:
@@ -11299,13 +11768,47 @@ class CareerPortalScanner:
                     print(f"      ...{checked}/{len(targets)} checked, {done} recovered", flush=True)
         print(f"   Detail enrichment done: {done}/{len(targets)} locations recovered")
         return done
-    def _detail_host_unavailable(self, url):
+    def _detail_host_unavailable(self, url, *, browser=False):
+        """Security walls stop both transports; HTTP cooldowns do not deny browsers.
+
+        Transport recovery is bounded and observational here: callers that
+        actually send HTTP must atomically claim the half-open probe below.
+        """
         host = (urlparse(url).hostname or "").lower()
         lock = getattr(self, "_detail_host_lock", None)
         if lock is None:
             return False
         with lock:
-            return host in self._detail_blocked_hosts
+            if host in self._detail_blocked_hosts:
+                return True
+            if browser:
+                return host in self._detail_browser_failed_hosts
+            circuit = self._detail_transport_circuits.get(host)
+            return bool(circuit and (time.monotonic() < circuit['until']
+                        or circuit['probing'] or circuit['probes'] >= 2))
+
+    def _claim_detail_http_probe(self, url):
+        host = (urlparse(url).hostname or "").lower()
+        with self._detail_host_lock:
+            if host in self._detail_blocked_hosts:
+                return False
+            circuit = self._detail_transport_circuits.get(host)
+            if circuit is None:
+                return True
+            if time.monotonic() < circuit['until'] or circuit['probing'] or circuit['probes'] >= 2:
+                return False
+            circuit['probing'] = True
+            circuit['probes'] = self._detail_http_probe_counts.get(host, 0) + 1
+            self._detail_http_probe_counts[host] = circuit['probes']
+            self._detail_state.count(url, 'http_recovery_probe')
+            return True
+
+    def _release_detail_http_probe(self, url):
+        host = (urlparse(url).hostname or "").lower()
+        with self._detail_host_lock:
+            circuit = self._detail_transport_circuits.get(host)
+            if circuit is not None:
+                circuit['probing'] = False
 
     def _detail_url_blocked(self, url):
         lock = getattr(self, "_detail_host_lock", None)
@@ -11314,35 +11817,59 @@ class CareerPortalScanner:
         with lock:
             return url in self._detail_blocked_urls
 
-    def _note_detail_failure(self, url, reason, blocked=False,**evidence):
-        """Two failed detail requests open the host breaker for this run.
+    def _note_detail_failure(self, url, reason, blocked=False, **evidence):
+        """Separate per-posting failures, security walls and transport health.
 
-        A first confirmed block also prevents that URL's browser fallback.
-        Already captured JDs are still usable even when a host is unavailable.
+        Two transient HTTP failures pause HTTP for 30 seconds, with at most
+        two serialized recovery probes per host/run. No waiting or extra
+        worker is created. Existing browser quotas and security guards apply.
         """
-        self._detail_state.failure(url,blocked=blocked,reason=reason,**evidence)
+        self._detail_state.failure(url, blocked=blocked, reason=reason, **evidence)
+        reader = getattr(self, '_saved_jd_reader', None)
+        if callable(getattr(reader, 'note_outcome', None)):
+            reader.note_outcome(url, 'blocked' if blocked else 'failed')
         host = (urlparse(url).hostname or "").lower()
         lock = getattr(self, "_detail_host_lock", None)
         if lock is None or not host:
             return
-        opened = False
+        status = int(evidence.get('status', 0) or 0)
         with lock:
-            if blocked:
+            plain_refusal = blocked and is_plain_http_refusal(reason, status)
+            if blocked and not plain_refusal:
                 self._detail_blocked_urls.add(url)
-            self._detail_host_failures[host] = self._detail_host_failures.get(host, 0) + 1
-            if self._detail_host_failures[host] >= 2 and host not in self._detail_blocked_hosts:
-                self._detail_blocked_hosts.add(host)
-                opened = True
-        if opened:
-            print(f"   [detail] {host}: {reason}; skipping remaining detail requests for this host")
+                n = self._detail_security_failures.get(host, 0) + 1
+                self._detail_security_failures[host] = n
+                if n >= 2:
+                    self._detail_blocked_hosts.add(host)
+            elif str(evidence.get('transport') or '').casefold() == 'browser':
+                n = self._detail_browser_failures.get(host, 0) + 1
+                self._detail_browser_failures[host] = n
+                if n >= 2:
+                    self._detail_browser_failed_hosts.add(host)
+            elif not (400 <= status < 500) or (plain_refusal and status == 403):
+                # A missing/expired posting is not evidence of a dead hostname.
+                n = self._detail_host_failures.get(host, 0) + 1
+                self._detail_host_failures[host] = n
+                if n >= 2:
+                    circuit = self._detail_transport_circuits.setdefault(host,
+                        dict(until=0.0, probes=self._detail_http_probe_counts.get(host, 0), probing=False))
+                    circuit['until'] = time.monotonic() + 30.0
+                    circuit['probing'] = False
+
+    def _note_detail_http_success(self, url):
+        host = (urlparse(url).hostname or "").lower()
+        with self._detail_host_lock:
+            self._detail_host_failures.pop(host, None)
+            self._detail_transport_circuits.pop(host, None)
 
     def _note_detail_success(self, url):
-        lock = getattr(self, "_detail_host_lock", None)
-        if lock is not None:
-            with lock:
-                self._detail_host_failures.pop((urlparse(url).hostname or "").lower(), None)
+        self._note_detail_http_success(url)
+        host = (urlparse(url).hostname or "").lower()
+        with self._detail_host_lock:
+            self._detail_browser_failures.pop(host, None)
+            self._detail_browser_failed_hosts.discard(host)
 
-    def _fetch_jd_text(self,url,timeout_ms=15000,allow_browser=True,need_metadata=False):
+    def _fetch_jd_text(self,url,timeout_ms=15000,allow_browser=True,need_metadata=False,_retry_rate_limit=False):
         """One shared cached detail read for every enrichment consumer."""
         if _is_download_url(url):
             return '','',''
@@ -11355,40 +11882,95 @@ class CareerPortalScanner:
             metadata_missing = need_metadata and state.get_metadata(url) is None
             if captured and len(captured)>=self.JD_BROWSER_THIN_CHARS and not metadata_missing:
                 state.count(url,'reused')
-                return captured,(cached[1] if cached else ''),(cached[2] if cached else '')
-            if cached is None:
+                location = (cached[1] if cached else '') or self._saved_detail_location(captured)
+                return captured, location, (cached[2] if cached else '')
+            if cached is None and getattr(self, '_saved_jd_reader', None) is None:
+                # This legacy disk cache has no capture-hash/revision proof.
+                # A policy miss must not silently bypass24h/changed/force rules.
                 cached = _jd_cache().get(url)
                 if cached is not None:
                     state.put(url,cached)
-            if metadata_missing:
-                cached = None  # full saved JD is not a cached HTML title
+            if metadata_missing or _retry_rate_limit:
+                cached = None  # A bounded 429 retry must not reuse its failure cache.
+            actual_read = cached is None
             if cached is not None:
                 state.count(url,'reused')
                 result = cached
             else:
-                if self._detail_host_unavailable(url) or self._detail_url_blocked(url):
+                if self._detail_host_unavailable(url):
+                    state.count(url, 'host_breaker_deferred')
+                    if allow_browser and self._detail_can_browser(url):
+                        return self._fetch_jd_text_browser(url, timeout_ms) or ('', '', '')
+                    return '', '', ''
+                if self._detail_url_blocked(url):
                     state.count(url,'blocked')
                     return '','',''
-                if not state.reserve(url,self.config):
-                    return '','',''
-                self._detail_count = state.total
-                result = self._fetch_jd_text_uncached(url) or ('','','')
+                # Do not queue exhausted work behind another company's long reads.
+                if not state.allowed(url, self.config, retry=_retry_rate_limit):
+                    return '', '', ''
+                remaining_time = state.remaining_seconds(url, self.config)
+                admission_deadline = getattr(self._tls, 'detail_deadline', None)
+                if remaining_time is not None:
+                    budget_deadline = time.monotonic() + remaining_time
+                    admission_deadline = min(admission_deadline, budget_deadline) if admission_deadline is not None else budget_deadline
+                with self._http_schedule.slot(url, self.cancel_event, self.pause_event,
+                        admission_deadline,
+                        blocked=lambda: self._detail_host_unavailable(url) or self._detail_url_blocked(url),
+                        scope=state.owner(url),phase=getattr(self._tls,'detail_stage','other'),
+                        wait_cooldown=True) as admitted:
+                    check_cancelled(self.cancel_event)
+                    if not admitted:
+                        state.count(url,'host_breaker_deferred' if self._detail_host_unavailable(url)
+                                    or self._detail_url_blocked(url) else 'http_cooldown_deferred'
+                                    if self._http_schedule.is_cooling(url) else 'queue_deadline_skipped')
+                        return '','',''
+                    if self._detail_host_unavailable(url) or self._detail_url_blocked(url):
+                        state.count(url,'host_breaker_deferred')
+                        return '','',''
+                    # Reserve after admission so queue time isn't billed as
+                    # time spent reading a JD. Recheck the shared request cap.
+                    if not self._claim_detail_http_probe(url):
+                        state.count(url, 'host_breaker_deferred')
+                        return '', '', ''
+                    try:
+                        if not state.reserve(url,self.config,retry=_retry_rate_limit):
+                            return '', '', ''
+                        self._detail_count = state.total
+                        result = self._fetch_jd_text_uncached(url) or ('', '', '')
+                    finally:
+                        self._release_detail_http_probe(url)
                 state.put(url,result)
                 if need_metadata and state.get_metadata(url) is None:
                     state.put(url,result,metadata={'titles':[],'listing':False})
                 state.count(url,'fetched')
+            failure = state.outcomes.get(url, {})
+            if (not _retry_rate_limit and url not in state.http_retried
+                    and failure.get('http_status') == 429
+                    and str(failure.get('transport') or '').casefold() == 'http'
+                    and is_plain_http_refusal(failure.get('reason'), 429)):
+                # One ordinary HTTP retry, AFTER server cooldown and outside
+                # the held HTTP slot. All original request/time caps apply.
+                return self._fetch_jd_text(url, timeout_ms, allow_browser, need_metadata,
+                                           _retry_rate_limit=True)
             if allow_browser and len(result[0] or '')<self.JD_BROWSER_THIN_CHARS and self._detail_can_browser(url):
                 rendered = self._fetch_jd_text_browser(url,timeout_ms)
                 if rendered and len(rendered[0] or '')>len(result[0] or ''):
                     result = rendered
+                    actual_read = True
             if result and result[0]:
-                self._note_detail_success(url)
+                if len(result[0].strip()) >= self.JD_BROWSER_THIN_CHARS:
+                    self._note_detail_success(url)
+                if actual_read:
+                    self._forget_saved_capture(url)
                 self.store_captured_jd(url,result[0])
                 _jd_cache().put(url,result)
             return result or ('','','')
 
     def _detail_can_browser(self,url):
-        if self._detail_host_unavailable(url) or self._detail_url_blocked(url):
+        schedule = getattr(self, '_http_schedule', None)
+        if schedule is not None and schedule.is_cooling(url):
+            return False  # Browser navigation must not circumvent Retry-After.
+        if self._detail_host_unavailable(url, browser=True) or self._detail_url_blocked(url):
             return False
         try:
             global_cap = max(0,int(os.environ.get('SPONSORSCOUT_JD_BROWSER_MAX') or 40))
@@ -11417,15 +11999,20 @@ class CareerPortalScanner:
         def read(page):
             response = page.goto(url,wait_until='domcontentloaded',timeout=min(timeout_ms,15000))
             page._last_nav_status = response.status if response is not None else 0
+            if page._last_nav_status == 429:
+                headers = getattr(response, 'headers', {}) or {}
+                self._http_schedule.defer(url, headers.get('retry-after') or headers.get('Retry-After'))
             page.wait_for_timeout(700)
-            _block = self._bot_challenge_reason(page,subject='detail')
+            _block = self._observe_detail_access(page,url)
             if _block:
-                self._note_detail_failure(url,_block,blocked=True,transport='browser',status=page._last_nav_status)
+                self._note_detail_failure(url,_block,blocked=True,transport='browser',status=page._last_nav_status,title=str((getattr(page,'_ss_current_detail_snapshot',None)or{}).get('title')or''))
                 return None
             result = self._remember_detail_html(url,page.content() or '',transport='browser',status=page._last_nav_status)
             if result and result[0]:
+                self._forget_saved_capture(url)
                 self.store_captured_jd(url,result[0])
-                self._note_detail_success(url)
+                if len(result[0].strip()) >= self.JD_BROWSER_THIN_CHARS:
+                    self._note_detail_success(url)
             return result
         try:
             if browser_page is not None:
@@ -11441,7 +12028,7 @@ class CareerPortalScanner:
         except ScanCancelled:
             raise
         except Exception as exc:
-            self._note_detail_failure(url,f'browser detail failed ({type(exc).__name__})')
+            self._note_detail_failure(url,f'browser detail failed ({type(exc).__name__})', transport='browser')
             return None
     def _workday_jd(self, url):
         """2026-10-19: Workday public pages are shells; read the CXS detail JSON.
@@ -11457,6 +12044,8 @@ class CareerPortalScanner:
         except ScanCancelled:
             raise
         except Exception as exc:
+            if getattr(exc, 'code', None) == 429:
+                self._http_schedule.defer(url, (getattr(exc, 'headers', None) or {}).get('Retry-After'))
             code = getattr(exc, "code", None)
             _block = http_error_reason(exc)
             self._note_detail_failure(url,_block or f"provider detail fetch failed ({code or type(exc).__name__})",blocked=bool(_block),**getattr(exc,'response_evidence',{}))
@@ -11471,7 +12060,11 @@ class CareerPortalScanner:
                       "\n", desc_html)
         _txt = re.sub(r"<[^>]+>", " ", _txt)
         _txt = "\n".join(" ".join(ln.split()) for ln in _txt.split("\n"))
-        desc = normalize_jd_text(_txt)[:8000]
+        full_description = normalize_jd_text(_txt)
+        desc = full_description[:8000]
+        if len(full_description) <= 8000:
+            from sponsorscout.core.saved_details import remember_capture
+            remember_capture(self,url,desc)
         loc = str(info.get("location") or "").strip()
         self._detail_state.observe(url,desc,transport='provider')
         self._detail_state.put(url,(desc,loc,''),metadata={'titles':[str(info.get('title') or '')],'listing':False})
@@ -11494,6 +12087,7 @@ class CareerPortalScanner:
         _wd = self._workday_jd(url)
         if _wd is not None:
             return _wd
+        _wire_t0 = time.monotonic()
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -11506,13 +12100,19 @@ class CareerPortalScanner:
         except ScanCancelled:
             raise
         except Exception as exc:
+            if getattr(exc, 'code', None) == 429:
+                self._http_schedule.defer(url, (getattr(exc, 'headers', None) or {}).get('Retry-After'))
             _code = getattr(exc, "code", None)
             _block = http_error_reason(exc,subject='detail')
             if _block:
                 self._note_detail_failure(url,_block,blocked=True,**getattr(exc,'response_evidence',{}))
             else:
-                self._note_detail_failure(url, f"HTTP fetch failed ({type(exc).__name__})")
+                self._note_detail_failure(url, f"HTTP fetch failed ({_code or type(exc).__name__})",
+                    transport='http', status=_code or 0)
             return "", "", ""
+        finally:
+            self._http_schedule.note('generic_wire_seconds', time.monotonic()-_wire_t0,
+                scope=self._detail_state.owner(url),phase=getattr(self._tls,'detail_stage','other'))
         if _raw_html_is_bot_challenge(html):
             self._note_detail_failure(url, challenge_reason(html,subject='detail'), blocked=True,**response_metadata(html,status=_http_status))
             return "", "", ""
@@ -11520,6 +12120,7 @@ class CareerPortalScanner:
         # exercised offline -- the body-text fallback is the only thing
         # standing between 81% of rows and a sponsorship verdict, and a
         # network-only code path cannot be pinned by the battery.
+        self._note_detail_http_success(url)
         return self._remember_detail_html(url,html,transport="http",status=_http_status)
     _WORKABLE_JOB_RE = re.compile(
         r"^https?://(?:apply\.)?workable\.com/(?:([A-Za-z0-9_.-]+)/)?j/([A-Za-z0-9]+)", re.I)
@@ -11553,12 +12154,18 @@ class CareerPortalScanner:
         except ScanCancelled:
             raise
         except Exception as exc:
+            if getattr(exc, 'code', None) == 429:
+                self._http_schedule.defer(url, (getattr(exc, 'headers', None) or {}).get('Retry-After'))
             code = getattr(exc, "code", None)
             _block = http_error_reason(exc)
             self._note_detail_failure(url,_block or f"provider detail fetch failed ({code or type(exc).__name__})",blocked=bool(_block),**getattr(exc,'response_evidence',{}))
             return ("", "", "")
         parts = [data.get("description") or "", data.get("requirements") or "", data.get("benefits") or ""]
-        desc = normalize_jd_text(" ".join(p for p in parts if p))[:8000]
+        full_description = normalize_jd_text(" ".join(p for p in parts if p))
+        desc = full_description[:8000]
+        if len(full_description) <= 8000:
+            from sponsorscout.core.saved_details import remember_capture
+            remember_capture(self,url,desc)
         loc_obj = data.get("location") or {}
         loc = ", ".join(x for x in [loc_obj.get("city"), loc_obj.get("region"), loc_obj.get("country")] if x)
         self._detail_state.observe(url,desc,transport='provider')
@@ -11575,7 +12182,7 @@ class CareerPortalScanner:
             html, re.DOTALL | re.IGNORECASE,
         ):
             try:
-                data = json.loads(m.group(1))
+                data = load_job_json(m.group(1))
             except Exception:
                 continue
             # FIX P63 (2026-10-08): `data.get("@graph")` returns None for a
@@ -11613,15 +12220,8 @@ class CareerPortalScanner:
                     # FIX P66 (B2): block-aware, so <li> items stay separate
                     # sentences instead of welding into one giant run-on.
                     desc = normalize_jd_text(str(d))[:8000]
-                jl = it.get("jobLocation")
-                if isinstance(jl, list):
-                    jl = jl[0] if jl else {}
-                a = (jl or {}).get("address") or {}
-                loc = ", ".join(filter(None, [
-                    a.get("addressLocality"), a.get("addressRegion"),
-                    a.get("addressCountry") if not isinstance(a.get("addressCountry"), dict)
-                    else (a.get("addressCountry") or {}).get("name", ""),
-                ])).strip()
+                from sponsorscout.core.job_metadata import structured_job_locations
+                loc = ' | '.join(structured_job_locations(it))
                 # FIX W2-9: who is actually hiring (aggregator rows).
                 if not org:
                     ho = it.get("hiringOrganization")
@@ -11676,6 +12276,18 @@ class CareerPortalScanner:
             if (len(_main) >= self.config.DETAIL_BODY_MIN_CHARS
                     and len(_main) > len(desc)):
                 desc = _main[:24000]
+        if not loc:
+            for candidate in header_metadata_locations(html):
+                place = self.extract_location(candidate)
+                if place == 'Not Specified':
+                    place = self._clean_rescued_location(candidate)
+                if place and place != 'Not Specified':
+                    loc = place
+                    break
+        if not loc:
+            content = re.search(r'(?is)<(?:main|article)\b[^>]*>(.*?)</(?:main|article)>', html)
+            if content:
+                loc = self._label_location(content.group(1))
         return desc, loc, org
     def _apply_support_from_text(self, rec, desc, evidence_url=""):
         """Run the shared support detector over a JD and write the verdicts.
@@ -11737,16 +12349,8 @@ class CareerPortalScanner:
             rec["Relocation/Visa Support"] = "N"
         else:
             rec["Relocation/Visa Support"] = "Unknown"
-        rec["EU Blue Card"] = detect_blue_card(self.detector, desc, _others)
-        _ev = ""
-        for sent in self.detector.split_sentences(desc):
-            if re.search(r"\b(?:eu[- ]?)?blue[- ]?card|blaue[nr]? karte"
-                         r"|carta blu|blauwe kaart|carte bleue|tarjeta azul",
-                         sent, re.I):
-                _ev = sent[:300]
-                break
-        if _ev:
-            rec["Blue Card Evidence"] = _ev
+        from sponsorscout.scanning.jd_support import detect_blue_card_result
+        rec["EU Blue Card"],rec["Blue Card Evidence"]=detect_blue_card_result(self.detector,desc,_others)
         return True
     def _apply_ld_side_effects(self, rec, ld_location, hiring_org):
         """Fill a weak location / unknown employer from one JSON-LD read."""
@@ -11762,6 +12366,8 @@ class CareerPortalScanner:
                     rec["Location Source"] = "detail"
                     rec["Location Confidence"] = self._location_confidence(
                         loc, "detail")
+                    if not rec.get("Raw Location"):
+                        rec["Raw Location"] = ld_location
         if hiring_org:
             cur = (rec.get("Hiring Company") or "").strip()
             if cur.lower() in ("", "unknown"):
@@ -11778,7 +12384,8 @@ class CareerPortalScanner:
         import threading as _threading_mod
         if not rows:
             return 0
-        targets = rows
+        reader = getattr(self, '_saved_jd_reader', None)
+        targets = sorted(rows,key=self._repeat_detail_priority) if callable(getattr(reader,'priority',None)) else rows
         if max_fetch:
             targets = targets[:max_fetch]
         cap = self.config.MAX_DETAIL_SCAN_TOTAL
@@ -11793,35 +12400,35 @@ class CareerPortalScanner:
         # can actually change a verdict (stable sort keeps original order
         # within equal priority).
         ranked = sorted(enumerate(targets),
-                        key=lambda _p: (self._detail_priority(_p[1]), _p[0]))
+                        key=lambda _p: (self._repeat_detail_priority(_p[1]), _p[0]))
         if not max_workers or max_workers < 1:
             max_workers = recommended_workers("http")
         done = 0
         changed = 0
         browser = None
+        browser_gate_held = False
         changed_lock = _threading_mod.Lock()
-        host_gates = {}
-        for _, row in ranked:
-            host_gates.setdefault(urlparse(row.get("Job URL") or "").netloc.lower(), _threading_mod.Lock())
         detail_deadline = time.monotonic() + self.config.DETAIL_SCAN_TIME_BUDGET_SEC
 
         def _fetch_one(r, url):
             if not url.startswith(("http://", "https://")) or "#job=" in url.lower():
                 return None
-            host = urlparse(url).netloc.lower()
-            with host_gates[host]:
-                if check_control(self.cancel_event,self.pause_event):
-                    return None
-                if not _take_budget():
-                    return None
-                # HTTP means HTTP. Never open a per-URL cold browser here.
-                try:
-                    return self._fetch_jd_text(url, allow_browser=False)
-                except ScanCancelled:
-                    raise
-                except Exception as exc:
-                    self._note_detail_failure(url, f"detail fetch failed ({type(exc).__name__})")
-                    return "", "", ""
+            if check_control(self.cancel_event,self.pause_event):
+                return None
+            previous = getattr(self._tls, "detail_deadline", None)
+            self._tls.detail_deadline = detail_deadline
+            previous_stage=getattr(self._tls,'detail_stage','other')
+            self._tls.detail_stage='enrichment_http'
+            try:
+                return self._fetch_jd_text(url, allow_browser=False)
+            except ScanCancelled:
+                raise
+            except Exception as exc:
+                self._note_detail_failure(url, f"detail fetch failed ({type(exc).__name__})")
+                return "", "", ""
+            finally:
+                self._tls.detail_deadline = previous
+                self._tls.detail_stage = previous_stage
 
         def _enrich_from_desc(r, desc):
             if not desc:
@@ -11842,21 +12449,32 @@ class CareerPortalScanner:
                 return 1 if _exp_hit else 0
             return 1
         def _shared_browser_visit(url):
-            nonlocal browser
+            nonlocal browser, browser_gate_held
             if not self._detail_can_browser(url):
                 return ''
             if browser_page is not None:
                 pg,close_pg = browser_page,False
             else:
+                pw_context = None
                 try:
                     if browser is None:
+                        while not browser_gate_held:
+                            if check_control(self.cancel_event, self.pause_event) or time.monotonic() >= detail_deadline:
+                                return ''
+                            browser_gate_held = self._jd_browser_sem.acquire(timeout=.1)
+                        if not self._detail_can_browser(url):
+                            return ''
                         from playwright.sync_api import sync_playwright as _sp
                         pw_context = _sp().start()
                         browser = pw_context.chromium.launch(headless=True,args=BROWSER_ARGS)
                         browser._pw_ctx = pw_context
                     pg,close_pg = browser.new_page(),True
                     install_page_resource_blocking(pg)
-                except Exception:
+                except Exception as exc:
+                    if browser is None and pw_context is not None:
+                        try: pw_context.stop()
+                        except Exception: pass
+                    self._note_detail_failure(url, f'browser startup failed ({type(exc).__name__})', transport='browser')
                     return ''
             try:
                 result = self._fetch_jd_text_browser(url,browser_page=pg)
@@ -11907,7 +12525,7 @@ class CareerPortalScanner:
                             if desc:
                                 changed += _enrich_from_desc(r, desc)
                             if (use_browser and len(desc.strip()) < self.JD_BROWSER_THIN_CHARS
-                                    and not self._detail_host_unavailable(r.get("Job URL") or "")
+                                    and not self._detail_host_unavailable(r.get("Job URL") or "", browser=True)
                                     and not self._detail_url_blocked(r.get("Job URL") or "")):
                                 need_browser.append(r)
                             if done % 10 == 0:
@@ -11918,7 +12536,7 @@ class CareerPortalScanner:
                 if check_control(self.cancel_event, self.pause_event):
                     break
                 url = r.get("Job URL") or ""
-                if (time.monotonic() >= detail_deadline or self._detail_host_unavailable(url)
+                if (time.monotonic() >= detail_deadline or self._detail_host_unavailable(url, browser=True)
                         or self._detail_url_blocked(url)):
                     continue
                 if not _take_budget():
@@ -11951,6 +12569,8 @@ class CareerPortalScanner:
                     browser._pw_ctx.stop()
             except Exception:
                 pass
+            if browser_gate_held:
+                self._jd_browser_sem.release()
         _label = f" [{company_name}]" if company_name else ""
         print(f"   Support detection{_label}: {changed} rows enriched "
               f"from detail pages ({done} row results checked; not a successful-JD count)")
@@ -12317,7 +12937,7 @@ class CareerPortalScanner:
             return 0
         return updated
     def _clear_recovered_dns_errors(self,scan_log_csv):
-        """Retract only a recovered target's prior DNS error; scope stays exact."""
+        """Retract a recovered target's prior transient transport error; scope stays exact."""
         path = getattr(self,'_errors_csv',None)
         if not path or not os.path.exists(path):
             return
@@ -12325,17 +12945,22 @@ class CareerPortalScanner:
         for row in read_job_csv(scan_log_csv):
             if row.get('Run ID')==self.run_id:
                 latest[(row.get('Seed Name') or row.get('Company') or '',row.get('Seed URL') or '')] = row
+        # Issue 005 P2: this used to retract DNS rows only, so a timeout or a lost
+        # network route stayed in errors.csv even after the seed recovered. 4 of the 6
+        # rows in 20261029T114134_career_jobs_errors.csv belonged to seeds that finished
+        # ok/partial, which made the file read as "6 failures" for a run with 2 walls.
         recovered = {key for key,row in latest.items()
                      if row.get('Status','').casefold() in ('ok','empty','partial')
-                     and not is_dns_failure(row.get('Error'),row.get('Diagnostics'))}
+                     and not is_transient_transport_failure(row.get('Error'),row.get('Diagnostics'))}
         old = read_job_csv(path)
         kept = [row for row in old if not (
             row.get('Run ID')==self.run_id and
             (row.get('Seed Name') or '',row.get('Seed URL') or '') in recovered and
-            is_dns_failure(row.get('Message')))]
+            is_transient_transport_failure(row.get('Message')))]
         if len(kept)!=len(old):
             write_job_csv(path,kept,_ERROR_COLUMNS)
-            print(f"[dns retry] retracted {len(old)-len(kept)} recovered DNS error row(s)")
+            print(f"[transport retry] retracted {len(old)-len(kept)} error row(s) "
+                  f"a later attempt on the same seed replaced")
     def _record_error(self, seed_name, phase, err_type, message, seed_url=""):
         """Append one row to the run's errors CSV (immediate, crash-safe)."""
         path = getattr(self, "_errors_csv", None)
@@ -12462,7 +13087,7 @@ class CareerPortalScanner:
         except Exception:
             pass
         columns = [
-            "Company Name", "Seed Name", "Source Type", "Hiring Company", "Target Country", "Scope Policy",
+            "Company Name", "Seed Name", "Seed URL", "Source Type", "Hiring Company", "Target Country", "Scope Policy",
             "Industry Type", "Sponsorship History Score", "English Friendly Score", "Remote Score",
             "Job Title", "Raw Job Title", "Job Location", "Job Country", "Raw Location", "Job Type",
             "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
@@ -12521,6 +13146,7 @@ class CareerPortalScanner:
         seen_quarantine = self._load_seen_quarantine(quarantine_csv)
         print(f"v7 scan started: {len(targets)} enabled targets; run_id={self.run_id}; "
               f"resume={self.resume}; detail={self.detail_scan}")
+        _submitted_times={}
         def crawl_target(idx, target_row):
             if check_control(self.cancel_event, self.pause_event):
                 print(f"   CANCELLED: skipping target [{idx}] {target_row.get('name', '?')}")
@@ -12529,18 +13155,28 @@ class CareerPortalScanner:
             seed_name = target_row["seed_name"]
             seed_url = target_row["careers_url"]
             self._tls.detail_scope = seed_url
+            _reporter = getattr(self, '_progress_reporter', None)
+            _progress_key = _reporter.begin(target_row) if _reporter else None
+            self._tls.progress_key = _progress_key
             if (target_row.get("provider") or "auto").lower() == "auto":
                 detected, slug, _note = sniff_provider("", seed_url)
                 if detected:
                     target_row["provider"] = detected
-                    target_row["board_slug"] = target_row.get("board_slug") or slug or ""
+                    target_row["board_slug"] = provider_slug(target_row.get("board_slug"), seed_url, detected) or slug or ""
             provider = target_row.get("provider", "auto")
             source_type = target_row.get("source_type", "direct_employer")
             started = time.monotonic()
+            _worker_started=started
+            _submitted_at=_submitted_times.get(idx,started)
+            self._tls.detail_stage='listing'
             company_jobs = {}
             seen_title_forms = {}  # J1: norm title -> [(loc_norm, is_frag, ctx)]
             quarantine = []
-            diagnostics = []
+            phase_times = {}
+            diagnostics = ['effective budgets: '+json.dumps({key:getattr(self.config,key,None) for key in (
+                'MAX_COMPANY_TIME_SEC','LIST_TIME_BUDGET_SEC','DETAIL_SCAN_TIME_BUDGET_SEC',
+                'MAX_DETAIL_SCAN_PER_COMPANY','MAX_DETAIL_SCAN_TOTAL','DETAIL_MIN_PER_COMPANY',
+                'DETAIL_BROWSER_FALLBACK_PER_COMPANY')},sort_keys=True)]
             # FIX P28: the embedded-JSON index and its notes are per company.
             self._current_seed_url = ""
             self._embedded_notes = []
@@ -12556,6 +13192,7 @@ class CareerPortalScanner:
                 return {
                     "Company Name": name,
                     "Seed Name": seed_name,
+                    "Seed URL": seed_url,
                     "Source Type": source_type,
                     "Hiring Company": name if source_type == "direct_employer" else "Unknown",
                     "Target Country": target_row.get("target_country", "Global"),
@@ -12614,6 +13251,11 @@ class CareerPortalScanner:
                 context = str(job.get("card_context") or "").strip()
                 method = str(job.get("extraction_method") or "dom_heuristic")
                 clean_url = self.clean_and_normalize_url(raw_url)
+                from sponsorscout.core.job_identity import nonposting_record
+                if nonposting_record(clean_url,raw_title):
+                    stats['rejected_title'] += 1
+                    quarantine_job(raw_title,raw_url,raw_location,'nonvacancy_information_or_analytics',method)
+                    return False
                 # J1: the old "#job=" blanket quarantine lived here — removed.
                 # Those fragment URLs are real jobs (Exact/Miro/Ocado/KPN/...,
                 # ~577 rows/run in the 09-09 quarantine data) with valid titles;
@@ -12625,7 +13267,7 @@ class CareerPortalScanner:
                 # job word (/en/prevention-advisor-environmental-coordinator).
                 _heading_link = method == "direct_listing_heading" and bool(
                     re.match(r"^https?://", clean_url or ""))
-                if not _heading_link and not self.is_valid_job_url(clean_url):
+                if administrative_action(clean_url,raw_title) or (not _heading_link and not self.is_valid_job_url(clean_url)):
                     stats["rejected_url"] += 1
                     # FIX P33: name the department/facet chips separately so a
                     # board that lists only chips is visible in the quarantine
@@ -12641,6 +13283,21 @@ class CareerPortalScanner:
                     return False
                 self._detail_state.register(clean_url,seed_url)
                 clean_title = self.clean_job_title(raw_title)
+                if generated_family_card(clean_title, clean_url):
+                    stats["rejected_title"] += 1
+                    stats["rejected_family"] = stats.get("rejected_family", 0) + 1
+                    quarantine_job(raw_title, raw_url, raw_location,
+                                   "category_only_card_without_posting_identity", method)
+                    return False
+                if category_label(clean_title) and "#job=" in clean_url.lower():
+                    stats["rejected_title"] += 1
+                    quarantine_job(raw_title, raw_url, raw_location,
+                                   "invalid_generic_or_department_title", method)
+                    return False
+                reader = getattr(self, '_saved_jd_reader', None)
+                if callable(getattr(reader, 'observe', None)):
+                    from sponsorscout.core.saved_details import observed_revision
+                    reader.observe(clean_url, title=clean_title if self.is_valid_job_title(clean_title,name,clean_url) else '', revision=observed_revision(job))
                 if not self.is_valid_job_title(clean_title, name, clean_url):
                     # J2: try the URL slug before quarantining (button labels
                     # like "Show job" / chips like "Full time" on real job URLs).
@@ -12651,7 +13308,11 @@ class CareerPortalScanner:
                     else:
                         # FIX P42: the card never showed the title; the job's
                         # own page does. ONE fetch, budgeted.
-                        rescued = self._title_from_detail_page(clean_url, name)
+                        _rescue_t0 = time.monotonic()
+                        try:
+                            rescued = self._title_from_detail_page(clean_url, name)
+                        finally:
+                            phase_times['title_rescue'] = phase_times.get('title_rescue',0.0) + time.monotonic()-_rescue_t0
                         if rescued:
                             clean_title = rescued
                             method = f"{method}+detail_title"
@@ -12659,6 +13320,15 @@ class CareerPortalScanner:
                         stats["rejected_title"] += 1
                         quarantine_job(raw_title, raw_url, raw_location, "invalid_generic_or_department_title", method)
                         return False
+                # Validate the FINAL title, not only the raw CTA before rescue.
+                # A plausible slug/heading can still name a careers information page.
+                if nonposting_record(clean_url, clean_title, raw_title):
+                    stats['rejected_title'] += 1
+                    quarantine_job(clean_title, raw_url, raw_location,
+                                   'nonvacancy_information_or_analytics', method)
+                    return False
+                if callable(getattr(reader, 'observe', None)):
+                    reader.observe(clean_url, title=clean_title)
                 # FIX 8t (residual of P78): /jobs/devops titled "Devops" --
                 # the slug equals a role-word title, so the gate exempts it.
                 # One budgeted fetch settles whether the page is a listing.
@@ -12920,7 +13590,7 @@ class CareerPortalScanner:
                 # provider API already shipped the description.
                 _inline_desc = _jd or str(job.get("description") or "")
                 if _inline_desc and len(_inline_desc.strip()) >= 80:
-                    self.store_captured_jd(clean_url, _inline_desc)
+                    self.store_captured_jd(clean_url, _inline_desc, authoritative=(len(_jd) >= self.JD_BROWSER_THIN_CHARS and not job.get("jd_truncated")))
                 if _jd and len(_jd.strip()) >= self.JD_BROWSER_THIN_CHARS:
                     rec["_jd_complete"] = True
                 if _jd:
@@ -12947,7 +13617,9 @@ class CareerPortalScanner:
                 # Provider adapters are authoritative and avoid fragile DOM pagination.
                 if not seed_url.startswith(("http://", "https://")):
                     raise ValueError(f"invalid careers URL: {seed_url!r}")
+                _provider_t0 = time.monotonic()
                 api_jobs, api_diag = self._fetch_provider_jobs(target_row)
+                phase_times["provider_listing"] = time.monotonic() - _provider_t0
                 diagnostics.append(api_diag)
                 for job in api_jobs:
                     process_job(job)
@@ -12959,6 +13631,7 @@ class CareerPortalScanner:
                 # Rejected unless it yields >= _STATIC_MIN_JOBS links, so a JS
                 # shell can never silently truncate a company's results.
                 if not provider_success:
+                    _static_t0 = time.monotonic()
                     try:
                         self._current_seed_url = seed_url
                         _static_jobs, _static_diag = fetch_static_jobs(
@@ -12969,6 +13642,7 @@ class CareerPortalScanner:
                     except Exception as _sexc:
                         _static_jobs, _static_diag = [], (
                             f"static: error {type(_sexc).__name__}")
+                    phase_times["static_listing"] = time.monotonic() - _static_t0
                     diagnostics.append(_static_diag)
                     if getattr(_static_diag,"block_reason",""):
                         self._detail_state.register(seed_url,seed_url)
@@ -13006,7 +13680,10 @@ class CareerPortalScanner:
                         # 2026-10-19: time queued behind another company's Chromium
                         # session is not this company's LIST work. Credit it back so
                         # Proximus is not cut off at "page 1" after waiting.
-                        started += time.monotonic() - _sem_t0
+                        _browser_wait = time.monotonic() - _sem_t0
+                        started += _browser_wait
+                        phase_times["browser_wait"] = _browser_wait
+                        _listing_t0 = time.monotonic()
                         browser = self._get_or_launch_worker_browser()
                         ctx = browser.new_context(
                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
@@ -13025,31 +13702,55 @@ class CareerPortalScanner:
                         install_page_resource_blocking(ctx)
                         page = ctx.new_page()
                         page._last_nav_status = 0
+                        _verification_state = {}
                         loaded = False
+                        _seed_nav_timed_out = False
                         _static_was_blocked = any("static: blocked" in str(d) for d in diagnostics)
-                        _max_goto = 1 if _static_was_blocked else self.config.GOTO_RETRIES
+                        _offline_streak = int(getattr(self, '_offline_streak', 0) or 0)
+                        _no_route_run = _offline_streak >= _OFFLINE_STREAK_LIMIT
+                        _max_goto = 1 if (_static_was_blocked or _no_route_run) else self.config.GOTO_RETRIES
+                        _last_nav, _last_net = '', False
+                        if _no_route_run and not _static_was_blocked:
+                            diagnostics.append(
+                                f"browser seed retries suppressed: {_offline_streak} consecutive seeds "
+                                f"reached no network route (1 attempt, no backoff)")
                         for attempt in range(1, _max_goto + 1):
                             # STOP FAST: seed navigation retries are a blocking
                             # Playwright wait — gate each attempt on Stop so a
                             # cancel mid-backoff doesn't wait out the retry
                             # chain.
                             check_cancelled(self.cancel_event)
+                            _remaining=self.config.MAX_COMPANY_TIME_SEC-(time.monotonic()-started)
+                            if _remaining<=0:
+                                raise RuntimeError('company deadline reached before seed navigation')
+                            diagnostics.append(f'seed navigation attempt {attempt}: remaining company budget={_remaining:.1f}s')
+                            print(f'   [phase] {name}: seed navigation attempt {attempt}',flush=True)
+                            _nav_started=time.monotonic()
                             try:
                                 _nav_resp = page.goto(
                                     seed_url, wait_until="domcontentloaded",
-                                    timeout=min(self.config.ACTION_TIMEOUT_MS, 12000) if _static_was_blocked else self.config.ACTION_TIMEOUT_MS,
+                                    timeout=max(1,min(int(_remaining*1000),min(self.config.ACTION_TIMEOUT_MS,12000) if _static_was_blocked else self.config.ACTION_TIMEOUT_MS)),
                                 )
                                 page._last_nav_status = _nav_resp.status if _nav_resp is not None else 0
+                                diagnostics.append(f'seed navigation returned in {time.monotonic()-_nav_started:.1f}s')
                                 loaded = True; break
                             except PlaywrightTimeoutError:
                                 # Navigation timed out but a partial DOM may be usable.
-                                diagnostics.append(f"seed timeout attempt {attempt}; partial DOM used")
+                                diagnostics.append(f"seed timeout attempt {attempt}; partial DOM pending validation")
+                                _seed_nav_timed_out = True
                                 loaded = True; break
                             except Exception as exc:
                                 _nav_block_reason = self._bot_challenge_reason(page)
                                 if _nav_block_reason:
-                                    raise RuntimeError(listing_block_message(_nav_block_reason)) from exc
+                                    _nav_block_reason = self._observe_seed_verification(
+                                        page, _nav_block_reason, diagnostics, started, _verification_state)
+                                    if _nav_block_reason:
+                                        raise RuntimeError(listing_block_message(_nav_block_reason)) from exc
+                                    loaded = True
+                                    break
                                 net = self._is_network_error(exc)
+                                _last_net = bool(net)
+                                _last_nav = ' '.join(f"{type(exc).__name__}: {exc}".split())
                                 diagnostics.append(
                                     f"seed attempt {attempt}: {type(exc).__name__}: {exc}"
                                     f"{' [network]' if net else ''}"
@@ -13059,26 +13760,47 @@ class CareerPortalScanner:
                                 if net and attempt < _max_goto:
                                     backoff = self.config.GOTO_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
                                     diagnostics.append(f"retrying in {backoff:.1f}s")
-                                    page.wait_for_timeout(int(backoff * 1000))
+                                    _left=self.config.MAX_COMPANY_TIME_SEC-(time.monotonic()-started)
+                                    if _left<=0:raise RuntimeError('company deadline reached before seed retry')
+                                    page.wait_for_timeout(max(1,int(min(backoff,_left)*1000)))
                                 elif attempt < _max_goto:
                                     page.wait_for_timeout(1500)
+                        diagnostics.append(f'seed navigation phase elapsed={time.monotonic()-started:.1f}s')
+                        if time.monotonic()-started>=self.config.MAX_COMPANY_TIME_SEC:
+                            raise RuntimeError('company deadline reached after seed navigation; no further listing operations attempted')
+                        if loaded:
+                            self._offline_streak = 0
                         if not loaded:
                             if _static_was_blocked:
                                 raise RuntimeError(
                                     "blocked by bot protection: WAF/CDN rejected automated HTTP and headless browser navigation"
                                 )
-                            raise RuntimeError(f"seed page did not load: {seed_url}")
+                            # Issue 005 P3: the raise used to report only the URL, so an
+                            # offline machine read as 53 companies whose careers page will
+                            # not load. The reason was already in this run's diagnostics two
+                            # lines earlier; carry it into the message, and label it as what
+                            # it is instead of leaving it in the bot-wall vocabulary.
+                            if _last_net and any(t in _last_nav for t in _OFFLINE_MARKERS):
+                                self._offline_streak = int(getattr(self, '_offline_streak', 0) or 0) + 1
+                                raise RuntimeError(seed_page_failure_text(
+                                    seed_url, _last_nav, offline=True))
+                            self._offline_streak = 0
+                            raise RuntimeError(seed_page_failure_text(seed_url, _last_nav))
                         page.wait_for_timeout(min(1500, self.config.STABILIZATION_DELAY_SEC * 1000))
-                        # Fast anti-bot check BEFORE running multi-frame cookie/blocker dismissal
-                        # so challenge/captcha/WAF portals abort in ~1.5s without getting stuck.
-                        _challenge = self._bot_challenge_reason(page)
+                        # Observe transient verification before finalizing a wall;
+                        # persistent walls remain bounded and honestly reported.
+                        _challenge = self._observe_seed_verification(
+                            page, self._bot_challenge_reason(page), diagnostics,
+                            started, _verification_state)
                         if _challenge:
                             diagnostics.append(f"blocked: {_challenge}")
                             raise RuntimeError(listing_block_message(_challenge))
                         if int(getattr(page,'_last_nav_status',0) or 0)==503:
                             raise RuntimeError('HTTP 503 service unavailable; job listing could not be read')
                         self.dismiss_initial_blockers(page)
-                        _challenge = self._bot_challenge_reason(page)
+                        _challenge = self._observe_seed_verification(
+                            page, self._bot_challenge_reason(page), diagnostics,
+                            started, _verification_state)
                         if _challenge:
                             diagnostics.append(f"blocked: {_challenge}")
                             raise RuntimeError(listing_block_message(_challenge))
@@ -13121,7 +13843,9 @@ class CareerPortalScanner:
                         # avoid falling into infinite-scroll / load-more / reload loops on
                         # blocked or genuinely empty portals.
                         if not current and not company_jobs:
-                            _post_challenge = self._bot_challenge_reason(page)
+                            _post_challenge = self._observe_seed_verification(
+                                page, self._bot_challenge_reason(page), diagnostics,
+                                started, _verification_state)
                             if _post_challenge:
                                 diagnostics.append(f"blocked: {_post_challenge}")
                                 raise RuntimeError(listing_block_message(_post_challenge))
@@ -13144,6 +13868,24 @@ class CareerPortalScanner:
                             except Exception:
                                 pass
                             if not current and not company_jobs:
+                                # C13 E1: a served failure is not a verified
+                                # empty board. Record it in Error/errors.csv,
+                                # without calling it a bot wall or trying to
+                                # defeat a temporary server refusal.
+                                _served_error = self._served_listing_error(page)
+                                if _served_error:
+                                    diagnostics.append(f"listing server failure: {_served_error}")
+                                    raise RuntimeError(_served_error)
+                                if _seed_nav_timed_out:
+                                    try:
+                                        _timeout_html = page.content() or ''
+                                    except Exception:
+                                        _timeout_html = ''
+                                    _timeout_error = timeout_listing_error(_timeout_html,
+                                        timed_out=True, page_url=getattr(page, 'url', ''))
+                                    if _timeout_error:
+                                        diagnostics.append(_timeout_error)
+                                        raise RuntimeError(_timeout_error)
                                 _dead_for = time.monotonic() - started
                                 diagnostics.append(
                                     f"dead end: no job cards after {_dead_for:.1f}s "
@@ -13161,6 +13903,9 @@ class CareerPortalScanner:
                         else:
                             self.aggressive_infinite_scroll(page, target)
                             self.click_load_more_repeatedly(page, target)
+                        from sponsorscout.scanning.listing_completion import (
+                            TERMINAL_CONTROLS_JS, record_census_page, reconcile_disappeared_pager)
+                        _terminal_samples = []
                         prev_total = -1; empty_pages = 0; low_yield = 0
                         repeat_pages = 0
                         seed_params = parse_qsl(urlparse(seed_url).query)
@@ -13215,6 +13960,11 @@ class CareerPortalScanner:
                                 batch = self._reextract_after_reload(
                                     page, target, page_num, diagnostics)
                             added = sum(1 for job in batch if process_job(job))
+                            _batch_urls = [j.get('job_url') for j in batch if j.get('job_url')]
+                            try:
+                                record_census_page(_terminal_samples, _batch_urls, stated_job_total(target.content()))
+                            except Exception:
+                                _terminal_samples.clear()  # No count proof, no completion inference.
                             self._last_activity = time.monotonic()
                             total = len(company_jobs)
                             if total == prev_total: empty_pages += 1
@@ -13249,8 +13999,32 @@ class CareerPortalScanner:
                                     page_num, total)
                                 break
                             if not self.execute_advanced_pagination(page, target, page_num, seed_params):
+                                _terminal = None
+                                try:
+                                    _controls = target.evaluate(TERMINAL_CONTROLS_JS)
+                                    _saved_urls = [r.get('Job URL') for r in company_jobs.values()]
+                                    _terminal = reconcile_disappeared_pager(
+                                        _terminal_samples, _saved_urls, _batch_urls, _controls,
+                                        census_complete=bool(batch),
+                                        failed=bool(error) or (self.cancel_event is not None and self.cancel_event.is_set())
+                                            or time.monotonic()-started >= min(self.config.MAX_COMPANY_TIME_SEC, self.config.LIST_TIME_BUDGET_SEC))
+                                    if _terminal:
+                                        page.wait_for_timeout(250)
+                                        _fresh = self.extract_visible_jobs(target)
+                                        _fresh_urls = [j.get('job_url') for j in _fresh if j.get('job_url')]
+                                        _terminal = reconcile_disappeared_pager(
+                                            _terminal_samples, _saved_urls, _fresh_urls,
+                                            target.evaluate(TERMINAL_CONTROLS_JS),
+                                            census_complete=bool(_fresh),
+                                            failed=bool(self._bot_challenge_reason(page))
+                                                or (self.cancel_event is not None and self.cancel_event.is_set())
+                                                or time.monotonic()-started >= min(self.config.MAX_COMPANY_TIME_SEC, self.config.LIST_TIME_BUDGET_SEC)
+                                                or stated_job_total(target.content()) != _terminal['stated_total'])
+                                except Exception:
+                                    _terminal = None
                                 self._log_pagination_stop(
-                                    diagnostics, "complete: no next-page control",
+                                    diagnostics, ("complete: terminal pager and observed total reconciled"
+                                                  if _terminal else "listing completeness unverified: no next-page control recognised"),
                                     page_num, total)
                                 break
                         else:
@@ -13279,30 +14053,30 @@ class CareerPortalScanner:
                             diagnostics[:]=[('static continuation resolved by normal DOM traversal' if d is _static_diag else d)for d in diagnostics]
                             if self._detail_state.outcomes.get(seed_url,{}).get('kind')=='blocked':
                                 self._detail_state.observe(seed_url,kind='resolved',reason='normal DOM listing became readable',transport='browser listing')
-                        company_jobs = self._dedupe_records(company_jobs)
-                        self._resolve_deferred_scope(
-                            target_row, company_jobs, quarantine, stats,
-                            diagnostics)
-                        if self.detail_scan and company_jobs:
-                            self._run_detail_pipeline(page, name, company_jobs)
                         try: page.close()
                         except Exception: pass
                         try: ctx.close()
                         except Exception: pass
                         browser = ctx = page = None
-                elif company_jobs and not self.detail_scan:
+                        phase_times["browser_listing"] = time.monotonic() - _listing_t0
+                if company_jobs and not self.detail_scan:
                     company_jobs = self._dedupe_records(company_jobs)
                     self._resolve_deferred_scope(
                         target_row, company_jobs, quarantine, stats, diagnostics)
                 elif self.detail_scan and company_jobs:
                     company_jobs = self._dedupe_records(company_jobs)
+                    _scope_t0 = time.monotonic()
                     self._resolve_deferred_scope(
                         target_row, company_jobs, quarantine, stats, diagnostics)
+                    phase_times["scope_resolution"] = time.monotonic() - _scope_t0
                     # Run HTTP detail pass FIRST outside _browser_sem so API/static
                     # companies never tie up background Chrome workers unnecessarily.
+                    _http_t0 = time.monotonic()
                     self._run_detail_pipeline(None, name, company_jobs)
+                    phase_times["http_enrichment"] = time.monotonic() - _http_t0
                     _rem_browser = {cid: rec for cid, rec in company_jobs.items()
-                                    if self._needs_browser_detail(rec)}
+                                    if self._needs_browser_detail(rec)
+                                    and self._detail_can_browser(rec.get("Job URL") or "")}
                     _bcap = max(0, int(getattr(self.config, "DETAIL_BROWSER_FALLBACK_PER_COMPANY", 12)))
                     if _rem_browser and _bcap > 0:
                         if sync_playwright is None:
@@ -13310,7 +14084,10 @@ class CareerPortalScanner:
                             diagnostics.append(
                                 f"detail: HTTP only (playwright unavailable: {_pw_reason})")
                             raise _DetailHttpOnly()
+                        _fallback_t0 = time.monotonic()
                         with self._browser_sem:
+                            phase_times["browser_fallback_wait"] = time.monotonic() - _fallback_t0
+                            _fallback_t0 = time.monotonic()
                             browser = self._get_or_launch_worker_browser()
                             ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                             install_page_resource_blocking(ctx)
@@ -13321,6 +14098,7 @@ class CareerPortalScanner:
                             try: ctx.close()
                             except Exception: pass
                             browser = ctx = page = None
+                            phase_times["browser_fallback"] = time.monotonic() - _fallback_t0
             except _DeadEndBoard:
                 pass
             except _DetailHttpOnly:
@@ -13333,6 +14111,8 @@ class CareerPortalScanner:
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 diagnostics.append(error)
+                import traceback
+                diagnostics.append('target traceback: '+traceback.format_exc(limit=6)[-2500:])
             finally:
                 try:
                     if page is not None: page.close()
@@ -13393,14 +14173,33 @@ class CareerPortalScanner:
                 _message='blocked access: '+str(len(_blocks))+' unresolved response(s); '+ '; '.join(str(b.get('reason',''))+' at '+b['url'] for b in _blocks[:4])
                 error=(error+'; ' if error else '')+_message
                 diagnostics.append(_message)
-            if self.detail_scan and company_jobs:
-                _urls=[r.get('Job URL','')for r in company_jobs.values()]
-                _coverage=self._detail_state.coverage(seed_url,_urls,self.get_captured_jd)
-                diagnostics.append(self._detail_state.coverage_summary(seed_url,_urls,self.get_captured_jd))
+            # Issue 005 P2: the coverage census used to require a non-empty harvest, which
+            # means it was missing for exactly the seeds whose question is "why nothing?".
+            # In 20261029T114134 the 9 seeds without a `JD coverage:` line were precisely
+            # the 9 that produced zero rows.
+            if stats.get("rejected_family"):
+                diagnostics.append(f'listing incomplete: {stats["rejected_family"]} family-only card observation(s) '
+                                   'quarantined without an observed individual posting title/identity')
+            _urls=[r.get('Job URL','')for r in company_jobs.values()] if company_jobs else []
+            _coverage=self._detail_state.coverage(seed_url,_urls,self.get_captured_jd)
+            diagnostics.append(self._detail_state.coverage_summary(seed_url,_urls,self.get_captured_jd))
+            if company_jobs:
                 diagnostics.extend(self._detail_state.scope_samples(seed_url))
+                from sponsorscout.core.browser_evidence import redact_url
+                with self._detail_host_lock:
+                    _snapshots=getattr(self,'_detail_browser_snapshots',{})
+                    _samples=[(u,_snapshots[posting_identity(u)])for u in _urls if posting_identity(u)in _snapshots][:4]
+                for _url,_snapshot in _samples:
+                    diagnostics.append('current browser detail evidence: '+json.dumps(
+                        dict(url=redact_url(_url),snapshot=_snapshot),ensure_ascii=True,sort_keys=True))
                 if _coverage['readable']<_coverage['observed']:
                     diagnostics.append('JD coverage incomplete: '+str(_coverage['observed']-_coverage['readable'])+' observed posting(s) without a usable full JD; Unknown is not a negative verdict')
                 print('   '+diagnostics[-1])
+            _fragment_details = sum('#job=' in u.lower() for u in _urls)
+            if _fragment_details:
+                diagnostics.append(f'detail identity: {_fragment_details} fragment-form card(s); '
+                                   'normal detail navigation skipped (not individual detail URLs); '
+                                   'provider/card evidence only unless a real detail URL was observed')
             _hint_count=sum(1 for r in company_jobs.values() if self._location_is_site_derived(r.get('Location Source')))
             for rec in list(company_jobs.values())+quarantine:
                 apply_row_geography(rec)
@@ -13441,7 +14240,38 @@ class CareerPortalScanner:
                         for rec in quarantine:
                             w.writerow({k: rec.get(k, "") for k in columns})
                 diagnostics.append(self._detail_state.summary(seed_url))
-                status = completion_status(written,error,diagnostics)
+                _deferred = self._detail_state.count_of(seed_url, 'host_breaker_deferred')
+                if _deferred:
+                    # Name the mechanism on the line a reader trusts, and say plainly that the
+                    # breaker is scanner-wide rather than per seed: another company's failures
+                    # can be what stopped this board's descriptions from being read.
+                    try:
+                        _lock = getattr(self, "_detail_host_lock", None)
+                        if _lock is not None:
+                            with _lock:
+                                _tripped = sorted(self._detail_blocked_hosts | set(self._detail_transport_circuits))
+                        else:
+                            _tripped = []
+                    except Exception:
+                        _tripped = []
+                    diagnostics.append(
+                        f"host breaker open: {_deferred} deferral event(s), not unique posting(s), "
+                        f"recorded at an HTTP cooldown/probe gate or confirmed access wall in the run "
+                        f"(scanner-wide sampled hosts: {', '.join(_tripped[:3]) or 'not recorded'}); "
+                        f"a transport verdict about this run, not a per-posting block")
+                diagnostics.append('target elapsed seconds: '+json.dumps({
+                    'company_queue':round(_worker_started-_submitted_at,3),
+                    'worker_occupancy_including_browser_wait':round(time.monotonic()-_worker_started,3),
+                    'submission_to_log':round(time.monotonic()-_submitted_at,3)},sort_keys=True))
+                diagnostics.append('HTTP scheduling (target phases): '+json.dumps(self._http_schedule.scope_snapshot(seed_url),sort_keys=True))
+                diagnostics.append('phase seconds: '+json.dumps({k:round(v,3) for k,v in phase_times.items()},sort_keys=True))
+                diagnostics.append('HTTP scheduling (scanner-wide cumulative): '+json.dumps(self._http_schedule.snapshot(),sort_keys=True))
+                diagnostics.append('effective route: '+json.dumps({k:target_row.get(k) for k in ('name','seed_name','careers_url','provider','target_country','scope_policy')},sort_keys=True))
+                diagnostics[:] = [line for line in diagnostics if not line.startswith('JD coverage: ')]
+                diagnostics.append('JD coverage: ' + '; '.join(f'{k}={v}' for k, v in _coverage.items()))
+                status = ("cancelled" if error.startswith("ScanCancelled:")
+                          or (self.cancel_event is not None and self.cancel_event.is_set())
+                          else completion_status(written,error,diagnostics))
                 with open(scan_log_csv, "a", newline="", encoding="utf-8-sig") as f:
                     csv.DictWriter(f, fieldnames=log_columns).writerow({
                         "Run ID": self.run_id, "Seed Name": seed_name, "Company": name,
@@ -13465,17 +14295,17 @@ class CareerPortalScanner:
                             if _r.get("Quarantine Reason")
                             == "outside_or_unproven_target_country"),
                         "Error": error,
-                        "Diagnostics": " | ".join(
-                            diagnostics + list(
-                                getattr(self, "_embedded_notes", []))
-                        )[-4000:],
+                        "Diagnostics": final_diagnostics(diagnostics, _coverage,
+                            getattr(self, "_embedded_notes", [])),
                         "Duration Sec": round(time.monotonic()-started,1), "Seed URL": seed_url,
                     })
-                if error:
+                if error and not error.startswith("ScanCancelled:"):
                     etype, _, emsg = error.partition(": ")
                     if error.startswith("blocked access:"):
                         etype,emsg="AccessBlocked",error
                     self._record_error(seed_name, "target", etype, emsg, seed_url)
+            if _reporter:
+                _reporter.end(_progress_key, status, coverage=_coverage)
             print(f"   {status.upper()} {name}: wrote={written}, quarantined={len(quarantine)}, "
                   f"dups={stats['duplicates']}, scope_reject={stats['rejected_scope']}")
             return written, len(quarantine), status
@@ -13506,19 +14336,18 @@ class CareerPortalScanner:
             # finishes, so a Stop pressed while every worker sat inside a slow
             # browser fetch waited minutes for the drain to even notice.  Poll
             # the pending set every 0.5 s instead: the cancel is seen promptly,
-            # queued work is cancelled, and in-flight companies get a short
-            # grace window to unwind through their own gates.
+            # queued work is cancelled, and in-flight companies unwind
+            # before the finalization barrier.
             pending = set(futures)
             while pending:
                 if self.cancel_event is not None and self.cancel_event.is_set():
                     for _f in pending:
                         _f.cancel()
-                    # Grace: gated workers raise ScanCancelled within ~1 s of
-                    # their current blocking call.  Stragglers stuck in a long
-                    # Playwright goto are left to finish in the background —
-                    # pool shutdown is wait=False and the CSV/DB ingest is
-                    # idempotent, so nothing is corrupted by walking away.
-                    done, pending = cf.wait(pending, timeout=3.0)
+                    # Finalized CSVs and ingestion must never race target
+                    # writers. This wait is on the scan thread, NOT the GUI.
+                    # Stop remains "Stopping" until bounded in-flight calls
+                    # unwind; do not abandon workers into a subsequent run.
+                    done, pending = cf.wait(pending)
                     for _f in done:
                         try:
                             wrote, quarantined, status = _f.result()
@@ -13555,19 +14384,22 @@ class CareerPortalScanner:
             for i, row in api_targets:
                 if check_control(self.cancel_event, self.pause_event):
                     break
+                _submitted_times[i]=time.monotonic()
                 futures.append(api_pool.submit(crawl_target, i, row))
             for i, row in dom_targets:
                 if check_control(self.cancel_event, self.pause_event):
                     print(f"   CANCELLED: not submitting remaining targets")
                     break
+                _submitted_times[i]=time.monotonic()
                 futures.append(dom_pool.submit(crawl_target, i, row))
             _drain(futures)
         finally:
-            # STOP FAST: cancel() only stops queued work; running companies
-            # unwind via ScanCancelled. shutdown(wait=False) avoids blocking
-            # here on stragglers, then cancel() the leftovers.
-            api_pool.shutdown(wait=False, cancel_futures=True)
-            dom_pool.shutdown(wait=False, cancel_futures=True)
+            # Also join on exceptional drain exits before closing browser
+            # resources or reconciling outputs; queued work is cancelled.
+            try:
+                self._finish_worker_pool(api_pool, api_workers, futures)
+            finally:
+                self._finish_worker_pool(dom_pool, self.max_workers, futures)
         # FIX P0-15b: automatic DNS retry sweep. A transient resolver outage
         # is indistinguishable in the log from a genuinely dead host, and the
         # 09-15 run silently lost 24 companies that way. Re-crawl anything
@@ -13585,12 +14417,17 @@ class CareerPortalScanner:
                 name in (r.get('name'),r.get('seed_name')) and (not url or url==r.get('careers_url'))
                 for name,url in set(dns_failed))]
             if retry_rows and not (self.cancel_event is not None and self.cancel_event.is_set()):
+                _reporter = getattr(self, '_progress_reporter', None)
+                if _reporter:
+                    _reporter.retry(retry_rows)
                 print(f"\n[dns retry] re-crawl: {len(retry_rows)} actual failed target(s), once; no host probes")
                 still_live = retry_rows  # legacy local name; no DNS test
                 if still_live:
-                    with cf.ThreadPoolExecutor(max_workers=self.max_workers) as ex2:
-                        futs = [ex2.submit(crawl_target, i, r)
-                                for i, r in enumerate(still_live, 1)]
+                    ex2 = cf.ThreadPoolExecutor(max_workers=self.max_workers)
+                    futs = []
+                    try:
+                        for i, r in enumerate(still_live, 1):
+                            futs.append(ex2.submit(crawl_target, i, r))
                         for fut in cf.as_completed(futs):
                             # STOP FAST: a Stop during the retry sweep must not
                             # wait on stragglers — cancel the queued retries
@@ -13611,6 +14448,8 @@ class CareerPortalScanner:
                             except Exception as exc:
                                 totals["thread_errors"] += 1
                                 print(f"Retry worker error: {type(exc).__name__}: {exc}")
+                    finally:
+                        self._finish_worker_pool(ex2, self.max_workers, futs)
                     print(f"[dns retry] recovered {totals['dns_recovered']} company/companies.")
                     # FIX P65 (A6): the retry writes a fresh scan-log row but
                     # the ORIGINAL DNS error stayed in errors.csv, so run
@@ -13623,24 +14462,34 @@ class CareerPortalScanner:
             print(f"[dns retry] skipped ({type(exc).__name__}: {exc})")
         finally:
             self._close_all_worker_browsers()
+        elapsed = int(time.monotonic()-crawl_start)
+        finalized=False
+        try:
+            merge_info = finalize_job_csvs(self.output_csv,recruiter_csv,columns,quality=self._record_quality)
+            reconciled = reconcile_scan_artifacts(scan_log_csv,self.output_csv,quarantine_csv,
+                                                  self.run_id,merge_info=merge_info)
+            totals['written'] = merge_info['written']
+            totals['quarantined'] = reconciled.get('quarantined',totals['quarantined'])
+            totals['merged'] = merge_info['merged']
+            finalized=True
+            print(f"  Final main CSV: {merge_info['written']} jobs; {merge_info['merged']} source/alias rows merged (not quarantine)")
+        except Exception as exc:
+            print(f"  [warn] final source/count reconciliation failed: {type(exc).__name__}: {exc}")
         # FIX P0-14: regression gate. Persist per-company yields and shout when
         # a company that previously returned jobs collapses to ~0. Every bug
         # found in this project surfaced first as a quiet count drop.
         try:
+            if not finalized:raise RuntimeError("finalization failed; previous baseline retained")
             baseline_path = base + "_baseline.json"
             current = {}
-            with open(scan_log_csv, newline="", encoding="utf-8-sig") as f:
-                for row in csv.DictReader(f):
-                    if (row.get("Run ID") or "") != self.run_id:
-                        continue
-                    try:
-                        current[row["Company"]] = int(row.get("Jobs Found") or 0)
-                    except ValueError:
-                        continue
+            from sponsorscout.scanning.common import final_seed_reference_counts
+            current=final_seed_reference_counts(self.output_csv,self.run_id)
             previous = {}
             if os.path.exists(baseline_path):
                 with open(baseline_path, encoding="utf-8") as f:
-                    previous = json.load(f).get("counts", {})
+                    snapshot=json.load(f)
+                    if snapshot.get('count_basis')=='final_seed_references':
+                        previous=snapshot.get('counts',{})
             regressions = []
             for comp, was in previous.items():
                 now = current.get(comp, 0)
@@ -13658,20 +14507,9 @@ class CareerPortalScanner:
                     print("\n[count snapshot] no comparable prior snapshot; board completeness was not independently established.")
             if current:
                 with open(baseline_path, "w", encoding="utf-8") as f:
-                    json.dump({"run_id": self.run_id, "counts": current}, f, indent=1)
+                    json.dump({"run_id": self.run_id, "count_basis":"final_seed_references", "counts": current}, f, indent=1)
         except Exception as exc:
             print(f"[regression gate] skipped: {type(exc).__name__}: {exc}")
-        elapsed = int(time.monotonic()-crawl_start)
-        try:
-            merge_info = finalize_job_csvs(self.output_csv,recruiter_csv,columns,quality=self._record_quality)
-            reconciled = reconcile_scan_artifacts(scan_log_csv,self.output_csv,quarantine_csv,
-                                                  self.run_id,merge_info=merge_info)
-            totals['written'] = merge_info['written']
-            totals['quarantined'] = reconciled.get('quarantined',totals['quarantined'])
-            totals['merged'] = merge_info['merged']
-            print(f"  Final main CSV: {merge_info['written']} jobs; {merge_info['merged']} source/alias rows merged (not quarantine)")
-        except Exception as exc:
-            print(f"  [warn] final source/count reconciliation failed: {type(exc).__name__}: {exc}")
         print(f"\nv7 scan complete in {elapsed}s: direct/recruiter rows={totals['written']}, "
               f"quarantined={totals['quarantined']}, thread_errors={totals['thread_errors']}")
         # FIX P0-52: make the false-positive guards auditable. If the

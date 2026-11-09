@@ -120,8 +120,10 @@ def test_issue7_catawiki_seed_placement():
     with open(SEEDS / "company_Career_seed.csv", encoding="utf-8-sig") as f:
         career_lines = [l.strip() for l in f if l.startswith("Catawiki,")]
 
-    assert len(ats_lines) == 0, "Catawiki must be removed from company_ATS_seed.csv"
-    assert len(career_lines) == 1, "Catawiki must be present in company_Career_seed.csv"
+    # Distinct user-selected targets may exist in both phases. Do not migrate
+    # or delete either route merely to match an older bundled-seed revision.
+    assert len(ats_lines)==len(career_lines)==1
+    assert "https://job-boards.greenhouse.io/catawiki" in ats_lines[0]
     assert "https://catawiki.careers/vacancies" in career_lines[0]
 
 

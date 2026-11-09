@@ -334,7 +334,7 @@ def _exp_required(value) -> str:
 
 
 def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str,
-                jd_lookup=None) -> dict | None:
+                jd_lookup=None, jd_proof_lookup=None) -> dict | None:
     """Map one 39-column scanner output row to an ``upsert_job`` dict.
 
     Wrapper around ``_row_to_job_unverified`` that then applies the
@@ -343,9 +343,13 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str,
     can DEMOTE a verdict is obvious and separately testable.
     """
     job = _row_to_job_unverified(row, source_subtype=source_subtype,
-                                 run_id=run_id, jd_lookup=jd_lookup)
+                                 run_id=run_id, jd_lookup=jd_lookup, jd_proof_lookup=jd_proof_lookup)
     if job is None:
         return None
+    if callable(jd_proof_lookup):
+        proof = jd_proof_lookup(job['url'], job.get('description',''))
+        if proof:
+            job['support_evidence_type'] = str(job.get('support_evidence_type') or '') + '; ' + proof
     from sponsorscout.core.job_identity import administrative_action
     if administrative_action(job.get('url',''),job.get('title','')):
         return None
@@ -362,7 +366,7 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str,
 
 
 def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
-                           run_id: str, jd_lookup=None) -> dict | None:
+                           run_id: str, jd_lookup=None, jd_proof_lookup=None) -> dict | None:
     """Raw 39-column scanner output row -> ``upsert_job`` dict (no guards)."""
     url = str(row.get("Job URL") or "").strip()
     title = str(row.get("Job Title") or "").strip()
@@ -557,7 +561,7 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                        seen_canonical: set,
                        seen_fuzzy: set | None = None,
                        skip_box: list | None = None,
-                       jd_lookup=None, failure_sink: list | None = None) -> tuple[int, int]:
+                       jd_lookup=None, failure_sink: list | None = None, refresh_reader=None, jd_proof_lookup=None) -> tuple[int, int]:
     """Ingest accepted job rows from one scanner output CSV.
 
     Returns (ingested, duplicates) for this run's trusted posting identities.
@@ -628,9 +632,11 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
             # so the Dashboard and Search tabs both rendered 0 with no visible
             # cause.  Recording it as a run event makes the loss auditable
             # ("Download Scan Log") instead of invisible.
+            if refresh_reader is not None:
+                refresh_reader.observe(row.get('Job URL',''), title=row.get('Job Title',''))
             try:
                 job = _row_to_job(row, source_subtype=source_subtype,
-                                  run_id=run_id, jd_lookup=jd_lookup)
+                                  run_id=run_id, jd_lookup=jd_lookup, jd_proof_lookup=jd_proof_lookup)
             except Exception as exc:
                 if failure_sink is not None:
                     failure_sink.append({'url':str(row.get('Job URL') or ''),'error':str(exc),'stage':'mapping'})
@@ -653,6 +659,8 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
             # Same-title requisitions are distinct. An observed URL/posting
             # identity can count as a merge, but still UPSERT it to preserve
             # stronger JDs, evidence and source markers from later phases.
+            if refresh_reader is not None:
+                job = refresh_reader.bind_revision(job['url'], job)
             identity = posting_identity(job['url'])
             already_seen = identity in seen_canonical
             # Collect the company registry record the first time this run sees
@@ -1002,7 +1010,7 @@ class _LiveIngester(threading.Thread):
                  seen_canonical: set,
                  interval: float = 5.0,
                  progress: ProgressFn | None = None,
-                 jd_lookup=None):
+                 jd_lookup=None, refresh_reader=None, jd_proof_lookup=None):
         super().__init__(name="LiveIngester", daemon=True)
         self.db_path = db_path
         self.run_id = run_id
@@ -1011,6 +1019,8 @@ class _LiveIngester(threading.Thread):
         self.interval = interval
         self.progress = progress or _noop_progress
         self.jd_lookup = jd_lookup
+        self.refresh_reader = refresh_reader
+        self.jd_proof_lookup = jd_proof_lookup
         self._stop_event = threading.Event()
         # Per-CSV byte offsets so each cycle reads and parses ONLY the rows
         # appended since the previous poll.  Previously the poller re-read the
@@ -1034,7 +1044,7 @@ class _LiveIngester(threading.Thread):
                     ingested, _dups = _ingest_output_csv(
                         self.db_path, path, self.run_id,
                         source_subtype=subtype, seen_canonical=self.seen_canonical,
-                        skip_box=box, jd_lookup=self.jd_lookup)
+                        skip_box=box, jd_lookup=self.jd_lookup, refresh_reader=self.refresh_reader, jd_proof_lookup=self.jd_proof_lookup)
                     ingested_so_far += ingested
                 # Throttle: the 5s poller used to emit the same count dozens
                 # of times per company (e.g. ~200 identical Hays lines),
@@ -1067,7 +1077,8 @@ def run_scan(method: str = "full",
              only_ats: list | None = None,
              only_career: list | None = None,
              run_ats: bool = True,
-             run_career: bool = True) -> dict:
+             run_career: bool = True,
+             refresh_descriptions: bool = False) -> dict:
     """Run a full scan campaign and ingest the results.
 
     method:
@@ -1090,8 +1101,9 @@ def run_scan(method: str = "full",
     resume_from: optional run_id of a stopped run.  Companies already
       finished in that run (per its ``scan_log`` rows) are skipped — the
       scanners never revisit them — and the progress bar is offset so it
-      continues from the checkpoint instead of restarting at 0.  Combines
-      with ``only_companies`` (the intersection is scanned).  Completed
+      continues from the checkpoint instead of restarting at 0. The saved
+      exact phase/route selection and detail mode override current seeds or
+      new selection arguments; missing legacy scope is refused. Completed
       rows were already ingested into jobs, and re-ingestion upserts on
       the canonical URL key, so nothing is lost or duplicated.
 
@@ -1123,6 +1135,10 @@ def run_scan(method: str = "full",
         db.initialize()
 
     run_id = time.strftime("%Y%m%dT%H%M%S")
+    if db.get_scan_run(db_path, run_id) is not None:
+        # Rapid Stop/Resume must not overwrite the parent's same-second ID.
+        from uuid import uuid4
+        run_id += '_' + uuid4().hex[:8]
     # Tee every progress line into the run's scan_events timeline for later
     # download / analysis (phase + level inferred from the message text).
     progress = _event_tee(db_path, run_id, progress)
@@ -1146,71 +1162,43 @@ def run_scan(method: str = "full",
         "errors": phase_errors,
     }
 
-    # Read only names/enabled flags for scope and progress, once per enabled
-    # phase. This is CSV loading, not a seed validity/upgrade/audit sweep.
-    def _scope_rows(path):
-        with open(path, encoding="utf-8-sig", newline="") as fh:
-            sample = fh.read(4096)
-            fh.seek(0)
-            delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
-            rows = []
-            seen = set()
-            for r in csv.DictReader(fh, delimiter=delimiter):
-                seed = (r.get("seed_name") or r.get("name") or "").strip()
-                if not seed or seed.startswith("#"):
-                    continue
-                if (r.get("enabled") or "true").strip().lower() in {"0", "false", "no", "disabled"}:
-                    continue
-                name = (r.get("canonical_name") or seed).strip()
-                key = (seed.casefold(), (r.get("target_country") or "Global").strip().casefold(),
-                       (r.get("careers_url") or "").strip().casefold())
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append((seed, name))
-            return rows
-
-    ats_sel = _normalize_names(only_ats if only_ats is not None else only_companies)
-    career_sel = _normalize_names(only_career if only_career is not None else only_companies)
-    wanted_ats = ({c.lower() for c in ats_sel}
-                  if only_ats is not None or only_companies is not None else None)
-    wanted_career = ({c.lower() for c in career_sel}
-                     if only_career is not None or only_companies is not None else None)
-    if not run_ats:
-        wanted_ats = set()
-    if not run_career:
-        wanted_career = set()
-    ats_names = _scope_rows(seed_manager.user_ats_path()) if run_ats and wanted_ats != set() else []
-    career_names = _scope_rows(seed_manager.user_career_path()) if run_career and wanted_career != set() else []
-    if wanted_ats is not None:
-        ats_names = [(seed, name) for seed, name in ats_names
-                     if {seed.lower(), name.lower()} & wanted_ats]
-    if wanted_career is not None:
-        career_names = [(seed, name) for seed, name in career_names
-                        if {seed.lower(), name.lower()} & wanted_career]
-    full_ats, full_career = len(ats_names), len(career_names)
-    skip_ats: set[str] = set()
-    skip_career: set[str] = set()
+    from sponsorscout.application.scan_scope import (
+        read_targets, load_plan, save_plan, remaining_targets, write_seed)
     if resume_from:
-        try:
-            completed = db.get_completed_scan_companies(db_path, resume_from)
-            skip_ats = set(completed.get("ats", set()))
-            skip_career = set(completed.get("career", set()))
-        except Exception:
-            logger.exception("Could not load resume checkpoint %s", resume_from)
-    skip_names = skip_ats | skip_career
-    ats_remaining = [seed for seed, name in ats_names
-                     if not {seed.lower(), name.lower()} & skip_ats]
-    career_remaining = [seed for seed, name in career_names
-                        if not {seed.lower(), name.lower()} & skip_career]
-    n_ats, n_career = len(ats_remaining), len(career_remaining)
-    scan_only_ats = ats_remaining if wanted_ats is not None or skip_ats else None
-    scan_only_career = career_remaining if wanted_career is not None or skip_career else None
+        plan = load_plan(db_path, resume_from)
+        if plan is None:
+            raise ValueError("This legacy run has no saved target scope. Resume refused to avoid adding unselected targets; start an explicitly selected custom scan.")
+        refresh_descriptions = bool(plan.get('refresh_descriptions', False))
+        method = plan['method']
+        detail = method == 'full'
+        remaining = remaining_targets(db_path, resume_from, plan)
+    else:
+        ats_selection = only_ats if only_ats is not None else only_companies
+        career_selection = only_career if only_career is not None else only_companies
+        plan = {'version': 1, 'method': method,
+                'ats': read_targets(seed_manager.user_ats_path(), _normalize_names(ats_selection) if ats_selection is not None else None) if run_ats else [],
+                'career': read_targets(seed_manager.user_career_path(), _normalize_names(career_selection) if career_selection is not None else None) if run_career else []}
+        plan['refresh_descriptions'] = bool(refresh_descriptions)
+        remaining = {phase: list(plan[phase]) for phase in ('ats', 'career')}
+    run_ats, run_career = bool(plan['ats']), bool(plan['career'])
+    full_ats, full_career = len(plan['ats']), len(plan['career'])
+    n_ats, n_career = len(remaining['ats']), len(remaining['career'])
+    wanted_ats = {r.get('seed_name') or r.get('name') for r in plan['ats']}
+    wanted_career = {r.get('seed_name') or r.get('name') for r in plan['career']}
+    # Scanners receive only frozen remaining rows. Names alone cannot distinguish
+    # two country/URL routes with the same company, nor protect against seed edits.
+    ats_seed = write_seed(out_dir / f'{run_id}_ats_scope.csv', remaining['ats'])
+    career_seed = write_seed(out_dir / f'{run_id}_career_scope.csv', remaining['career'])
+    scan_only_ats = [r.get('seed_name') or r.get('name') for r in remaining['ats']] if resume_from or only_ats is not None or only_companies is not None else None
+    scan_only_career = [r.get('seed_name') or r.get('name') for r in remaining['career']] if resume_from or only_career is not None or only_companies is not None else None
+    skipped_ats = full_ats - n_ats
+    skipped_career = full_career - n_career
+    skipped_targets = skipped_ats + skipped_career
     run_method = ("custom" if (only_ats is not None or only_career is not None
                               or not run_ats or not run_career) else method)
     summary["method"] = run_method
-    seed_note = (f" (resuming {resume_from}: skipping {len(skip_names)} finished companies)"
-                 if resume_from and skip_names else "")
+    seed_note = (f" (resuming {resume_from}: skipping {skipped_targets} finished companies)"
+                 if resume_from and skipped_targets else "")
     # Structured PROGRESS: lines for the UI progress bar (one tick per
     # finished company).  Wrapped outside the event tee so ticks land in
     # the run timeline too.  base_* offsets resume runs so the bar
@@ -1220,10 +1208,14 @@ def run_scan(method: str = "full",
     # (no resume_from) keeps base 0 so its bar spans just the subset.
     progress = _ScanProgress(
         n_ats, n_career,
-        base_ats=max(0, full_ats - n_ats) if skip_names else 0,
+        base_ats=max(0, full_ats - n_ats) if skipped_targets else 0,
         base_career=max(0, full_career - n_career)
-        if skip_names else 0).wrap(progress)
+        if skipped_targets else 0).wrap(progress)
+    from sponsorscout.scanning.progress_events import emit as emit_work, TaskReporter
+    emit_work(progress, 'configure', total=n_ats+n_career+(max(0, full_ats-n_ats)+max(0, full_career-n_career) if skipped_targets else 0),
+              base=(max(0, full_ats-n_ats)+max(0, full_career-n_career)) if skipped_targets else 0)
     db.start_scan_run(db_path, run_id, run_method, n_ats, n_career)
+    save_plan(db_path, run_id, plan)
 
     # Live ingestion: scanners write accepted rows to their CSVs company by
     # company, so tail them into the DB while the scan runs. This makes the
@@ -1231,19 +1223,38 @@ def run_scan(method: str = "full",
     # ingest below re-upserts everything (idempotent), so counts stay exact.
     active_scanners: dict[str, object | None] = {"ats": None, "career": None}
 
+    def _lookup_capture_proof(job_url, description):
+        from sponsorscout.core.saved_details import capture_proof, _validated_capture
+        candidates = [capture_proof(inst,job_url,description) for inst in active_scanners.values()]
+        candidates = [marker for marker in candidates if marker]
+        return max(candidates, key=lambda marker:_validated_capture({'description':description},marker), default='')
+
     def _lookup_captured_jd(job_url: str) -> str:
         if not job_url:
-            return ""
-        best = ""
-        for key in ("ats", "career"):
-            inst = active_scanners.get(key)
-            getter = getattr(inst, "get_captured_jd", None)
+            return ''
+        from sponsorscout.core.saved_details import capture_proof, _validated_capture
+        candidates = []
+        for inst in active_scanners.values():
+            getter = getattr(inst, 'get_captured_jd', None)
             if callable(getter):
-                txt = getter(job_url)
-                if txt and len(txt) > len(best):
-                    best = txt
-        return best
+                text = getter(job_url)
+                if not text:
+                    # Ingestion may retain authentic card text as unproven
+                    # evidence. Detail retrieval must not treat it as a JD.
+                    lock = getattr(inst, '_jd_lock', None)
+                    if lock is not None:
+                        with lock:
+                            exact = getattr(inst,'_captured_jds',{}).get(str(job_url).strip(),'')
+                            alias = getattr(inst,'_captured_jd_identities',{}).get(posting_identity(job_url),'')
+                            text = exact if len(exact)>=len(alias) else alias
+                if text:
+                    marker = capture_proof(inst,job_url,text)
+                    stamp = _validated_capture({'description':text},marker) if marker else ''
+                    candidates.append((stamp,len(text),text))
+        return max(candidates, default=('','',''))[2]
 
+    from sponsorscout.core.saved_details import SavedDetailReader
+    refresh_reader = SavedDetailReader(db_path, force_refresh=refresh_descriptions)
     seen_canonical: set = set()
     live = _LiveIngester(
         db_path, run_id,
@@ -1255,7 +1266,7 @@ def run_scan(method: str = "full",
         ],
         seen_canonical=seen_canonical,
         progress=progress,
-        jd_lookup=_lookup_captured_jd,
+        jd_lookup=_lookup_captured_jd, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof,
     )
     live.start()
 
@@ -1270,7 +1281,7 @@ def run_scan(method: str = "full",
     elif n_ats > 0:
         try:
             scanner = ats_module.ATSScanner(
-                seed_file=str(seed_manager.user_ats_path()),
+                seed_file=str(ats_seed),
                 output_file=str(ats_out),
                 skip_preflight=True,
                 cancel_event=cancel_event,
@@ -1280,7 +1291,8 @@ def run_scan(method: str = "full",
             active_scanners["ats"] = scanner
             scanner.run_id = run_id
             ats_module.progress_cb = progress
-            scanner.run()
+            with TaskReporter(scanner, 'ats', progress):
+                scanner.run()
             ats_csv = ats_out
             if cancel_event.is_set():
                 cancelled = True
@@ -1318,7 +1330,7 @@ def run_scan(method: str = "full",
             logger.exception("Playwright import check failed")
         try:
             scanner = career_module.CareerPortalScanner(
-                input_csv=str(seed_manager.user_career_path()),
+                input_csv=str(career_seed),
                 output_csv=str(career_out),
                 detail_scan=detail,
                 skip_preflight=True,
@@ -1327,10 +1339,14 @@ def run_scan(method: str = "full",
                 only_companies=scan_only_career,
                 max_workers=None,
             )
+            from sponsorscout.core.saved_details import SavedDetailReader
+            scanner._saved_jd_reader = refresh_reader
+            scanner._saved_jd_reader.load_scopes(remaining['career'], cancel_event)
             active_scanners["career"] = scanner
             scanner.run_id = run_id
             career_module.progress_cb = progress
-            scanner.execute_crawler()
+            with TaskReporter(scanner, 'career', progress):
+                scanner.execute_crawler()
             career_csv = career_out
             if cancel_event.is_set():
                 cancelled = True
@@ -1339,6 +1355,7 @@ def run_scan(method: str = "full",
             phase_errors.append(f"Career: {type(exc).__name__}: {exc}")
             progress(f"Career scan failed: {exc}")
 
+    emit_work(progress, 'lifecycle', state='finalizing')
     # 3 ─ Ingest accepted rows + scan logs into the DB ------------------------
     # Detach the UI progress callbacks: the module-level ``progress_cb`` hooks
     # would otherwise keep pointing at a window that may already be gone.
@@ -1365,12 +1382,12 @@ def run_scan(method: str = "full",
             ingested, dups = _ingest_output_csv(
                 db_path, csv_base, run_id,
                 source_subtype="direct", seen_canonical=seen_canonical,
-                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures)
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof)
             rec_ing, rec_dups = _ingest_output_csv(
                 db_path, csv_base.with_name(csv_base.stem + "_recruiter.csv"),
                 run_id, source_subtype="recruiter",
                 seen_canonical=seen_canonical,
-                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures)
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof)
             log_rows, status_counts = _ingest_scan_log(
                 db_path, csv_base.with_name(csv_base.stem + "_scan_log.csv"),
                 run_id, scanner_label)
@@ -1412,7 +1429,7 @@ def run_scan(method: str = "full",
     # Persist real blocked targets for the dedicated tab. This contains no
     # visible-browser action and does not hold up other targets during a scan.
     from sponsorscout.core.blocked_portals import blocked_portals_from_summary
-    summary['blocked_portals'] = blocked_portals_from_summary(summary)
+    summary['blocked_portals'] = blocked_portals_from_summary(summary, include_detail_issues=True)
     summary['queue_persisted'] = not bool(summary['blocked_portals'])
     if summary['blocked_portals']:
         try:
@@ -1426,6 +1443,12 @@ def run_scan(method: str = "full",
     if final_ingest_failures:
         phase_errors.append(f"Final ingestion: {len(final_ingest_failures)} accepted row(s) could not be saved; see scan events and ingestion_failures")
 
+    summary["repeat_scan"] = refresh_reader.summary()
+    try:
+        import json
+        db.record_scan_events(db_path,run_id,[('info','repeat_scan','',json.dumps(summary['repeat_scan']))])
+    except Exception:
+        logger.exception('Could not record repeat-scan counters')
     summary["ingested"] = ingested_total
     summary["duplicates"] = dup_total
     summary['merged'] = merged_total+dup_total
@@ -1434,7 +1457,7 @@ def run_scan(method: str = "full",
     summary["log_rows"] = log_rows_total
     summary["cancelled"] = cancelled
     summary["resume_from"] = resume_from or ""
-    summary["resumed_skipped"] = len(skip_names) if resume_from else 0
+    summary["resumed_skipped"] = skipped_targets if resume_from else 0
     if phase_errors and ingested_total == 0:
         summary["status"] = "error"
     elif cancelled:

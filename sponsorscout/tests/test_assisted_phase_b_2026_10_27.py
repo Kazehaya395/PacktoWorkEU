@@ -114,6 +114,14 @@ def _scanner():
     return scanner, state
 
 
+@pytest.fixture(autouse=True)
+def capable_host_detail_budget(monkeypatch):
+    # These tests exercise the three-tab scheduler, independent of CI hardware.
+    # Low-spec caps have their own policy/integration regressions.
+    monkeypatch.setattr(sd, "recommended_workers",
+                        lambda kind, requested=None: min(3, requested or 3))
+
+
 def _patch(monkeypatch, *, wall=False):
     monkeypatch.setattr(sd, "watch_page_responses", lambda page: None)
     monkeypatch.setattr(sd, "inspect_page", lambda *args, **kwargs: None)

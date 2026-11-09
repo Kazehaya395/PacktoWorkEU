@@ -224,10 +224,10 @@ def test_real_terminal586_59_no_next_with_saved_search_overlay(window,tmp_path,m
                     html+='<section class="search-result"><a href="/legacy-content/overlay/saved-searches/save-search.html">Maak een vacaturemelding aan</a></section>'
                     start=((min(page,59)-1)//10)*10+1
                     html+='<nav class="pagination">'
-                    if page>1:html+='<a aria-label="Previous" href="?p='+str(page-2)+'">&lt;</a>'
+                    if page>1:html+='<a aria-label="Previous" href="?q=&amp;p='+str(page-2)+'">&lt;</a>'
                     for n in range(start,min(start+10,60)):
-                        html+=f'<a class="{"current"if n==min(page,59)else""}" aria-current="{"page"if n==min(page,59)else"false"}" href="?p={n-1}">{n}</a>'
-                    if page<59:html+=f'<a aria-label="Next" href="?p={page}">&gt;</a>'
+                        html+=f'<a class="{"current"if n==min(page,59)else""}" aria-current="{"page"if n==min(page,59)else"false"}" href="?q=&amp;p={n-1}">{n}</a>'
+                    if page<59:html+=f'<a aria-label="Next" href="?q=&amp;p={page}">&gt;</a>'
                     html+='</nav>' # actual terminal OMITs Next, no disabled fake control
             raw=('<html><body>'+html+'</body></html>').encode();self.send_response(status)
             self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Set-Cookie','fixture-session=yes; Path=/')
@@ -255,7 +255,9 @@ def test_real_terminal586_59_no_next_with_saved_search_overlay(window,tmp_path,m
     monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k:None)
     tab=window.assisted_tab;window.tabs.setCurrentWidget(tab);tab.url_edit.setText(base+'/careers?q=');tab.name_edit.setText('Fixture')
     try:
-        tab._start_ingestion();worker=tab._worker;wait_until(lambda:tab._worker is None,150)
+        # Count-mismatch previously took149.639s at a150s caller cutoff;
+        # do not cancel active traversal just before its actual outcome.
+        tab._start_ingestion();worker=tab._worker;wait_until(lambda:tab._worker is None,350)
         report=worker.report;genuine=120 if scenario=='wall13'else 586
         assert report['harvested']==genuine and report['duplicates']==120 and worker.count==genuine-120
         assert report['pages_visited']==(12 if scenario=='wall13'else 59)
@@ -269,7 +271,7 @@ def test_real_terminal586_59_no_next_with_saved_search_overlay(window,tmp_path,m
             assert not any('p=59' in c for c in calls if not c.startswith('/jobs/'))
             assert report['country_resolved']==586 and not report['country_unresolved']
             assert len(details)==586 and all('fixture-session=yes'in value for value in cookies)
-            assert report['terminal_evidence']['kind']=='terminal_pager_reconciled'
+            assert report['terminal_evidence']['kind']=='disappeared_pager_reconciled'
             assert report['initial_response']and len(report['page_summaries'])>=59
         elif scenario=='country_blocked':
             assert report['listing_completed']and report['country_resolved']==544 and report['country_unresolved']==42

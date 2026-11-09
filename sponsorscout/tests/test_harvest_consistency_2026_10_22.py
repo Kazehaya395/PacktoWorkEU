@@ -633,7 +633,10 @@ def test_refused_advances_get_escalating_polite_cooldowns_before_probes():
     assert "cooldowns_used < len(_COOLDOWN_STEPS_S)" in seg
     assert "_COOLDOWN_STEPS_S[cooldowns_used]" in seg
     assert "mis_advances = 0" in seg
-    assert "wait_for_timeout(int(delay * 1000))" in seg
+    # C17: still wait the full step unless Stop is pressed, but in cancellable
+    # browser-time slices rather than a single uninterruptible 15/45/90s call.
+    assert "_interruptible_page_wait(page, delay, cancel_event)" in seg
+    assert "page.reload(" in seg
 
 
 def test_cooldown_escalation_is_bounded_and_polite():

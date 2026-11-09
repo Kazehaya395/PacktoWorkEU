@@ -137,12 +137,25 @@ _JD_DOMAIN_CUES: dict[str, list[str]] = {
 }
 _JD_DOMAIN_REGEXES: list[tuple[str, re.Pattern]] = []
 
-_SOFT_SKILL_GROUPS = {
-    "Soft Skills",
-    "Professional Skills & Work Methods",
-    "Project, Product & Business Operations",
-    "HR, Recruitment & People Operations",
+_SOFT_SKILL_GROUPS = {"Soft Skills"}
+# Explicit positive taxonomy: an unrecognised/non-soft group is not
+# automatically a technical skill. Clinical, commercial and other role
+# competencies and credentials remain in the professional/domain partition.
+_TECHNICAL_SKILL_GROUPS = {
+    "Technical Skills", "Software Engineering", "Cybersecurity & IT Support",
+    "Data & Analytics", "DevOps, Cloud & Infrastructure", "Enterprise Applications & ERP",
+    "AI, Machine Learning & Automation", "Telecommunications & Networking",
+    "Engineering & Manufacturing", "Process, Chemical & Materials Engineering",
+    "Manufacturing & Operations",
 }
+_SKILL_KINDS = {}
+_EXTRACTION_SCHEMA = b'contextual-role-benefit-partitions-v2'
+
+
+def skill_kind(term):
+    _load_data()
+    return _SKILL_KINDS.get(term, 'professional_skill')
+
 
 
 class InsightsDataError(RuntimeError):
@@ -336,7 +349,7 @@ def taxonomy_version() -> str:
             raise InsightsDataError(_DATA_ERROR)
         if not _DATA_VERSION:
             try:
-                fingerprint = hashlib.sha256(b'indexed-matcher-20261024-v2-clauses')
+                fingerprint = hashlib.sha256(_EXTRACTION_SCHEMA)
                 for name in ('categories.json','domains.json','skills_dictionary.csv'):
                     path = _find_data_file(name)
                     if not path.is_file():
@@ -366,7 +379,7 @@ def _load_data() -> None:
             if not _SKILLS or not _CATEGORIES or not _DOMAINS:
                 raise InsightsDataError('Insights taxonomy is empty or unreadable; reinstall the packaged data files.')
             _build_skill_index()
-            fingerprint = hashlib.sha256(b'indexed-matcher-20261024-v2-clauses')
+            fingerprint = hashlib.sha256(_EXTRACTION_SCHEMA)
             for name in ('categories.json', 'domains.json', 'skills_dictionary.csv'):
                 fingerprint.update(_find_data_file(name).read_bytes())
             _DATA_VERSION = fingerprint.hexdigest()[:24]
@@ -383,7 +396,7 @@ def _load_data_impl() -> None:
     # Initialize once under _DATA_LOCK. Missing assets cache an explicit
     # error; they must never cause repeated regex appends per job.
     _CATEGORIES.clear(); _CATEGORY_REGEXES.clear(); _CATEGORY_KEYWORD_RE.clear()
-    _DOMAINS.clear(); _DOMAIN_MAP.clear(); _SKILLS.clear()
+    _DOMAINS.clear(); _DOMAIN_MAP.clear(); _SKILLS.clear(); _SKILL_KINDS.clear()
 
     # 1. Load categories
     cat_file = _find_data_file("categories.json")
@@ -470,6 +483,8 @@ def _load_data_impl() -> None:
                         "regex": pat,
                     }
                     _SKILLS.append(entry)
+                    _SKILL_KINDS[entry['term']] = ('soft_skill' if grp in _SOFT_SKILL_GROUPS
+                        else 'technical_skill' if grp in _TECHNICAL_SKILL_GROUPS else 'professional_skill')
                     if grp in _SOFT_SKILL_GROUPS:
                         soft_set.add(entry["term"])
                     if is_cs:
@@ -485,7 +500,7 @@ def _load_data_impl() -> None:
 
 
 def get_soft_skill_terms() -> set[str]:
-    """Return cached set of soft/professional skill canonical names."""
+    """Return cached set of interpersonal and work-style skill canonical names."""
     _load_data()
     return _SOFT_SKILL_TERMS
 
@@ -606,7 +621,8 @@ def extract_terms(
     _load_data()
     category = classify_category(title, text)
     domain = classify_domain(industry, title=title, text=text, company=company)
-    combined = f"{title or ''}\n{text or ''}".strip()
+    from sponsorscout.core.jd_text import competency_text
+    combined = f"{title or ''}\n{competency_text(text)}".strip()
 
     terms: list[tuple[str, str]] = []
     seen_skills: set[str] = set()
@@ -617,7 +633,7 @@ def extract_terms(
                 continue
             seen_skills.add(term_name)
             grp = item["group"]
-            kind = "soft_skill" if grp in _SOFT_SKILL_GROUPS else "technical_skill"
+            kind = _SKILL_KINDS[term_name]
             terms.append(("skill", term_name))
             terms.append((kind, term_name))
 

@@ -11,7 +11,7 @@ import re
 import tempfile
 from collections import Counter
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit, quote, unquote, urlencode
 
 from sponsorscout.core.url_normalizer import normalize_url
 
@@ -47,11 +47,94 @@ def portal_queue_key(url: str) -> str:
         return ''
 
 
+# Recognised transient access proofs, not job/tenant/content selectors. This
+# equivalence is identity-only: original navigation URLs and portal scopes are
+# retained, and a readable primary JD must still be independently established.
+_ACCESS_PROOF_PARAMETERS = frozenset({'afd_azwaf_tok','__cf_chl_tk','__cf_chl_rt_tk'})
+
+
+def is_access_proof_parameter(key):
+    return str(key or '').casefold() in _ACCESS_PROOF_PARAMETERS
+
+
+_UNRESERVED = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~')
+
+
+def _canonical_posting_path(path):
+    """Encode raw UTF-8; fold escape case/unreserved bytes, never routing delimiters.
+
+    %2F is NOT a slash and %252F is NOT %2F. Query/fragment semantics are
+    intentionally outside this path-only representation equivalence.
+    """
+    encoded = quote(path, safe="/%:@!$&'()*+,;=-._~")
+    return re.sub(r'%([0-9a-fA-F]{2})', lambda m: chr(int(m[1],16))
+                  if chr(int(m[1],16)) in _UNRESERVED else '%' + m[1].upper(), encoded)
+
+
+def _posting_url_forms(url):
+    normalized = normalize_url(str(url or ''))
+    p = urlsplit(normalized)
+    canonical = _canonical_posting_path(p.path)
+    # Compatibility for old keys/URLs with raw non-ASCII slugs. Only decode
+    # valid UTF-8 and unreserved ASCII; keep reserved delimiters escaped.
+    def readable(m):
+        try:
+            text = unquote(m[0], errors='strict')
+        except UnicodeDecodeError:
+            return m[0]
+        return ''.join(c if ord(c)>127 or c in _UNRESERVED else quote(c,safe='') for c in text)
+    raw = re.sub(r'(?:%[0-9A-F]{2})+', readable, canonical)
+    lower = lambda path: re.sub(r'%[0-9A-F]{2}',lambda m:m[0].lower(),path)
+    return tuple(dict.fromkeys([normalized] + [urlunsplit(p._replace(path=path))
+                                for path in (canonical,raw,lower(canonical),lower(raw))]))
+
+
+def find_existing_posting(conn, url):
+    """Indexed, bounded compatibility lookup; no database rewrite or table scan.
+
+    Legacy raw/encoded forms are verified with the shared identity before use.
+    Existing duplicates, if any, are not silently merged or deleted.
+    """
+    forms = _posting_url_forms(url)
+    key = posting_identity(url)
+    keys = tuple(dict.fromkeys((key,) + forms))
+    placeholders = ','.join('?' for _ in keys)
+    try:
+        rows = conn.execute('SELECT * FROM jobs WHERE url IN ('+placeholders+
+            ') OR posting_key IN ('+placeholders+') ORDER BY id LIMIT 16',keys+keys).fetchall()
+    except Exception as exc:
+        if 'no such column: posting_key' not in str(exc):
+            raise
+        rows = conn.execute('SELECT * FROM jobs WHERE url IN ('+placeholders+
+                            ') ORDER BY id LIMIT 16',keys).fetchall()
+    matches = [row for row in rows if posting_identity(row['url'])==key]
+    if not matches:
+        # Mixed-case legacy escapes cannot be enumerated in a fixed IN list.
+        # An explicit /job/<numeric-id>/ prefix permits a bounded indexed
+        # lookup of that one observed record's aliases, never a host sweep.
+        p=urlsplit(normalize_url(url))
+        record=re.match(r'^(.*?/(?:job|jobs)/[0-9]+/)',p.path,re.I)
+        if record:
+            prefix=urlunsplit(p._replace(path=record[1],query='',fragment=''))
+            upper=prefix[:-1]+chr(ord(prefix[-1])+1)
+            candidates=conn.execute('SELECT * FROM jobs WHERE url>=? AND url<? ORDER BY url LIMIT 65',
+                                    (prefix,upper)).fetchall()
+            if len(candidates)>64:
+                raise ValueError('Posting alias lookup exceeded its bounded record scope; explicit review required')
+            matches=[row for row in candidates if posting_identity(row['url'])==key]
+    return next((row for row in matches if row['url']==normalize_url(url)), matches[0] if matches else None)
+
+
 def posting_identity(url: str) -> str:
     normalized = normalize_url(str(url or ''))
     if not normalized:
         return ''
     p = urlsplit(normalized)
+    pairs=parse_qsl(p.query,keep_blank_values=True)
+    if any(is_access_proof_parameter(k)for k,v in pairs):
+        p=p._replace(query=urlencode([(k,v)for k,v in pairs if not is_access_proof_parameter(k)]))
+    p = p._replace(path=_canonical_posting_path(p.path))
+    normalized = urlunsplit(p)
     # Any hash may select different jobs. Keep it (and its case) intact.
     if p.fragment:
         return normalized
@@ -69,8 +152,26 @@ def posting_identity(url: str) -> str:
     return normalized
 
 
+_NONPOSTING_TITLE = re.compile(
+    r"^(?:location_on|place|expand_more|arrow_forward|google tag manager|tag manager|"
+    r"tag manager(?: \d+)? \(new\)|and more|job type|list all|(?:0|no) (?:jobs?|vacancies|positions)(?: available| found)?|"
+    r"vai alle offerte salvate|oferty pracy(?: adecco)?|"
+    r"(?:view|show|see|browse|search|find|save) (?:all |our |saved )?(?:jobs|vacancies|offers)|"
+    r"industria (?:metalmeccanica|manifatturiera)|servizi\s*/\s*terziario|"
+    r"[€£$]\s*[\d.,]+(?:\s*[-–]\s*[€£$]?\s*[\d.,]+)?(?:\s*(?:per |/)?(?:hour|month|year|hr|h|pa))?)$", re.I)
+
+
+def nonposting_title(title: str) -> bool:
+    text=' '.join(str(title or '').split())
+    # Uppercase Italian industry labels are taxonomy, not occupational titles.
+    # Preserve an actual role following the sector, rather than blacklisting sectors.
+    sector=bool(re.fullmatch(r'INDUSTRIA [A-ZÀ-ÖØ-Þ /-]+',text))
+    role=bool(re.search(r'(?i)\b(?:engineer|manager|director|analyst|specialist|technician|operator|supervisor|operai[oa]|operatore|operatrice|tecnic[oa]|ingegner[ea]|responsabile|addett[oa]|impiegat[oa]|saldatore|magazziniere|carrellista|manutentore|elettricista|consulente)\b',text))
+    return bool(_NONPOSTING_TITLE.fullmatch(text) or (sector and not role))
+
+
 def metadata_title(title: str) -> bool:
-    return bool(_METADATA_TITLE.fullmatch(str(title or '').strip()))
+    return bool(_METADATA_TITLE.fullmatch(str(title or '').strip()) or nonposting_title(title))
 
 
 def weak_title(title: str) -> bool:
@@ -95,7 +196,7 @@ _EVERGREEN_TITLE = re.compile(
 POSTING_CONTEXT_PATTERN = (
     r'^(?:jobs?|job-?details?|find-job|(?:open[-_])?positions?|vacanc(?:y|ies)|'
     r'requisitions?|postings?|openings?|job[-_](?:openings?|offers?)|'
-    r'open[-_](?:roles?|vacanc(?:y|ies)))$')
+    r'open[-_](?:roles?|vacanc(?:y|ies))|stellenangebote|vacatures?|offres?|offerte|ofertas?)$')
 _POSTING_SEGMENT = re.compile(POSTING_CONTEXT_PATTERN,re.I)
 _OPAQUE_POSTING_ID = re.compile(r'^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,64})$',re.I)
 
@@ -104,15 +205,60 @@ def evergreen_title(title: str) -> bool:
     return bool(_EVERGREEN_TITLE.search(str(title or '')))
 
 
+def split_career_posting(url: str, source_url: str = '') -> bool:
+    """Observed /careers?pid= route, tenant bound to this exact career origin.
+
+    Not a global pid allowance. Native discovery still requires an actual
+    clicked main-list control and matching selected JobPosting identity.
+    """
+    try:
+        p=urlsplit(str(url or ''));pairs=parse_qsl(p.query);q=dict(pairs)
+        if any(sum(k==key for k,v in pairs)!=1 for key in ('pid','domain')):return False
+        domain=q.get('domain','').lower().rstrip('.')
+        if (p.scheme not in ('http','https') or p.username or p.password or
+                p.path.rstrip('/')!='/careers' or not re.fullmatch(r'\d{6,20}',q.get('pid','')) or
+                not re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',domain) or
+                not (p.hostname==domain or (p.hostname or '').endswith('.'+domain))):return False
+        if source_url:
+            s=urlsplit(source_url);sq=dict(parse_qsl(s.query))
+            return ((p.scheme,p.netloc,p.path)==(s.scheme,s.netloc,s.path) and
+                    sorted((k,v)for k,v in pairs if k!='pid')==sorted((k,v)for k,v in parse_qsl(s.query)if k!='pid'))
+        return True
+    except (ValueError,TypeError):return False
+
+
+def posting_utility_url(url: str) -> bool:
+    """A child location chooser is not another requisition, even under an ID.
+
+    Only a terminal utility segment is rejected; a genuine role whose slug
+    mentions locations, or a job with a location query, remains untouched.
+    """
+    try:
+        parts = urlsplit(str(url or ''))
+        path = parts.path.rstrip('/')
+        if not re.search(r'(?i)/(?:locationpicker|location-picker|location_picker)$', path):
+            return False
+        parent = parts._replace(path=path.rsplit('/', 1)[0], query='', fragment='')
+        # Require a posting-shaped parent, rather than banning a legitimate
+        # role called Location Picker directly below /jobs/.
+        return (explicit_detail_url(urlunsplit(parent)) or bool(re.search(
+            r'(?i)/(?:details|job-?details?)/\d{4,}(?:/[^/]+)?$', parent.path)))
+    except ValueError:
+        return False
+
+
 def explicit_detail_url(url: str) -> bool:
     """Acceptance evidence, not a dedupe key. Never an arbitrary site number."""
     try:
+        if posting_utility_url(url):return False
+        if split_career_posting(url):return True
         parts = urlsplit(url)
         segments = [part for part in parts.path.split('/') if part]
         has_context = any(_POSTING_SEGMENT.fullmatch(part) for part in segments[:-1])
+        query_context = any(_POSTING_SEGMENT.fullmatch(part) for part in segments)
         identifiers = {'jobid','job_id','gh_jid','reqid','requisitionid','career_job_req_id','postingid','vacancyid'}
         if any(value.strip() and (key.lower() in identifiers or
-               (key.lower() in {'id','jid'} and has_context)) for key,value in parse_qsl(parts.query)):
+               (key.lower() in {'id','jid'} and query_context)) for key,value in parse_qsl(parts.query)):
             return True
         if not has_context:
             return False
@@ -122,8 +268,9 @@ def explicit_detail_url(url: str) -> bool:
         if re.fullmatch(r'(?:[A-Za-z]{0,3}[-_]?)?\d{4,}[-_][^/]+\.html?|[^/]+[-_]\d{4,}\.html?', leaf, re.I):
             return True
         # A context-bound UUID/hash OR explicit numbered requisition slug.
-        return any(_OPAQUE_POSTING_ID.fullmatch(part) for part in segments[1:]) or bool(
-            re.search(r'(?:[-_/])(?:[A-Za-z]{0,3}[-_]?)?\d{4,}(?:/|$)',parts.path))
+        return (any(_OPAQUE_POSTING_ID.fullmatch(part) for part in segments[1:])
+                or bool(re.search(r'(?:^|[-_])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$', leaf, re.I))
+                or bool(re.search(r'(?:[-_/])(?:[A-Za-z]{0,3}[-_]?)?\d{4,}(?:/|$)',parts.path)))
     except ValueError:
         return False
 
@@ -139,12 +286,78 @@ _ACTION_TITLE = re.compile(
     r'crea (?:un )?avviso(?: di lavoro)?|jobalarm erstellen)[.! ]*$')
 
 
+def source_bound_external_posting(url, source_url):
+    """Observed Work in Lithuania → cvbankas posting contract, not a global allowlist.
+
+    Admission requires the explicitly selected source board and the provider's
+    actual numbered posting route. Neither title nor redirect targets are guessed.
+    """
+    try:
+        source=urlsplit(str(source_url or ''));target=urlsplit(str(url or ''))
+        return (source.scheme=='https' and source.hostname=='jobs.workinlithuania.com'
+            and target.scheme=='https' and target.hostname in ('cvbankas.lt','www.cvbankas.lt')
+            and not target.username and not target.password
+            and bool(re.fullmatch(r'/[^/]+/1-[1-9][0-9]{3,}/?',target.path)))
+    except ValueError:return False
+
+
+_INFORMATION_TITLE = re.compile(
+    r"^(?:go to jobs|please contact us[! ]*|get on board|meine job alerts|"
+    r"your career at .+|your path to .+|"
+    r"grow with us and be part of our success story[.! ]*|"
+    r"reasons to join .+|hol' dir alle infos[! ]*|"
+    r"erfahre, was es bedeutet, bei uns zu arbeiten[.! ]*|"
+    r"entdecke deine möglichkeiten[! ]*|entdecke spannende karrierewege .+|"
+    r"teil unseres teams werden|für erfahrene|detail screen(?: - .+)?|"
+    r"career [i|] .+|jobs at .+|[\w &.-]+ group)$", re.I)
+
+
+def nonposting_record(url, title='', raw_title=''):
+    """Information/analytics cannot become a vacancy via recovered page titles.
+
+    Strong actual requisitions win; intentional open applications are unchanged.
+    This does not infer posting existence from a synthetic fragment alone.
+    """
+    if posting_utility_url(url):return True
+    try:
+        fragment=urlsplit(str(url or '')).fragment
+        if re.fullmatch(r'(?i)job=tag-manager(?:-[a-z0-9]+)*-?',fragment):return True
+    except ValueError:return True
+    if str(title or '').strip().casefold() == 'order now':return True
+    if explicit_detail_url(url) or evergreen_title(title):return False
+    return bool(nonposting_url(url) or _INFORMATION_TITLE.fullmatch(' '.join(str(title or '').split()))
+                or nonposting_title(title) or nonposting_title(raw_title))
+
+
+def nonposting_url(url):
+    """Structural profiles/taxonomies and identifier-free home pages, not roles."""
+    try:
+        p=urlsplit(str(url or ''))
+        if p.scheme not in ('http','https') or not p.netloc:return False
+        if posting_utility_url(url):return True
+        if explicit_detail_url(url):return False
+        # Generic career-information branches and board/category endpoints.
+        if re.search(r'(?i)/(?:career|careers|karriere)/why-[^/]+/(?:development|benefits|culture|values)/?$',p.path):return True
+        if re.search(r'(?i)/media/(?:media-library|media-center)(?:/|$)',p.path):return True
+        # These are route semantics, not employer-specific URL blacklists.
+        if re.search(r'(?i)/(?:career|careers|karriere)/(?:students|career-paths|areas-of-work|inside-[^/]+-careers|[^/]+-top-employer|[^/]+-als-arbeitgeber)(?:/|$)',p.path):return True
+        if re.search(r'(?i)/(?:career|careers|karriere)/(?:career-contact|application-process|what-we-offer|schuelerinnen|studierende|berufseinsteiger|berufserfahrene|arbeiten-bei-[^/]+|job-openings)/?$',p.path):return True
+        if re.search(r'(?i)/page/[0-9a-f]{24,64}/?$',p.path):return True
+        if re.search(r'(?i)/(?:whybayer(?:/|$)|working-at-bayer(?:/|$)|how-to-join-us(?:/|$))',p.path):return True
+        if re.search(r'(?i)/careers?/(?:benefits-rewards|development-teamwork|meet_our_employees)/?$',p.path):return True
+        if not p.path.strip('/') and not p.query and not p.fragment:return True
+        return bool(re.search(r'(?i)^/@|/(?:go/[^/]+/\d+|careers?/[^/]+/profile|careers?/jobs_by_[^/]+|lp/[^/]+/[^/]+?)/?$|(?:^|/)(?:working-on-(?:land|board)|overview-apprentices|professionals|vacancies-job-opportunities)(?:\.html?)?/?$',p.path))
+    except ValueError:return True
+
+
 def administrative_action(url, title='') -> bool:
     """Subscription/account furniture, not a role. Positive job evidence wins.
 
     No hostname/locale presets; a genuine role can contain `legal`, `about`,
     `saved-search` or `job-alert` in its title/path. IDs are never deduped here.
     """
+    if nonposting_url(url):
+        return True
     if explicit_detail_url(url) or evergreen_title(title):
         return False
     try:
@@ -158,6 +371,8 @@ def posting_candidate(url, title='', validator=None) -> bool:
     if not str(url or '').startswith(('https://','http://')):
         return False
     if re.search(r'(?i)\.(?:pdf|png|jpe?g|gif|svg|css|js|zip)(?:$|[?#])', str(url)):
+        return False
+    if nonposting_record(url,title):
         return False
     if administrative_action(url, title):
         return False

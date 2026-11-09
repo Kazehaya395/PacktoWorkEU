@@ -20,10 +20,10 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 from sponsorscout.scanning.response_evidence import challenge_reason, stated_job_total, visible_text
-from sponsorscout.core.browser_evidence import inspect_page,public_snapshot,redact_url,redact_text,sensitive_url,watch_page_responses
+from sponsorscout.core.browser_evidence import inspect_page,public_snapshot,redact_url,redact_text,sensitive_url,watch_page_responses,admitted_job_links,career_listing_links
 from sponsorscout.i18n import _ as _translate
 from sponsorscout.core.activity import ingestion_task
-from sponsorscout.core.job_identity import portal_queue_key, merge_sources, explicit_detail_url, administrative_action, posting_candidate
+from sponsorscout.core.job_identity import portal_queue_key, merge_sources, explicit_detail_url, administrative_action, posting_candidate, posting_identity
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +52,29 @@ def strip_locale_segment(url: str) -> str | None:
     return candidate if candidate != url else None
 
 
-_PAGING_PARAMS = ("p", "page", "pg", "pagenumber", "pagenum", "currentpage", "offset", "start", "pagina", "seite")
+_PAGING_PARAMS = ("p", "page", "pg", "pagenumber", "pagenum", "currentpage", "offset", "start", "from", "pagina", "seite")
 
 #: F-38 (round 13): escalating polite cool-down steps (seconds) spent on
 #: repeated refused advances over a FULL page - a bot edge rate-limit window
 #: can outlast a single 15 s pause. Bounded: three pauses, 150 s total.
 _COOLDOWN_STEPS_S = (15.0, 45.0, 90.0)
+
+
+def _interruptible_page_wait(page, seconds: float, cancel_event=None) -> bool:
+    """Wait politely in browser-time slices, but let Stop interrupt each slice.
+
+    In particular, a single F-38 cool-down must not strand the user's Stop
+    button for 15/45/90 seconds. Using the browser's clock also keeps Playwright
+    responsive to a closed page. False means cancellation, not a paging error.
+    """
+    remaining_ms = max(0, round(float(seconds) * 1000))
+    while remaining_ms:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        chunk_ms = min(500, remaining_ms)
+        page.wait_for_timeout(chunk_ms)
+        remaining_ms -= chunk_ms
+    return cancel_event is None or not cancel_event.is_set()
 
 
 def paging_href_candidates(page, current_url: str, tried: set) -> list:
@@ -71,7 +88,7 @@ def paging_href_candidates(page, current_url: str, tried: set) -> list:
     skipped. No host-name rules (guide §15.9).
     """
     cur = urlparse(current_url)
-    cur_q = {k: v[0] for k, v in parse_qs(cur.query).items()}
+    cur_q = {k.casefold(): v[0] for k, v in parse_qs(cur.query).items()}
     cur_val = None
     for k in _PAGING_PARAMS:
         if k in cur_q:
@@ -84,17 +101,23 @@ def paging_href_candidates(page, current_url: str, tried: set) -> list:
     try:
         hrefs = page.eval_on_selector_all(
             "a[href], link[rel='next'][href]",
-            "els => els.map(e => ({h: e.getAttribute('href'), rel: (e.getAttribute('rel') || '').toLowerCase()}))"
+            "els => els.map(e => ({h: e.getAttribute('href'), rel: (e.getAttribute('rel') || '').toLowerCase(), active: [e,e.closest('li')].some(n=>n && (n.getAttribute('aria-current')==='page'||/\\b(active|current|selected)\\b/i.test(n.className||''))), disabled: [e,e.closest('li')].some(n=>n && (n.hasAttribute('disabled')||n.getAttribute('aria-disabled')==='true'))}))"
         )
     except Exception:
         return out
     rel_next = []
+    active_positions = {_paging_position(urljoin(current_url,item.get('h')or''))
+                        for item in hrefs or [] if isinstance(item,dict) and item.get('active')}
+    active_positions.discard(None)
+    if len(active_positions)>1:return []
+    current_position = _paging_position(current_url) or next(iter(active_positions),None)
     cur_path_m = re.search(r"/page/(\d+)(?=/|$)", cur.path, re.I)
     cur_path_page = int(cur_path_m.group(1)) if cur_path_m else None
     for item in hrefs or []:
         if isinstance(item, dict):
             h = item.get("h") or ""
             rel = item.get("rel") or ""
+            if item.get('active') or item.get('disabled'):continue
         else:
             h = str(item or "")
             rel = ""
@@ -106,10 +129,19 @@ def paging_href_candidates(page, current_url: str, tried: set) -> list:
         pu = urlparse(u)
         if (pu.scheme, pu.netloc) != (cur.scheme, cur.netloc):
             continue
-        if "next" in rel.split():
-            rel_next.append(u)
+        candidate_query={k.casefold():v for k,v in parse_qs(pu.query,keep_blank_values=True).items()}
+        if any(k not in _PAGING_PARAMS and candidate_query.get(k)!=v
+               for k,v in ((k.casefold(),v)for k,v in parse_qs(cur.query,keep_blank_values=True).items())):
+            continue
+        target_position = _paging_position(u)
+        if current_position and target_position and (current_position[0]!=target_position[0] or target_position[1]<=current_position[1]):
+            continue
+        if not _forward_paging_url(current_url, u):
+            continue  # A rel=next label cannot make page3 forward from ?Page=13.
         base_path = re.sub(r"/page/\d+(?=/|$)", "", cur.path, flags=re.I).rstrip("/")
         candidate_base = re.sub(r"/page/\d+(?=/|$)", "", pu.path, flags=re.I).rstrip("/")
+        if base_path == candidate_base and "next" in rel.split():
+            rel_next.append(u)
         if base_path == candidate_base:
             pm = re.search(r"/page/(\d+)(?=/|$)", pu.path, re.I)
             if pm:
@@ -117,9 +149,11 @@ def paging_href_candidates(page, current_url: str, tried: set) -> list:
                 if cur_path_page is None or pval > cur_path_page:
                     out.append((pval, u))
                     continue
-        if (pu.netloc, pu.path) != (cur.netloc, cur.path):
+        if base_path != candidate_base:
             continue
-        q = {k: v[0] for k, v in parse_qs(pu.query).items()}
+        q = {k.casefold(): v[0] for k, v in parse_qs(pu.query).items()}
+        if any(k not in _PAGING_PARAMS and k in q and q[k]!=v for k,v in cur_q.items()):
+            continue
         for k in _PAGING_PARAMS:
             if k not in q:
                 continue
@@ -132,6 +166,26 @@ def paging_href_candidates(page, current_url: str, tried: set) -> list:
             break
     out.sort()
     return list(dict.fromkeys(rel_next + [u for _, u in out]))
+
+
+def _paging_position(url):
+    parsed = urlparse(url)
+    query = {k.casefold(): v[0] for k,v in parse_qs(parsed.query).items()}
+    for key in _PAGING_PARAMS:
+        if key in query:
+            try:
+                return (key if key in ('offset','start','from') else 'page', int(query[key]))
+            except ValueError:
+                return None
+    match = re.search(r'/page/(\d+)(?=/|$)', parsed.path, re.I)
+    return ('page', int(match[1])) if match else None
+
+
+def _forward_paging_url(current, target):
+    before, after = _paging_position(current), _paging_position(target)
+    if before and after:
+        return before[0] == after[0] and after[1] > before[1]
+    return True  # Non-numeric Next remains governed by observed scope/DOM.
 
 
 def _paging_value(u: str):
@@ -250,8 +304,11 @@ def _record_assisted_evidence(page, phase, page_num, *, count=None):
     if phase=='page_saved':
         from sponsorscout.core.assisted_resume import observed_url_in_scope
         candidates=[v for v in paging_links if observed_url_in_scope(LAST_INGESTION_REPORT.get('url',''),v)and _paging_value(v)is not None and (_paging_value(record['url'])is None or _paging_value(v)>_paging_value(record['url']))]
-        if candidates:
-            LAST_INGESTION_REPORT['continuation']=dict(url=candidates[0],page=page_num+1,provenance='observed_forward_link',portal_key=portal_queue_key(LAST_INGESTION_REPORT.get('url','')),captured_at=record['captured_at'])
+        if count:
+            # Zero newly admitted rows cannot promote a replay to page N+1.
+            LAST_INGESTION_REPORT.pop('continuation', None)
+            if candidates:
+                LAST_INGESTION_REPORT['continuation']=dict(url=candidates[0],page=page_num+1,source_url=record['url'],provenance='observed_forward_link',portal_key=portal_queue_key(LAST_INGESTION_REPORT.get('url','')),captured_at=record['captured_at'])
         summaries=LAST_INGESTION_REPORT.setdefault('page_summaries',[])
         if len(summaries)<1000:
             summaries.append({key:record.get(key)for key in ('captured_at','elapsed_seconds','page','page_parameter','url','parsed_rows','stated_total','http_status')})
@@ -340,8 +397,12 @@ def _wait_for_clearance(page, wait_s: float = 180.0, cancel_event=None) -> bool:
             if not _page_is_challenge(page)and _page_has_listing(page):
                 _verification_event(page,'verification_cleared');return True
             if time.monotonic()>=deadline:
-                _verification_event(page,'verification_not_accepted');return False
-            time.sleep(min(.5,max(.01,deadline-time.monotonic())))
+                _verification_event(page,'verification_unresolved');return False
+            delay=min(.5,max(.001,deadline-time.monotonic()))
+            if callable(getattr(page,'wait_for_timeout',None)):
+                page.wait_for_timeout(max(1,int(delay*1000)))
+            else:
+                time.sleep(delay)  # Non-browser adapters only.
     finally:_gate_attention(page,False)
 
 
@@ -359,6 +420,14 @@ def _recover_blank_page(page, current_url: str, page_num: int,
     """
     if cancel_event is not None and cancel_event.is_set():
         return 'cancelled'
+    evidence=_page_response_evidence(page)
+    rendered=evidence.get('rendered')or{}
+    if rendered.get('document_error'):
+        _record_assisted_evidence(page,'document_error',page_num,count=0)
+        return 'error'
+    if rendered.get('rendered_unextractable'):
+        _record_assisted_evidence(page,'rendered_unextractable',page_num,count=0)
+        return 'unextractable'
     if _page_is_challenge(page):
         _record_assisted_evidence(page, 'waiting_for_clearance', page_num, count=0)
         logger.info("Bot protection re-engaged on page %d; waiting for human "
@@ -372,9 +441,9 @@ def _recover_blank_page(page, current_url: str, page_num: int,
         if callable(progress_cb):
             try:
                 reason = _page_response_evidence(page)['reason']
-                message = (_translate("Action needed: access denied on page %d; no CAPTCHA was confirmed. Retry in Chromium or stop.")
+                message = (_translate("Access unavailable on page %d; waiting for current page recovery. No CAPTCHA was confirmed.")
                            if 'human verification not confirmed' in reason else
-                           _translate("Action needed: bot verification appeared on page %d — please solve the check in the Chromium window to continue..."))
+                           _translate("Verification pending on page %d — waiting for the page to clear. Interact only if the page requests it."))
                 progress_cb(message % page_num)
             except Exception:
                 pass
@@ -404,9 +473,9 @@ def _recover_blank_page(page, current_url: str, page_num: int,
         if callable(progress_cb):
             try:
                 reason = _page_response_evidence(page)['reason']
-                message = (_translate("Action needed: access denied on page %d; no CAPTCHA was confirmed. Retry in Chromium or stop.")
+                message = (_translate("Access unavailable on page %d; waiting for current page recovery. No CAPTCHA was confirmed.")
                            if 'human verification not confirmed' in reason else
-                           _translate("Action needed: bot verification appeared on page %d — please solve the check in the Chromium window to continue..."))
+                           _translate("Verification pending on page %d — waiting for the page to clear. Interact only if the page requests it."))
                 progress_cb(message % page_num)
             except Exception:
                 pass
@@ -420,6 +489,26 @@ def _recover_blank_page(page, current_url: str, page_num: int,
         return "cleared"
     _record_assisted_evidence(page, 'unreadable_after_reload', page_num, count=0)
     return "blank"
+
+
+def _discover_listing_entry(page, *, max_hops=2, cancel_event=None):
+    """Only observed same-origin search navigation; no live work outside Assisted."""
+    visited={getattr(page,'url','')}
+    for hop in range(max_hops):
+        if cancel_event is not None and cancel_event.is_set():return
+        evidence=_page_response_evidence(page);snapshot=evidence.get('rendered')or{}
+        if (evidence.get('reason')or snapshot.get('document_error')or
+                snapshot.get('listing_ready')or snapshot.get('rendered_unextractable')):return
+        targets=[u for u in career_listing_links(snapshot)if u not in visited]
+        if not targets:return
+        target=targets[0];visited.add(target)
+        _record_assisted_evidence(page,'career_entry_before_navigation',1,count=0)
+        try:
+            page.goto(target,wait_until='domcontentloaded',timeout=20000)
+            page.wait_for_timeout(750)
+        except Exception:
+            return
+        _record_assisted_evidence(page,'career_entry_navigation',1)
 
 
 def _jobish_anchor_count(page) -> int:
@@ -448,10 +537,12 @@ def next_page_url(current_url: str, page_num: int) -> str | None:
     scheme of its own. A board that ignores the synthesised parameter is
     caught by the caller's no-progress stop — never by a host-name rule.
     """
+    from sponsorscout.core.job_identity import split_career_posting
+    if split_career_posting(current_url):return None
     parsed = urlparse(current_url)
     q = parse_qs(parsed.query)
     matched_key = next((k for k in q if k.casefold() in _PAGING_PARAMS), None)
-    if matched_key is not None and matched_key.casefold() in {"offset", "start"}:
+    if matched_key is not None and matched_key.casefold() in {"offset", "start", "from"}:
         return None
     if matched_key is not None and matched_key.casefold() == "p":
         try:
@@ -524,6 +615,8 @@ def is_listing_self_link(url: str, listing_path: str) -> bool:
         return False
     if (pu.path.rstrip("/") or "/") != listing_path:
         return False
+    from sponsorscout.core.job_identity import explicit_detail_url
+    if explicit_detail_url(url):return False
     keys = {k.lower() for k in parse_qs(pu.query)}
     return not (keys & _JOBISH_QUERY_KEYS)
 
@@ -611,6 +704,16 @@ def _is_save_action_url(url: str) -> bool:
     ))
 
 
+def _harvest_utility_url(url):
+    """Use the same strong-requisition precedence as the rendered census."""
+    if administrative_action(url):return True
+    if explicit_detail_url(url):return False
+    return any(token in str(url).casefold()for token in (
+        '/my-account/','/privacy','/terms','/contact','/about','personal-details',
+        '/login','/register','specialization=jobsroot','vacature-opslaan',
+        'save-job','save-vacancy','job-opslaan'))
+
+
 def _card_detail_anchor(card):
     """Prefer the title's link over CTA/action anchors, irrespective of DOM order."""
     selectors = (
@@ -645,7 +748,7 @@ def _card_title(card, raw_title: str, full_url: str, scanner) -> str:
     return _extract_title_from_url_slug(full_url)
 
 
-def _bounded_card_text(anchor):
+def _bounded_card_text(anchor, admitted_urls=()):
     """Return the individual job-card text containing ``anchor``.
 
     Some portals wrap every card in an outer element whose class also contains
@@ -653,6 +756,34 @@ def _bounded_card_text(anchor):
     store the whole 10-card listing page in ``jobs.description`` for each job.
     Prefer a real per-posting container first; fail closed if none is found.
     """
+    # One evaluated read is equivalent to the legacy handle/count/text
+    # sequence below, but avoids four renderer round trips per posting.
+    # Keep the handle path for adapters lacking evaluate(), not for empty
+    # results: an empty string is the same deliberate fail-closed decision.
+    try:
+        text = anchor.evaluate("""(node, urls) => {
+            const detail = "a[href*='/job'],a[href*='/jobs/'],a[href*='/vacanc']," +
+                           "a[href*='/vacatur'],a[href*='/position']," +
+                           "a[href*='/opportunit'],a[href*='/career/']";
+            const admitted = new Set(urls);
+            let current = node.parentElement;
+            for (let depth = 0; current && depth < 12; depth++) {
+                const found = current.querySelectorAll(detail);
+                if (found.length > 1) return "";
+                const text = (current.innerText || "").trim();
+                if (found.length === 1 && text.length >= 25) {
+                    if (urls.length && Array.from(current.querySelectorAll('a[href]'))
+                        .filter(a => admitted.has(a.href)).length > 1) return "";
+                    return text.length <= 4000 ? text : "";
+                }
+                current = current.parentElement;
+            }
+            return "";
+        }""", list(admitted_urls))
+        if isinstance(text, str):
+            return text.strip() if len(text) <= 4000 else ""
+    except Exception:
+        pass
     try:
         handle = anchor.evaluate_handle("""node => {
             const detail = "a[href*='/job'],a[href*='/jobs/'],a[href*='/vacanc']," +
@@ -671,6 +802,16 @@ def _bounded_card_text(anchor):
         element = handle.as_element() if handle is not None else None
         if element is None:
             return ""
+        if admitted_urls:
+            # The old selector counts only a few English-style detail paths.
+            # A mixed-path wrapper can contain ONE /job/ link but many other
+            # census-admitted postings. It must not leak them into this card.
+            if element.evaluate("""(node, urls) => {
+                const admitted = new Set(urls);
+                return Array.from(node.querySelectorAll('a[href]'))
+                    .filter(a => admitted.has(a.href)).length > 1;
+            }""", list(admitted_urls)):
+                return ""
         text = (element.inner_text() or "").strip()
         # Extra guard against a portal-specific outer container that slipped
         # through the single-detail-anchor check above.
@@ -678,6 +819,80 @@ def _bounded_card_text(anchor):
     except Exception:
         pass
     return ""
+
+
+def _bounded_admitted_card_text(anchor, admitted_urls):
+    """Read a *single* rendered job card when the legacy path selectors miss it.
+
+    `admitted_urls` is the current page's visible posting census, which has
+    already passed the shared posting test/portal validator. A wrapper with
+    two admitted postings cannot supply context to either job; a lone title
+    without a per-posting container supplies no implied location. This is a
+    bounded, page-local DOM read, not a new network request or URL guess.
+    """
+    if not admitted_urls:
+        return ""
+    try:
+        handle = anchor.evaluate_handle(r"""(node, urls) => {
+            const admitted = new Set(urls);
+            if (!admitted.has(node.href) || node.closest('header, nav, footer, aside'))
+                return null;
+            const own = (node.innerText || "").trim();
+            let current = node;
+            // Some boards make the entire card one link. Its separately
+            // rendered lines are still bounded to this one admitted posting,
+            // even if the parent is an unsafe multi-posting wrapper.
+            let fallback = own.length >= 25 && own.length <= 1200 && /\n/.test(own)
+                ? node : null;
+            for (let depth = 0; current && current !== document.body && depth < 10; depth++) {
+                const found = Array.from(current.querySelectorAll('a[href]'))
+                    .filter(a => admitted.has(a.href));
+                if (found.length > 1) break; // never take a multi-posting wrapper
+                if (found.length === 1 && found[0] === node) {
+                    const text = (current.innerText || "").trim();
+                    if (text.length > 4000) break;
+                    // One long job title is not evidence for the place in a
+                    // sibling card. Require text beyond the link before we
+                    // accept a parent as the posting's own context.
+                    if (text.length >= 25 && text.length > own.length + 4) {
+                        if (current.matches('li, article, [role="listitem"], ' +
+                                '[class*="card"], [class*="job"], [class*="result"], ' +
+                                '[class*="vacancy"], [class*="position"], ' +
+                                '[class*="offer"], [class*="row"]')) return current;
+                        if (fallback === null && text.length <= 1200)
+                            fallback = current; // nearest augmented ancestor only
+                    }
+                }
+                current = current.parentElement;
+            }
+            return fallback;
+        }""", list(admitted_urls))
+        element = handle.as_element() if handle is not None else None
+        if element is None:
+            return ""
+        text = (element.inner_text() or "").strip()
+        return text if len(text) <= 4000 else ""
+    except Exception:
+        return ""
+
+
+def _observed_card_location(scanner, card_text, title, seed_name):
+    """Apply the existing card-place policy only to *this* posting's text.
+
+    An unlabelled line must pass the scanner's established location sanitizer.
+    Do not infer a country from the employer, URL, or a different posting.
+    """
+    loc_match = re.search(r"(?:Location|Locatie|Ort|Lieu|Ubicación|Localisation):\s*([^\n\r]+)",
+                          card_text, re.I)
+    if loc_match:
+        return loc_match.group(1).strip()
+    for line in card_text.splitlines():
+        line_s = line.strip()
+        if line_s and line_s != title:
+            candidate = scanner._sanitize_job_location(line_s, seed_name)
+            if candidate and candidate != "Unknown":
+                return candidate
+    return "Unknown"
 
 
 def _defer_unattempted_details(rows, reason):
@@ -714,37 +929,124 @@ def _trusted_click_element(el) -> bool:
         return False
 
 
+def _trusted_forward_click(page, element):
+    try:
+        href = element.get_attribute('href') or ''
+    except Exception:
+        href = ''
+    if href and not href.startswith(('#','javascript:')):
+        target = urljoin(page.url, href)
+        from sponsorscout.core.assisted_resume import observed_url_in_scope
+        if not observed_url_in_scope(page.url, target) or not _forward_paging_url(page.url, target):
+            return False
+    return _trusted_click_element(element)
+
+
 def _trusted_click_tagged(page) -> bool:
     try:
         el = page.query_selector("[data-ss-next='1']")
-        return bool(el and _trusted_click_element(el))
+        return bool(el and _trusted_forward_click(page, el))
     except Exception:
         return False
 
 
-_LISTING_SIGNATURE_JS = r"""() => {
-    const candidates = document.querySelectorAll(
-        "article a[href], [class*='job-result'] a[href], [class*='job-card'] a[href], " +
-        "[class*='vacancy-card'] a[href], a[href*='/vacatures/'], a[href*='/vacature/'], " +
-        "a[href*='/jobs/'], a[href*='/job/'], a[href*='/vacancies/'], a[href*='/vacancy/']"
-    );
-    const hrefs = [];
-    for (const a of candidates) {
-        const href = a.getAttribute('href') || '';
-        if (!href || /save-job|save-vacancy|vacature-opslaan|job-opslaan|^#|^javascript:/i.test(href)) continue;
-        if (a.closest('header, footer, nav, aside')) continue;
-        hrefs.push(href);
-        if (hrefs.length >= 3) break;
-    }
-    return hrefs.join('|');
-}"""
+def _listing_identity_snapshot(page):
+    # Newly appended split cards need the existing trusted selection observer
+    # before they can contribute URL identities (never use card text as an ID).
+    from sponsorscout.core.split_careers import observed_split_cards
+    observed_split_cards(page)
+    snapshot=inspect_page(page,kind='listing',validator=getattr(page,'_assisted_job_validator',None)) or {}
+    if not snapshot.get('ready') or snapshot.get('reason') or snapshot.get('document_error'):
+        return snapshot,set()
+    return snapshot,set(snapshot.get('posting_identities') or ())
 
 
 def _first_listing_signature(page) -> str:
     try:
-        return str(page.evaluate(_LISTING_SIGNATURE_JS) or "")
+        _snapshot,identities=_listing_identity_snapshot(page)
+        return '|'.join(sorted(identities))
     except Exception:
-        return ""
+        return ''
+
+
+_NATIVE_APPEND_JS = r"""() => {
+ document.querySelectorAll('[data-ss-append]').forEach(e=>e.removeAttribute('data-ss-append'));
+ const label=/^(?:mehr laden|meer laden|(?:load|show)(?: [1-9]\d{0,3})? more(?: positions| jobs| results)?)$/i;
+ const visible=e=>{for(let n=e;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0)return false;}return Array.from(e.getClientRects()).some(r=>r.width>1&&r.height>1);};
+ const candidates=[];
+ for(const e of Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"],div,span')).slice(0,12000)){
+  if(e.closest('header,nav,footer,aside,[class*="related" i],[class*="recommend" i]')||!visible(e))continue;
+  if(!label.test((e.value||e.textContent||'').replace(/\s+/g,' ').trim()))continue;
+  // Match the actual actionable node, not every ancestor/span with the label.
+  const action=e.matches('button,a,[role="button"],input')||/button|load[-_]?more|more[-_]?jobs/i.test((e.className||'')+' '+(e.id||''));
+  if(!action||e.querySelector('button,a,[role="button"],input'))continue;
+  if(e.hasAttribute('disabled')||e.getAttribute('aria-disabled')==='true'||/\b(?:disabled|is-disabled)\b/.test(e.className||''))continue;
+  const ownerForm=e.closest('form');
+  // Search/listing forms are primary content too. Application/contact forms
+  // remain excluded, and the bound may never escape a form to borrow cards.
+  if(ownerForm&&ownerForm.querySelector('input[type="email"],input[type="file"],input[type="password"],textarea'))continue;
+  let bounded=false;
+  for(let n=e.parentElement,d=0;n&&n!==document.body&&d<7;n=n.parentElement,d++){
+   if(n.querySelectorAll('[data-ss-primary-posting="1"]').length>=2){bounded=true;break;}
+   if(n===ownerForm)break;
+  }
+  if(bounded)candidates.push(e);
+ }
+ if(candidates.length!==1)return {found:candidates.length>0,ambiguous:candidates.length>1};
+ candidates[0].setAttribute('data-ss-append','1');return {found:true};
+}"""
+
+
+def _native_append_advance(page):
+    """None: absent; False: precise unproven/denied result; True: retained-ID growth."""
+    def finish(value,reason):
+        page._ss_native_append_diagnostic=reason
+        return value
+    try:
+        cancel = getattr(page, '_assisted_cancel_event', None)
+        if cancel is not None and cancel.is_set():return finish(False,'cancelled before native append')
+        snapshot,before_ids=_listing_identity_snapshot(page)
+        state=page.evaluate(_NATIVE_APPEND_JS) or {}
+        if not state.get('found'):return finish(None,'no enabled bounded primary append control')
+        if state.get('ambiguous'):return finish(False,'ambiguous primary append controls')
+        if snapshot.get('reason'):return finish(False,'current listing access wall')
+        if snapshot.get('census_truncated'):return finish(False,'primary identity census truncated')
+        if not before_ids:return finish(False,'empty admitted primary identity census')
+        before='|'.join(sorted(before_ids))
+        before_total=stated_job_total(page.content())
+        button=page.query_selector('[data-ss-append="1"]')
+        if button is None or not _trusted_click_element(button):return finish(False,'trusted append click failed')
+        deadline=time.monotonic()+8.0
+        while time.monotonic()<deadline:
+            if cancel is not None and cancel.is_set():return finish(False,'cancelled during native append')
+            if page.is_closed():return finish(False,'browser closed during native append')
+            snapshot,after_ids=_listing_identity_snapshot(page)
+            if snapshot.get('reason'):return finish(False,'current listing access wall after append')
+            if snapshot.get('document_error'):return finish(False,'current listing document error after append')
+            if snapshot.get('census_truncated'):return finish(False,'primary identity census truncated after append')
+            if before_ids < after_ids:
+                page._ss_native_append_proof=dict(url=page.url,stated_total=before_total,
+                    before_signature=before,after_signature='|'.join(sorted(after_ids)))
+                return finish(True,'retained primary identities and new posting URL observed')
+            page.wait_for_timeout(100)
+        return finish(False,'native append timed out without retained primary identity growth')
+    except Exception:
+        return finish(False,'native append observation failed')
+
+
+def _partial_listing_detail_gate(page,known_gate=False,control=None,cancel_event=None):
+    """Fresh current authority required; an append failure is not access clearance."""
+    if known_gate:return 'listing verification not accepted; no automatic JD hand-off; resume explicitly'
+    if control is not None and control.save_requested:return 'save partial requested; resume explicitly'
+    if cancel_event is not None and cancel_event.is_set():return 'cancelled by user'
+    try:
+        if page.is_closed():return 'assisted browser closed; resume explicitly'
+        snapshot=inspect_page(page,kind='listing',validator=getattr(page,'_assisted_job_validator',None)) or {}
+        if snapshot.get('reason'):return 'current listing verification not accepted; no automatic JD hand-off; resume explicitly'
+        if snapshot.get('document_error')or not snapshot.get('listing_ready'):
+            return 'current listing readability unproven; resume explicitly'
+    except Exception:return 'current listing readability unproven; resume explicitly'
+    return ''
 
 
 def _late_listing_advance(page,previous_signature):
@@ -856,16 +1158,71 @@ _PAGINATION_TARGET_JS = r"""(targetPageNum) => {
 }"""
 
 
+def _advertised_forward_page(page, next_number: int) -> bool | None:
+    """Whether the last real listing offered Next (None means unknown).
+
+    A guessed query parameter is not a board-owned paging affordance. Check
+    both numbered/JS controls and the board's own hrefs; a failed DOM read
+    must preserve the original conservative retry policy, not imply no pager.
+    """
+    try:
+        target = page.evaluate(_PAGINATION_TARGET_JS, next_number)
+        if target:
+            return True
+        if paging_href_candidates(page, page.url, set()):
+            return True
+        # Some explicit Next buttons live outside recognised pager containers.
+        controls = page.query_selector_all(
+            "a[rel='next'], a[data-page-dir='next'], button[data-page-dir='next'], "
+            "a[aria-label*='next' i], button[aria-label*='next' i], "
+            "a[aria-label*='successiv' i], button[aria-label*='successiv' i], "
+            "a[aria-label*='weiter' i], button[aria-label*='weiter' i], "
+            "a[aria-label*='suivant' i], button[aria-label*='suivant' i]"
+        )
+        return any(control.is_visible() for control in controls)
+    except Exception:
+        return None
+
+
+def _unadvertised_probe_replayed(*, synthetic: bool, replayed: bool,
+                                  two_index_guesses: bool, census_complete: bool,
+                                  forward_control: bool | None,
+                                  last_page_evidence: dict | None,
+                                  current_total: int | None, ingested: int,
+                                  unmet_total_seen: bool = False,
+                                  evidence_readable: bool = True,
+                                  probe_controls_absent: bool = True) -> bool:
+    """Both index-ambiguous guesses replayed an accounted page with no Next.
+
+    `?p=1` may itself be page 1 on a one-indexed board; only `?p=2` after
+    that replay can certify the *probe* was exhausted. New validated URLs,
+    incomplete/capped censuses, a pager, an unreadable page or unmet totals
+    preserve the original retry policy. This stops as partial, not complete.
+    """
+    if not (synthetic and replayed and two_index_guesses and census_complete
+            and forward_control is False and not unmet_total_seen
+            and evidence_readable and probe_controls_absent):
+        return False
+    if not isinstance(last_page_evidence, dict):
+        return False
+    if last_page_evidence.get('pagination_text') or last_page_evidence.get('forward_page_links'):
+        return False
+    return not any(isinstance(total, int) and total > ingested
+                   for total in (last_page_evidence.get('stated_total'), current_total))
+
+
 _PAGINATION_END_JS = r"""() => {
-    const scopes = Array.from(document.querySelectorAll('[class*="paginat" i], [class*="pager" i], nav[aria-label*="pag" i]'));
+    const scopes = [...document.querySelectorAll('[class*="paginat" i], [class*="pager" i], nav[aria-label*="pag" i]'), ...Array.from(document.querySelectorAll('button,a,[role=button]')).filter(el=>/^(?:mehr laden|meer laden|(?:load|show)(?: [1-9]\d{0,3})? more(?: positions| jobs| results)?)$/i.test((el.textContent||'').trim())).map(el=>el.parentElement)];
     const nexts = [];
+    const visible=el=>{for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0)return false;}return Array.from(el.getClientRects()).some(r=>r.width>1&&r.height>1);};
     for (const scope of scopes) {
         for (const el of scope.querySelectorAll('a, button, [role="button"]')) {
             const text = (el.textContent || '').trim();
             const label = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' +
                 (typeof el.className === 'string' ? el.className : '');
+            if (!visible(el)) continue;
             if (el.getAttribute('rel') === 'next' || /^[>›»→]$/.test(text) ||
-                /\b(next|volgende|weiter|nächste|suivant|siguiente|successiv[aoe]?)\b/i.test(label)) nexts.push(el);
+                /\b(next|volgende|weiter|nächste|suivant|siguiente|successiv[aoe]?)\b/i.test(label) || /^(?:(?:load|show)(?: [1-9]\d{0,3})? more(?: positions| jobs| results)?|mehr laden|meer laden)$/i.test(text)) nexts.push(el);
         }
     }
     return nexts.length > 0 && nexts.every(el => [el, el.closest('li, [role="listitem"]')].some(n => n && (
@@ -917,10 +1274,145 @@ _PAGER_STATE_JS = r"""() => {
 }"""
 
 
-def terminal_listing_evidence(page,observed,genuine_on_page):
-    if not genuine_on_page or _page_is_challenge(page):
+def reconciled_offset_end(page, observed, previous, summaries, census_complete):
+    """Certify an ordinary empty observed offset AFTER a fully accounted census."""
+    if not census_complete or not isinstance(previous,dict) or len(summaries)<2:
         return None
+    total=previous.get('stated_total')
+    if not isinstance(total,int) or total<=0 or total!=observed:
+        return None
+    last=summaries[-1]
+    if any(s.get('stated_total')!=total for s in summaries):return None
+    if page.url not in (previous.get('forward_page_links') or []):return None
+    try:
+        from urllib.parse import urlsplit,parse_qs
+        from sponsorscout.core.assisted_resume import observed_url_in_scope
+        here=parse_qs(urlsplit(page.url).query);before=parse_qs(urlsplit(last['url']).query)
+        if set(here.get('from',[]))!={str(total)}:return None
+        offset=int(before.get('from',['0'])[0]);size=int(last.get('parsed_rows')or 0)
+        if size<=0 or offset+size!=total or not observed_url_in_scope(last['url'],page.url):return None
+        e=_page_response_evidence(page);r=e.get('rendered') or {}
+        shell=' '.join(str(x)for x in r.get('headings',[]))+' '+str(e.get('title')or'')
+        if (e.get('status')!=200 or e.get('reason') or not r or r.get('document_error')
+                or r.get('visible_job_links') or r.get('failed_data_responses')
+                or getattr(page,'_assisted_failed_responses',[]) or r.get('rendered_unextractable')
+                or not re.search(r'(?i)search|jobs|stellenangebote|vacancies',shell)):
+            return None
+        current=stated_job_total(e.get('html')or'')
+        if current is not None and current!=total:return None
+        return dict(kind='observed_offset_boundary',stated_total=total,offset=total,last_complete_page=last.get('page'))
+    except (ValueError,TypeError,KeyError):
+        return None
+
+
+def _verification_exit_reason(page,exit_kind='deadline',read_failures=0):
+    try:
+        if page.is_closed():return 'browser closed before verification accepted'
+        snapshot=inspect_page(page,kind='listing',validator=getattr(page,'_assisted_job_validator',None))
+    except Exception:snapshot=None
+    if not snapshot:return 'current document observation unavailable; '+exit_kind
+    if exit_kind=='readiness_without_listing':return 'readiness ended without a readable listing'
+    if read_failures:return 'observation deadline reached with document read failures'
+    return 'observation deadline reached with current verification unresolved'
+
+
+def _blocking_listing_failures(values):
+    """Only demonstrably event-collection fetches are non-job telemetry.
+
+    Unknown failed requests remain blocking. No host allowlist and no blanket
+    exemption for advertising domains or failed fetches.
+    """
+    from urllib.parse import urlsplit,parse_qs
+    blocking=[]
+    for item in values or []:
+        try:
+            p=urlsplit(str(item.get('url')or''));q=parse_qs(p.query)
+            telemetry=(item.get('resource_type')in('fetch','xhr') and
+                bool(re.search(r'/collect(?:/[0-9]+)?/?$',p.path)) and
+                q.get('en')in(['page_view'],['gtag.config']))
+        except Exception:telemetry=False
+        if not telemetry:blocking.append(item)
+    return blocking
+
+
+def reconciled_native_append_end(page, observed, census_complete, harvested_urls):
+    """Require a proved native append, current identity coverage AND terminal UI.
+
+    Count equality alone, a failed census, a hidden listing or a merely failed
+    click never proves an end. Missing native controls count only after a real
+    successful append in this same listing document.
+    """
+    proof=getattr(page,'_ss_native_append_proof',None)
+    if not census_complete or not isinstance(proof,dict) or proof.get('url')!=page.url:
+        return None
+    try:
+        evidence=_page_response_evidence(page);rendered=evidence.get('rendered') or {}
+        if (evidence.get('reason') or not rendered.get('listing_ready')
+                or rendered.get('document_error') or rendered.get('census_truncated') or _blocking_listing_failures(rendered.get('failed_data_responses'))
+                or _blocking_listing_failures(getattr(page,'_assisted_failed_responses',[])) or getattr(page,'_ss_split_errors',[])):
+            return None
+        total=stated_job_total(evidence.get('html')or'')
+        ids={posting_identity(a.get('url','')) for a in rendered.get('admitted_anchors',[]) if a.get('url')}
+        saved={posting_identity(value) for value in harvested_urls}
+        if (not isinstance(total,int) or total<=0 or total!=observed or proof.get('stated_total')!=total
+                or not ids or len(ids)>=180 or len(ids)!=total or ids!=saved
+                or _first_listing_signature(page)!=proof.get('after_signature')):
+            return None
+        native=page.evaluate(_NATIVE_APPEND_JS) or {}
+        if native.get('found') or paging_href_candidates(page,page.url,set()):return None
+        state=page.evaluate(_PAGER_STATE_JS)
+        if isinstance(state,dict) and (state.get('enabled_forward') or state.get('current')!=state.get('maximum')):
+            return None
+        return dict(kind='native_append_reconciled',stated_total=total,visible_identities=len(ids),
+                    successful_native_append=True,native_control='absent_or_disabled')
+    except Exception:
+        return None
+
+
+def terminal_listing_evidence(page,observed,genuine_on_page,*,census_complete=False,harvested_urls=(),current_urls=()):
+    if not genuine_on_page or getattr(page,'_ss_split_errors',[]) or _page_is_challenge(page):
+        return None
+    native=reconciled_native_append_end(page,observed,census_complete,harvested_urls)
+    if native:return native
+    # A disappearing forward control can also be terminal, but only after
+    # disjoint pages, stable totals and all posting identities reconcile.
+    if census_complete and current_urls:
+        from sponsorscout.scanning.listing_completion import (
+            TERMINAL_CONTROLS_JS, record_census_page, reconcile_disappeared_pager)
+        try:
+            evidence = _page_response_evidence(page)
+            rendered = evidence.get('rendered') or {}
+            samples = getattr(page, '_ss_terminal_census', [])
+            record_census_page(samples, current_urls, stated_job_total(evidence.get('html') or ''))
+            page._ss_terminal_census = samples
+            controls = page.evaluate(TERMINAL_CONTROLS_JS)
+            candidate = reconcile_disappeared_pager(
+                samples, harvested_urls, current_urls, controls,
+                census_complete=census_complete,
+                failed=bool(evidence.get('reason') or not rendered.get('listing_ready')
+                            or rendered.get('document_error') or rendered.get('census_truncated')
+                            or rendered.get('failed_data_responses')))
+            if candidate:
+                page.wait_for_timeout(250)
+                # Both UI state and currently admitted identities must remain
+                # stable; settling may reveal a spinner or another forward link.
+                fresh = _page_response_evidence(page)
+                fresh_rendered = fresh.get('rendered') or {}
+                current_ids = {posting_identity(u) for u in current_urls}
+                fresh_ids = {posting_identity(a.get('url', '')) for a in
+                             fresh_rendered.get('admitted_anchors', []) if a.get('url')}
+                if (page.evaluate(TERMINAL_CONTROLS_JS) == controls
+                        and fresh_ids == current_ids and not fresh.get('reason')
+                        and fresh_rendered.get('listing_ready')
+                        and not fresh_rendered.get('document_error')
+                        and not fresh_rendered.get('failed_data_responses')
+                        and stated_job_total(fresh.get('html') or '') == candidate['stated_total']):
+                    return candidate
+        except Exception:
+            pass  # Insufficient evidence remains partial, never completed.
     if _pagination_end_reached(page):
+        total=stated_job_total(page.content())
+        if total is not None and total!=observed:return None
         return {'kind':'disabled_next'}
     try:
         state=page.evaluate(_PAGER_STATE_JS)
@@ -948,13 +1440,8 @@ def _persist_assisted_job(conn,record,max_attempts=3):
     from sponsorscout.core.job_identity import posting_identity
     for attempt in range(max_attempts):
         try:
-            try:
-                already = conn.execute('SELECT 1 FROM jobs WHERE url=? OR posting_key=? LIMIT 1',
-                                       (record['url'],posting_identity(record['url']))).fetchone()
-            except sqlite3.OperationalError as exc:
-                if 'no such column: posting_key' not in str(exc):
-                    raise
-                already = conn.execute('SELECT 1 FROM jobs WHERE url=?',(record['url'],)).fetchone()
+            from sponsorscout.core.job_identity import find_existing_posting
+            already = find_existing_posting(conn, record['url'])
             upsert_job(conn,record,commit=False)
             conn.commit()
             return bool(already)
@@ -986,7 +1473,8 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                          db_path: str | None = None,
                          progress_callback: Any = None, cancel_event=None,
                          source_subtype: str = 'direct', resume_details: bool = False,
-                         resume_listing: bool = False, resume_run_id: str = '', control=None) -> int:
+                         resume_listing: bool = False, resume_run_id: str = '', control=None, auto_continue=False,
+                         refresh_descriptions: bool = False) -> int:
     """Launch an interactive (visible) browser session for the user to solve any
     human-verification challenge, then automatically harvest all job listings
     across pagination and ingest them directly into the SQLite database.
@@ -1022,6 +1510,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     source_subtype = 'recruiter' if source_subtype == 'recruiter' else 'direct'
     persistence_errors = []
     scanner = CareerPortalScanner(skip_preflight=True)
+    scanner._current_seed_url=url
     detector = JDSupportDetector()
     ingested_count = 0
     new_count = 0             # F-36: rows this run actually inserted
@@ -1038,8 +1527,26 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     run_started = _dt.now(_tz.utc)
     run_id = run_started.strftime('%Y%m%dT%H%M%S%f') + '_assisted'
     from sponsorscout.core.assisted_resume import load_batch,save_batch,existing_records,listing_continuation,observed_url_in_scope
+    if auto_continue and not refresh_descriptions and not (resume_details or resume_listing):
+        from sponsorscout.core.assisted_workflow import plan_collection
+        plan = plan_collection(conn, url, seed_name, resume_run_id)
+        resume_details, resume_listing = plan['mode']=='details', plan['mode']=='listing'
+        resume_run_id = plan.get('run_id','')
+        LAST_INGESTION_REPORT['workflow_plan'] = plan
+        if callable(progress_callback):progress_callback(_translate(plan['reason']))
     if resume_details and resume_listing:raise ValueError('Choose one continuation mode')
     resume_batch=load_batch(conn,url,seed_name,run_id=resume_run_id or None)if(resume_details or resume_listing)else None
+    if resume_batch is not None:
+        refresh_descriptions = bool(resume_batch.get('refresh_descriptions', False))
+    if db_path:
+        from sponsorscout.core.saved_details import SavedDetailReader
+        scanner._saved_jd_reader = SavedDetailReader(db_path, force_refresh=refresh_descriptions)
+        scanner._saved_jd_reader.load_scopes([dict(careers_url=url,name=seed_name)], cancel_event)
+    reader = getattr(scanner, '_saved_jd_reader', None)
+    if resume_batch and resume_batch.get('refresh_started_at') and reader is not None:
+        reader.policy_started_at = _dt.fromisoformat(resume_batch['refresh_started_at'])
+    refresh_started_at = getattr(reader, 'policy_started_at', getattr(reader, 'started_at', None))
+    refresh_started_at = refresh_started_at.isoformat() if refresh_started_at else ''
     continuation_state=listing_continuation(resume_batch)if resume_listing else None
     known_listing_gate=False
     checkpoint_error = ''
@@ -1074,21 +1581,15 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     try:
         with sync_playwright() as pw:
             try:
-                browser = pw.chromium.launch(
-                    headless=False,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-gpu",  # human-visible, but no hardware acceleration
-                        "--start-maximized",
-                    ]
-                )
+                browser = pw.chromium.launch(headless=False,args=[
+                    '--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized'])
                 context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                    no_viewport=True,
-                )
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                    no_viewport=True)
                 page = context.new_page()
                 _watch_assisted_responses(page)
                 page._assisted_control=control
+                page._assisted_cancel_event=cancel_event
                 page._assisted_job_validator=getattr(scanner,'is_valid_job_url',None)
                 LAST_INGESTION_REPORT['browser_version']=str(getattr(browser,'version',''))[:120]
                 from sponsorscout.core.country_details import SessionCountryResolver
@@ -1098,6 +1599,10 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
 
                 if resume_batch is not None:
                     pending_details=existing_records(conn,resume_batch)
+                    reader = getattr(scanner, '_saved_jd_reader', None)
+                    if callable(getattr(reader, 'observe', None)):
+                        for _record, _row in pending_details:
+                            reader.observe(_row['url'], title=_row.get('title',''))
                     harvest_rows=[row for _record,row in pending_details]
                     ingested_count=len(harvest_rows);dup_count=ingested_count
                     source_subtype=resume_batch.get('source_subtype',source_subtype)
@@ -1115,11 +1620,13 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                     except Exception as e:
                         logger.warning("Initial navigation error in assisted session: %s", e)
 
-                    # Wait for user to solve challenge if present; up to 180s
+                    # Observe automatic or interactive verification within the existing budget.
                     poll_start = time.monotonic()
                     challenge_seen = False
                     initial_block_reason = ''
                     cleared = False
+                    verification_exit='deadline'
+                    verification_read_failures=0
                     while time.monotonic() - poll_start < max(0.1, clear_wait_s):
                         if cancel_event is not None and cancel_event.is_set():
                             break
@@ -1128,13 +1635,24 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         if command=='check':_verification_event(page,'verification_check_requested')
                         try:
                             if page.is_closed():
+                                verification_exit='browser_closed'
                                 break
                             content = (page.content() or "").casefold()
                             page_title = (page.title() or "").casefold()
                         except Exception:
+                            verification_read_failures+=1
                             time.sleep(1)
                             continue
 
+                        initial_snapshot=inspect_page(page,kind='listing',validator=getattr(page,'_assisted_job_validator',None))or{}
+                        if initial_snapshot.get('document_error'):
+                            _record_assisted_evidence(page,'initial_document_error',1,count=0)
+                            raise _AssistedSessionStop(initial_snapshot['document_error']+'; requested='+url+'; final='+page.url)
+                        if initial_snapshot.get('rendered_unextractable'):
+                            break
+                        if career_listing_links(initial_snapshot) and not initial_snapshot.get('listing_ready'):
+                            break
+                        # Legacy non-browser adapters: explicit error title fallback.
                         # Handle 404
                         is_404 = (
                             "404 not found" in page_title or
@@ -1167,7 +1685,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 _verification_event(page,'verification_waiting');_gate_attention(page,True,initial_block_reason)
                                 if callable(progress_callback):
                                     try:
-                                        progress_callback(_translate("Action needed: please solve the human-verification check in the Chromium window..."))
+                                        progress_callback(_translate("Access or verification pending in Chromium. Allow automatic checks to finish; interact only if the page requests it. An Access Denied page may offer no check."))
                                     except Exception:
                                         pass
                             challenge_seen = True
@@ -1176,6 +1694,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
 
                         # A blank/rendering failure is not a180-second human wait.
                         if not challenge_seen and time.monotonic()-poll_start >= min(20.0, max(.1, clear_wait_s)):
+                            verification_exit='readiness_without_listing'
                             break
                         # Real job listings present
                         has_jobs = _page_has_listing(page)
@@ -1199,15 +1718,28 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                     if cleared and challenge_seen:_verification_event(page,'verification_cleared');_gate_attention(page,False)
                     if control is not None and control.save_requested:raise _AssistedSessionStop('saved partial during verification; resume explicitly')
                     if challenge_seen and not cleared:
-                        _verification_event(page,'verification_not_accepted');_gate_attention(page,False)
-                        reason = (('access blocked; no readable listing recovered within the wait window; human verification not confirmed')
-                                  if 'human verification not confirmed' in initial_block_reason else
-                                  'bot-protection challenge page; no readable current listing accepted within the wait window')
-                        logger.info('blocked by bot protection: %s (%s)',reason,url)
+                        exit_reason=_verification_exit_reason(page,verification_exit,verification_read_failures)
+                        LAST_INGESTION_REPORT['verification_exit']=dict(reason=exit_reason,
+                            elapsed_seconds=round(time.monotonic()-poll_start,3),configured_wait_seconds=clear_wait_s,
+                            document_read_failures=verification_read_failures)
+                        terminal_block_reason = _record_assisted_evidence(page, 'terminal_verification', int(continuation_state['page']) if continuation_state else 1, count=0)['reason']
+                        _verification_event(page,'verification_unresolved');_gate_attention(page,False)
+                        reason = (('access denied in the current browser document; no readable listing recovered within the wait window; a solvable human-verification challenge was not confirmed')
+                                  if ('access denied' in terminal_block_reason.lower() or 'access-denied' in terminal_block_reason.lower() or 'human verification not confirmed' in terminal_block_reason) else
+                                  'access verification remained unresolved; no readable current listing accepted within the wait window')
+                        reason+='; verification exit: '+exit_reason+('; observed=%.2fs; configured=%.2fs; document_read_failures=%d' %
+                            (time.monotonic()-poll_start,clear_wait_s,verification_read_failures))
+                        logger.info('access verification unresolved: %s (%s)',reason,url)
                         raise _AssistedSessionStop(reason)
                     if page.is_closed():
                         raise _AssistedSessionStop('browser closed by user before listings appeared')
 
+                    if not cleared and not resume_listing:
+                        _discover_listing_entry(page,cancel_event=cancel_event)
+                        entry_snapshot=inspect_page(page,kind='listing',validator=getattr(page,'_assisted_job_validator',None))or{}
+                        if entry_snapshot.get('document_error'):
+                            raise _AssistedSessionStop(entry_snapshot['document_error']+'; requested='+url+'; final='+page.url)
+                        listing_path=urlparse(page.url).path.rstrip('/')or'/'
                     if resume_listing and not observed_url_in_scope(url,page.url):
                         raise _AssistedSessionStop(_translate('Listing continuation left the selected portal filters; out-of-scope rows were not accepted.'))
                     _record_assisted_evidence(page, 'initial_listing', int(continuation_state['page'])if continuation_state else 1)
@@ -1219,6 +1751,18 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                               # clamp oscillation (A,B,A,B...) as re-serves
                     mis_advances = 0
                     last_good_page = int(resume_batch.get('pages',0))if resume_listing else 0 # highest qualified page
+                    # C17: a *guessed* ?p=N is not a site-provided paging link. Remember
+                    # the last real page's evidence across refused loads; only an exact
+                    # replay of a completely accounted listing can short-stop the guess.
+                    last_good_census_complete = False
+                    last_good_paging_evidence = None
+                    last_good_forward_control = None
+                    last_advance_was_synthetic = False
+                    synthetic_replays = 0
+                    synthetic_chain_unmet_total = False
+                    synthetic_chain_readable = True
+                    synthetic_chain_census_complete = True
+                    synthetic_chain_no_forward = True
                     force_url_advance = False
                     consecutive_empty_pages = 0
                     pages_visited = len(qualified_pages)
@@ -1263,8 +1807,44 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             break
                         if resume_listing and not observed_url_in_scope(url,page.url):
                             stop_reason=_translate('Listing continuation left the selected portal filters; out-of-scope rows were not accepted.');break
-                        # Target cards
-                        cards = []
+                        # Issue 005 P1: ask the same page what IT thinks the postings are
+                        # before harvesting. `inspect_page` already admits visible anchors
+                        # through the shared posting test; that census is the only evidence
+                        # able to tell "the board has no listings" apart from "our filters
+                        # rejected every link on a rendered board".
+                        from sponsorscout.core.split_careers import observed_split_cards
+                        native_jobs=observed_split_cards(page,cancel_event=cancel_event)
+                        _census_links, _census_meta = [], {}
+                        try:
+                            _census_links, _census_meta = admitted_job_links(
+                                page, validator=getattr(scanner, 'is_valid_job_url', None))
+                        except Exception:
+                            _census_links, _census_meta = [], {}
+                        _census_ids = {posting_identity(str(a.get('url') or ''))
+                                       for a in _census_links if isinstance(a, dict)}
+                        # C19: carry only links the rendered page actually
+                        # admitted, never infer another posting from a host or
+                        # an English-only detail-path selector.
+                        _census_urls = tuple(str(a.get('url') or '') for a in _census_links
+                                             if isinstance(a, dict) and a.get('url'))
+                        _rej = {'chrome': 0, 'self_link': 0, 'save_action': 0, 'blocklist': 0,
+                                'facet_or_cta_title': 0, 'no_title': 0, 'not_a_posting': 0,
+                                'duplicate': 0, 'not_census_no_path_token': 0,
+                                'no_detail_anchor': 0, 'no_href': 0, 'chrome_or_self_link': 0,
+                                'card_error': 0}
+
+                        def _census_note(accepted):
+                            _tally = ', '.join('%s=%d' % (k, v)
+                                               for k, v in sorted(_rej.items()) if v)
+                            return ('harvest census: cards=%d visible_posting_links=%d '
+                                    'accepted=%d%s; page rendered as %s%s'
+                                    % (len(cards), len(_census_links), accepted,
+                                       ', rejected ' + _tally if _tally else '',
+                                       _census_meta.get('kind') or 'unknown',
+                                       ' — ' + str(_census_meta.get('reason'))[:120]
+                                       if _census_meta.get('reason') else '')+'; census stages='+str(_census_meta.get('census_stages')or{})+
+                                    '; admitted sample='+str([{'url':redact_url(a.get('url','')),'title':redact_text(a.get('title',''))[:120]}for a in _census_links[:3]]))
+
                         try:
                             cards = page.query_selector_all(
                                 "article, .job-result, [class*='job-result'], [class*='search-result'], "
@@ -1276,18 +1856,31 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         except Exception:
                             cards = []
 
-                        page_jobs = []
-                        page_seen_raw = set()
-                        page_candidate_norm = set()  # in-page extraction dedup, not persisted yet
+                        # Explicit URL-bearing non-anchor cards admitted by the
+                        # current primary census are real observed links too.
+                        # Never manufacture URLs from their title or event code.
+                        for item in _census_links:
+                            title=str(item.get('title')or'').strip()
+                            if (item.get('dom_url_card') and not _census_meta.get('reason')
+                                    and len(title)>=3 and not is_noise_cta_title(title)
+                                    and not is_filter_or_facet_title(title,item['url'])):
+                                native_jobs.append((title,item['url'],title))
+                        page_jobs = [item for item in native_jobs if normalize_job_url(item[1]) not in seen_norm and item[1] not in seen_urls]
+                        page_seen_raw = {item[1] for item in native_jobs}
+                        page_candidate_norm = {normalize_job_url(item[1]) for item in page_jobs}  # in-page extraction dedup, not persisted yet
 
                         if cards:
                             for card in cards:
                                 try:
                                     a_tag = _card_detail_anchor(card)
                                     if not a_tag:
+                                        # Issue 005 P6: counted, not silent — "cards matched but
+                                        # nothing was taken" must say which gate stopped it.
+                                        _rej['no_detail_anchor'] += 1
                                         continue
                                     href = a_tag.get_attribute("href")
                                     if not href:
+                                        _rej['no_href'] += 1
                                         continue
                                     full_url = urljoin(current_page_url, href)
                                     # F-33: chrome URLs and paging/self links are never jobs;
@@ -1295,115 +1888,201 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                     norm_url = normalize_job_url(full_url)
                                     if (is_chrome_url(full_url)
                                             or is_listing_self_link(full_url, listing_path)):
+                                        _rej['chrome_or_self_link'] += 1
                                         continue
 
                                     # Disqualify non-job portal links before recording page_seen_raw
-                                    if any(x in full_url.lower() for x in (
-                                        "/my-account/", "/privacy", "/terms", "/contact", "/about",
-                                        "personal-details", "/login", "/register", "specialization=jobsroot",
-                                        "vacature-opslaan", "save-job", "save-vacancy", "job-opslaan",
-                                    )):
+                                    if _harvest_utility_url(full_url):
+                                        _rej['blocklist'] += 1
+                                        continue
+
+                                    # Only skip URLs this very page has already
+                                    # admitted; historical/uncensused links still
+                                    # pass the full title/context admission path.
+                                    if full_url in page_seen_raw:
+                                        _rej['duplicate'] += 1
                                         continue
 
                                     # Bound context to this posting's own card.
                                     # An outer listing container can otherwise
                                     # leak unrelated jobs into description and
                                     # support detection for every row.
-                                    card_text = _bounded_card_text(a_tag)
+                                    card_text = (_bounded_card_text(a_tag, _census_urls)
+                                                 or _bounded_admitted_card_text(a_tag, _census_urls))
                                     raw_title = (a_tag.inner_text() or "").strip()
                                     title = _card_title(card, raw_title, full_url, scanner)
 
                                     # Filter tags/count badges/facet buttons after CTA-title
                                     # recovery, not before it can read the actual heading.
                                     if is_filter_or_facet_title(title, full_url):
+                                        _rej['facet_or_cta_title'] += 1
                                         continue
 
                                     if (not title or len(title) < 3
                                             or is_filter_or_facet_title(title, full_url)
                                             or is_noise_cta_title(title)):
+                                        _rej['no_title'] += 1
                                         continue
 
                                     if not posting_candidate(full_url,title,getattr(scanner,'is_valid_job_url',None)):
+                                        _rej['not_a_posting'] += 1
                                         continue
                                     page_seen_raw.add(full_url)
                                     if norm_url in seen_norm or full_url in seen_urls or norm_url in page_candidate_norm:
+                                        _rej['duplicate'] += 1
                                         continue
                                     page_candidate_norm.add(norm_url)
                                     page_jobs.append((title, full_url, card_text))
                                 except Exception:
+                                    _rej['card_error'] += 1
                                     continue
-                        else:
-                            # Strategy 2: Fallback to all detail anchors
+                        # Issue 005 P6 (C14): the sweep used to be the `else` of `if cards`,
+                        # so a page whose *whole list* sat inside one element matching the
+                        # container selector never reached it — McDonald's Italia on 2026-10-29
+                        # reported `harvest census: cards=1 visible_posting_links=164
+                        # accepted=0`: one card yields one anchor, 163 links went unread, and the
+                        # board was still written off as a render failure. Trigger the sweep on
+                        # what the render admitted versus what we took, not on whether a
+                        # container matched. A board Strategy 1 already satisfied is untouched.
+                        # Strategy 2: Fallback to all detail anchors
+                        try:
+                            anchors = page.query_selector_all("a[href]")
+                        except Exception:
+                            break
+
+                        for a in anchors:
                             try:
-                                anchors = page.query_selector_all("a[href]")
-                            except Exception:
-                                break
-
-                            for a in anchors:
-                                try:
-                                    href = a.get_attribute("href")
-                                    if not href:
-                                        continue
-                                    full_url = urljoin(current_page_url, href)
-                                    # F-33: chrome URLs and paging/self links are never jobs;
-                                    # locale variants of an already-seen job are duplicates.
-                                    norm_url = normalize_job_url(full_url)
-                                    if (is_chrome_url(full_url)
-                                            or is_listing_self_link(full_url, listing_path)):
-                                        continue
-
-                                    if _is_save_action_url(full_url) or any(x in full_url.lower() for x in (
-                                        "/my-account/", "/privacy", "/terms", "/contact", "/about",
-                                        "personal-details", "/login", "/register", "specialization=jobsroot"
-                                    )):
-                                        continue
-
-                                    is_detail = (
-                                        "/jobs/" in full_url or "/vacancies/" in full_url or
-                                        "/vacancy/" in full_url or "/vacatures/" in full_url or
-                                        "/vacature/" in full_url or "/job/" in full_url or
-                                        "/stellenangebote/" in full_url or "/offres/" in full_url or
-                                        "/offerte/" in full_url or "/ofertas/" in full_url or
-                                        bool(re.search(r"/\d+-[a-z0-9\-]+\.html", full_url, re.I)) or
-                                        bool(re.search(r"-[a-z0-9]+-\d+-\d+$", full_url, re.I))
-                                    )
-
-                                    if not is_detail:
-                                        continue
-
-                                    raw_text = (a.inner_text() or "").strip()
-                                    parent_card = None
-                                    try:
-                                        handle = a.evaluate_handle("node => node.closest('article, li, [class*=card], [class*=result]') || node.parentElement")
-                                        parent_card = handle.as_element() if handle else None
-                                    except Exception:
-                                        pass
-                                    title = _card_title(parent_card, raw_text, full_url, scanner)
-
-                                    if is_filter_or_facet_title(title, full_url):
-                                        continue
-
-                                    if not title or len(title) < 3:
-                                        title = _extract_title_from_url_slug(full_url)
-
-                                    if (not title or len(title) < 3
-                                            or is_filter_or_facet_title(title, full_url)
-                                            or is_noise_cta_title(title)):
-                                        continue
-
-                                    card_text = _bounded_card_text(a)
-
-                                    if not posting_candidate(full_url,title,getattr(scanner,'is_valid_job_url',None)):
-                                        continue
-                                    page_seen_raw.add(full_url)
-                                    if norm_url in seen_norm or full_url in seen_urls or norm_url in page_candidate_norm:
-                                        continue
-                                    page_candidate_norm.add(norm_url)
-                                    page_jobs.append((title, full_url, card_text))
-                                except Exception:
+                                href = a.get_attribute("href")
+                                if not href:
+                                    continue
+                                full_url = urljoin(current_page_url, href)
+                                # F-33: chrome URLs and paging/self links are never jobs;
+                                # locale variants of an already-seen job are duplicates.
+                                norm_url = normalize_job_url(full_url)
+                                if is_chrome_url(full_url):
+                                    _rej['chrome'] += 1
+                                    continue
+                                if is_listing_self_link(full_url, listing_path):
+                                    _rej['self_link'] += 1
                                     continue
 
+                                if _is_save_action_url(full_url):
+                                    _rej['save_action'] += 1
+                                    continue
+                                if _harvest_utility_url(full_url):
+                                    _rej['blocklist'] += 1
+                                    continue
+
+                                # The card strategy may already have admitted
+                                # this exact URL. Re-reading its title, ancestor
+                                # and context in the fallback sweep is redundant.
+                                if full_url in page_seen_raw:
+                                    _rej['duplicate'] += 1
+                                    continue
+
+                                is_detail = (
+                                    "/jobs/" in full_url or "/vacancies/" in full_url or
+                                    "/vacancy/" in full_url or "/vacatures/" in full_url or
+                                    "/vacature/" in full_url or "/job/" in full_url or
+                                    "/stellenangebote/" in full_url or "/offres/" in full_url or
+                                    "/offerte/" in full_url or "/ofertas/" in full_url or
+                                    bool(re.search(r"/\d+-[a-z0-9\-]+\.html", full_url, re.I)) or
+                                    bool(re.search(r"-[a-z0-9]+-\d+-\d+$", full_url, re.I))
+                                )
+
+                                # Issue 005 P1: `is_detail` above is a ten-token path list
+                                # (/jobs/, /vacancies/, /offerte/ …), so a board posting
+                                # under, e.g., /lavora-con-noi/posizioni-aperte/ lost every
+                                # visible link and was reported as "render failure or
+                                # undetected bot wall". The render census already admitted
+                                # those links with the shared posting test, so accept on
+                                # census admission as well; the token list stays as a second
+                                # path, which keeps every board that used to work working.
+                                if not (is_detail
+                                        or posting_identity(full_url) in _census_ids
+                                        or posting_identity(norm_url) in _census_ids):
+                                    _rej['not_census_no_path_token'] += 1
+                                    continue
+
+                                raw_text = (a.inner_text() or "").strip()
+                                parent_card = None
+                                try:
+                                    handle = a.evaluate_handle("node => node.closest('article, li, [class*=card], [class*=result]') || node.parentElement")
+                                    parent_card = handle.as_element() if handle else None
+                                except Exception:
+                                    pass
+                                title = _card_title(parent_card, raw_text, full_url, scanner)
+
+                                if is_filter_or_facet_title(title, full_url):
+                                    _rej['facet_or_cta_title'] += 1
+                                    continue
+
+                                if not title or len(title) < 3:
+                                    title = _extract_title_from_url_slug(full_url)
+
+                                if (not title or len(title) < 3
+                                        or is_filter_or_facet_title(title, full_url)
+                                        or is_noise_cta_title(title)):
+                                    _rej['no_title'] += 1
+                                    continue
+
+                                card_text = (_bounded_card_text(a, _census_urls)
+                                             or _bounded_admitted_card_text(a, _census_urls))
+
+                                if not posting_candidate(full_url,title,getattr(scanner,'is_valid_job_url',None)):
+                                    _rej['not_a_posting'] += 1
+                                    continue
+                                page_seen_raw.add(full_url)
+                                if norm_url in seen_norm or full_url in seen_urls or norm_url in page_candidate_norm:
+                                    _rej['duplicate'] += 1
+                                    continue
+                                page_candidate_norm.add(norm_url)
+                                page_jobs.append((title, full_url, card_text))
+                            except Exception:
+                                continue
+
+                        _census_record = {
+                            'page': page_num, 'cards_seen': len(cards),
+                            'visible_posting_links': len(_census_links),
+                            'accepted': len(page_jobs),
+                            'rejected': {k: v for k, v in sorted(_rej.items()) if v},
+                            'render_kind': _census_meta.get('kind') or '',
+                            'render_reason': str(_census_meta.get('reason') or '')[:200],
+                            'note': _census_note(len(page_jobs)),
+                        }
+                        # Keep every page's tally, and headline the page whose links went
+                        # unexplained: visible postings minus what was accepted minus what
+                        # was accounted for as a duplicate. A page of duplicates must not
+                        # push the record that says "the render admitted 164, we took 0"
+                        # out of the headline.
+                        _census_pages = LAST_INGESTION_REPORT.setdefault('harvest_census_pages', [])
+                        _census_pages.append(_census_record)
+                        if len(_census_pages) > 24:
+                            del _census_pages[:-24]
+
+                        def _census_unexplained(record):
+                            rejected = record.get('rejected') or {}
+                            accounted = (int(record.get('accepted') or 0)
+                                         + int(rejected.get('duplicate') or 0))
+                            return int(record.get('visible_posting_links') or 0) - accounted
+
+                        _prev = LAST_INGESTION_REPORT.get('harvest_census')
+                        if not isinstance(_prev, dict) or \
+                                _census_unexplained(_census_record) > _census_unexplained(_prev):
+                            LAST_INGESTION_REPORT['harvest_census'] = _census_record
+                        # Identity coverage for THIS render, not merely count equality:
+                        # 180 admitted links is the evidence cap, not the board size.
+                        _census_complete = (
+                            bool(_census_ids) and not _census_meta.get('census_truncated') and len(_census_links) < 180
+                            and _census_ids.issubset({posting_identity(value)
+                                                      for value in page_seen_raw}))
                         if len(page_jobs) == 0 and not page_seen_raw:
+                            terminal=reconciled_offset_end(page,ingested_count,last_good_paging_evidence,
+                                LAST_INGESTION_REPORT.get('page_summaries',[]),last_good_census_complete)
+                            if terminal:
+                                LAST_INGESTION_REPORT['terminal_evidence']=terminal
+                                stop_reason='end confirmed by an out-of-range probe; observed offset boundary and prior complete census reconciled'
+                                break
                             # F-31: nothing at all on this page. Classify it (challenge /
                             # render failure) and recover or stop honestly - a page that was
                             # never a listing page must not be reported as "pagination
@@ -1411,7 +2090,8 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             recover_options = {'progress_cb':progress_callback}
                             if cancel_event is not None:
                                 recover_options['cancel_event'] = cancel_event
-                            outcome = _recover_blank_page(page,current_page_url,page_num,clear_wait_s,**recover_options)
+                            outcome = ('unharvestable' if _census_links and not _census_meta.get('reason') else
+                                _recover_blank_page(page,current_page_url,page_num,clear_wait_s,**recover_options))
                             _record_assisted_evidence(page, 'recovery_' + outcome, page_num, count=0)
                             if outcome == "cleared":
                                 recover_cleared += 1
@@ -1430,6 +2110,13 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 stop_reason='saved partial during verification; resume explicitly'
                             elif outcome == 'cancelled' or (cancel_event is not None and cancel_event.is_set()):
                                 stop_reason = 'cancelled by user'
+                            elif outcome == 'error':
+                                rendered=(_page_response_evidence(page).get('rendered')or{})
+                                stop_reason=str(rendered.get('document_error')or'career document error')+'; requested='+url+'; final='+page.url
+                            elif outcome == 'unextractable':
+                                stop_reason=("page %d rendered vacancy controls/text but no validated posting identities were extracted; "
+                                             "listing extraction incomplete, not a confirmed bot wall (last complete page %d) — %s"
+                                             % (page_num,last_good_page,_census_note(0)))
                             elif outcome == "access":
                                 stop_reason = "access blocked on page %d; no readable listing recovered (last complete page %d)" % (page_num, last_good_page)
                             elif outcome == "challenge":
@@ -1441,11 +2128,22 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 stop_reason = ("no next-page control recognised on page %d "
                                                "(last complete page %d); end confirmed by an "
                                                "out-of-range probe" % (page_num, last_good_page))
+                            elif _census_links:
+                                # The page DID render postings. Reporting "render failure or
+                                # undetected bot wall" here sent users to verify a check that
+                                # had already passed, and hid an extraction gap behind a
+                                # bot-protection story.
+                                stop_reason = ("page %d rendered %d visible posting link(s) that "
+                                               "the harvest did not accept; page read as %s "
+                                               "(last complete page %d) — %s"
+                                               % (page_num, len(_census_links),
+                                                  _census_meta.get('kind') or 'unknown',
+                                                  last_good_page, _census_note(0)))
                             else:
                                 stop_reason = ("page %d returned no listing content and no "
                                                "pagination even after a reload (render failure "
-                                               "or undetected bot wall; last complete page %d)"
-                                               % (page_num, last_good_page))
+                                               "or undetected bot wall; last complete page %d) — %s"
+                                               % (page_num, last_good_page, _census_note(0)))
                             logger.info("Harvest stopped: %s", stop_reason)
                             break
 
@@ -1462,6 +2160,11 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         recent_raws.append(page_seen_raw)
                         del recent_raws[:-4]
                         if page_jobs:
+                            synthetic_replays = 0
+                            synthetic_chain_unmet_total = False
+                            synthetic_chain_readable = True
+                            synthetic_chain_census_complete = True
+                            synthetic_chain_no_forward = True
                             last_good_page = page_num
                             last_good_count = len(page_jobs)
                             page_size_max = max(page_size_max, len(page_jobs))
@@ -1476,6 +2179,61 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         if re_served:
                             fresh_streak = 0
                             mis_advances += 1
+                            # C17 / P11 + C18: no pager does NOT mean page 1 is
+                            # everything. On one-indexed sites our first guessed
+                            # ?p=1 can still be page 1, with new jobs at ?p=2.
+                            # Try both guesses; only two identical replays of a
+                            # completely accounted census can avoid F-38's reloads.
+                            current_total = None
+                            if last_advance_was_synthetic:
+                                synthetic_replays += 1
+                                synthetic_chain_census_complete &= _census_complete
+                                try:
+                                    # Keep the evidence from BOTH guesses; a visible
+                                    # pager, unmet total or unexplained posting on EITHER
+                                    # one means the short stop is unsafe.
+                                    probe_evidence = _record_assisted_evidence(
+                                        page, 'pagination_probe', page_num, count=len(page_jobs))
+                                    current_total = probe_evidence.get('stated_total')
+                                    rendered = probe_evidence.get('rendered_state') or {}
+                                    if not rendered.get('ready'):
+                                        synthetic_chain_readable = False
+                                    if (probe_evidence.get('forward_page_links')
+                                            or probe_evidence.get('pagination_text')
+                                            or _advertised_forward_page(page, page_num + 1) is not False):
+                                        synthetic_chain_no_forward = False
+                                except Exception:
+                                    synthetic_chain_readable = False
+                                    synthetic_chain_no_forward = False
+                                if isinstance(current_total, int) and current_total > ingested_count:
+                                    synthetic_chain_unmet_total = True
+                            if _unadvertised_probe_replayed(
+                                    synthetic=last_advance_was_synthetic,
+                                    replayed=re_served,
+                                    two_index_guesses=(synthetic_replays >= 2
+                                        and _paging_value(current_page_url) == last_good_page + 1),
+                                    census_complete=(last_good_census_complete
+                                                     and synthetic_chain_census_complete),
+                                    forward_control=last_good_forward_control,
+                                    last_page_evidence=last_good_paging_evidence,
+                                    current_total=current_total, ingested=ingested_count,
+                                    unmet_total_seen=synthetic_chain_unmet_total,
+                                    evidence_readable=synthetic_chain_readable,
+                                    probe_controls_absent=synthetic_chain_no_forward):
+                                LAST_INGESTION_REPORT['pagination_end_evidence'] = {
+                                    'kind': 'unadvertised_synthetic_replay',
+                                    'last_complete_page': last_good_page,
+                                    'probe_url': _redact_evidence_url(current_page_url),
+                                    'census_accounted': True, 'forward_control': False,
+                                    'synthetic_replays': synthetic_replays,
+                                    'stated_total': last_good_paging_evidence.get('stated_total'),
+                                }
+                                stop_reason = (
+                                    'two synthesised next-page probes re-served the same '
+                                    'listing with no advertised Next (last complete page %d); '
+                                    'no further pages demonstrated' % last_good_page)
+                                logger.info('Harvest stopped: %s', stop_reason)
+                                break
                             # F-37b: a landing that re-served the previous listing was a
                             # DENIED advance, not a visited page - un-try it so the board's
                             # own href (the only key a signed pager accepts) stays
@@ -1507,11 +2265,18 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                                 "then retrying the advance chain",
                                                 page_num, cooldowns_used, delay)
                                     try:
-                                        page.wait_for_timeout(int(delay * 1000))
+                                        if not _interruptible_page_wait(page, delay, cancel_event):
+                                            stop_reason = 'cancelled by user'
+                                            break
                                         page.reload(wait_until="domcontentloaded", timeout=30000)
-                                        time.sleep(3.0)
+                                        if not _interruptible_page_wait(page, 3.0, cancel_event):
+                                            stop_reason = 'cancelled by user'
+                                            break
                                     except Exception:
                                         pass
+                                    if cancel_event is not None and cancel_event.is_set():
+                                        stop_reason = 'cancelled by user'
+                                        break
                                     continue
                                 # F-35c: same false-end logic as the no-next branch - a
                                 # FULL last page plus three refused advances can still be
@@ -1565,7 +2330,9 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 try:
                                     page.goto(current_page_url,
                                               wait_until="domcontentloaded", timeout=20000)
-                                    time.sleep(3.0)
+                                    if not _interruptible_page_wait(page, 3.0, cancel_event):
+                                        stop_reason = 'cancelled by user'
+                                        break
                                     current_page_url = page.url
                                     tried_urls.add(current_page_url)
                                     force_url_advance = True
@@ -1631,28 +2398,25 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             if is_chrome_url(job_url):
                                 continue
 
-                            extracted_loc = "Unknown"
-                            remote_type = "onsite"
+                            reader = getattr(scanner, '_saved_jd_reader', None)
+                            if callable(getattr(reader, 'observe', None)):
+                                reader.observe(job_url, title=title)
+                            remote_type = "Unknown"
                             combined_context = f"{title}\n{card_text}"
 
-                            # Extract location from card
-                            loc_match = re.search(r"(?:Location|Locatie|Ort|Lieu|Ubicación|Localisation):\s*([^\n\r]+)", card_text, re.I)
-                            if loc_match:
-                                extracted_loc = loc_match.group(1).strip()
-                            else:
-                                for line in card_text.splitlines():
-                                    line_s = line.strip()
-                                    if line_s and line_s != title:
-                                        candidate = scanner._sanitize_job_location(line_s, seed_name)
-                                        if candidate and candidate != "Unknown":
-                                            extracted_loc = candidate
-                                            break
+                            # C19: only the bounded card may supply a place;
+                            # the existing sanitizer leaves ambiguous place
+                            # strings Unknown rather than guessing a country.
+                            extracted_loc = _observed_card_location(scanner, card_text,
+                                                                    title, seed_name)
 
                             # Detect Remote
-                            if re.search(r"\b(remote|work from home|fully remote|100% remote)\b", card_text, re.I):
-                                remote_type = "remote"
-                            elif re.search(r"\b(hybrid|flexible remote)\b", card_text, re.I):
+                            if re.search(r"\b(hybrid|flexible remote)\b", card_text, re.I):
                                 remote_type = "hybrid"
+                            elif re.search(r"\b(remote|work from home|fully remote|100% remote)\b", card_text, re.I):
+                                remote_type = "remote"
+                            elif re.search(r"\b(on[- ]?site|in[- ]office|vor Ort)\b", card_text, re.I):
+                                remote_type = "onsite"
 
                             # Country only from observed place or explicit job country.
                             country, country_source, country_evidence = country_resolver.resolve(job_url,extracted_loc,allow_request=False)
@@ -1736,7 +2500,15 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 break
 
                         conn.commit()
-                        _record_assisted_evidence(page, 'page_saved', last_good_page, count=len(page_jobs))
+                        page_saved_evidence = _record_assisted_evidence(
+                            page, 'page_saved', last_good_page, count=len(page_jobs))
+                        if page_jobs and not re_served:
+                            # All URLs admitted by the last real page are accounted for.
+                            last_good_census_complete = _census_complete
+                            last_good_paging_evidence = {
+                                key: page_saved_evidence.get(key)
+                                for key in ('pagination_text', 'forward_page_links', 'stated_total')
+                            }
                         if page_jobs and page_seen_raw:
                             qualified_pages.add(tuple(sorted(normalize_job_url(value)for value in page_seen_raw)))
                         if page_jobs:
@@ -1768,10 +2540,18 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             except Exception:
                                 pass
 
-                        terminal = terminal_listing_evidence(page,ingested_count,len(page_seen_raw))
+                        terminal = terminal_listing_evidence(page,ingested_count,len(page_seen_raw),
+                            census_complete=_census_complete,harvested_urls=seen_urls,current_urls=page_seen_raw)
+                        if cancel_event is not None and cancel_event.is_set():
+                            stop_reason = 'cancelled by user'
+                            break
                         if terminal:
                             LAST_INGESTION_REPORT['terminal_evidence']=terminal
-                            if terminal['kind']=='disabled_next':
+                            if terminal['kind']=='disappeared_pager_reconciled':
+                                stop_reason = f"last page reached (page {last_good_page}; terminal pager and observed total reconciled; forward control absent)"
+                            elif terminal['kind']=='native_append_reconciled':
+                                stop_reason = f"last page reached (page {last_good_page}; native append terminal and observed identities reconciled)"
+                            elif terminal['kind']=='disabled_next':
                                 stop_reason = f"last page reached (page {last_good_page}; next-page control disabled)"
                             else:
                                 stop_reason = f"last page reached (visible page {terminal['current']}; terminal pager and observed total reconciled)"
@@ -1779,6 +2559,8 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
 
                         # Attempt pagination to next page
                         next_clicked = False
+                        continuing_synthetic_guess = last_advance_was_synthetic and re_served
+                        last_advance_was_synthetic = False
                         prev_advance_url = page.url
                         prev_advance_sig = _first_listing_signature(page)
                         # After a failed advance, skip the DOM-click checks (1-3) that just
@@ -1795,13 +2577,29 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             except Exception:
                                 pass
 
+                        # Observe the last real page AFTER scrolling the lazy pager into
+                        # view, BEFORE leaving it. Unknown evidence retains F-38 retries.
+                        if page_jobs and not re_served:
+                            last_good_forward_control = _advertised_forward_page(
+                                page, page_num + 1)
+
                         # Check 1: Locate pagination target in DOM (scoped to pager containers
                         # first so sidebar facet counts are never mis-clicked), tag it, and
                         # dispatch a trusted Playwright mouse click (isTrusted === true).
                         try:
-                            js_click_result = None if skip_dom else page.evaluate(_PAGINATION_TARGET_JS, page_num + 1)
+                            native_advance = None if skip_dom else _native_append_advance(page)
+                            if native_advance is False:
+                                stop_reason='native load-more unproven: '+getattr(page,'_ss_native_append_diagnostic','unknown append result')+'; listing incomplete'
+                                break
+                            if native_advance is True:
+                                next_clicked = True
+                            js_click_result = None
+                            if not next_clicked:
+                                js_click_result = None if skip_dom else page.evaluate(_PAGINATION_TARGET_JS, page_num + 1)
                             if js_click_result and _trusted_click_tagged(page):
                                 next_clicked = True
+                        except _AssistedSessionStop:
+                            raise
                         except Exception:
                             pass
 
@@ -1820,7 +2618,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                         break
                                 if num_btn is None and has_zero_dp:
                                     num_btn = page.query_selector(f"[class*='paginat'] [data-page='{page_num}']:not([aria-current='page'])")
-                                if num_btn and num_btn.is_visible() and _trusted_click_element(num_btn):
+                                if num_btn and num_btn.is_visible() and _trusted_forward_click(page, num_btn):
                                     next_clicked = True
                             except Exception:
                                 pass
@@ -1846,6 +2644,9 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                 "button:has-text('Volgende')",
                                 "button:has-text('Load More')",
                                 "button:has-text('Show more')",
+                                "button:has-text('Mehr laden')",
+                                "a:has-text('Mehr laden')",
+                                "[role='button']:text-is('Mehr laden')",
                                 "button:has-text('Meer laden')",
                                 "a:has-text('Meer laden')",
                                 "a:has-text('Weiter')",
@@ -1863,7 +2664,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                     btn = page.query_selector(sel)
                                     if btn and btn.is_visible():
                                         disabled = btn.evaluate("el => [el, el.closest('li')].some(n => n && (n.hasAttribute('disabled') || n.getAttribute('aria-disabled') === 'true' || /\\b(disabled|active|current|selected)\\b/i.test(n.className || '')))")
-                                        if not disabled and _trusted_click_element(btn):
+                                        if not disabled and _trusted_forward_click(page, btn):
                                             next_clicked = True
                                             break
                                 except Exception:
@@ -1891,10 +2692,17 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         # no-progress stop above, not special-cased here.
                         if not next_clicked and (len(page_jobs) >= 5 or skip_dom):
                             try:
-                                next_url = next_page_url(page.url, page_num)
+                                before_url = page.url
+                                next_url = next_page_url(before_url, page_num)
                                 if next_url:
                                     page.goto(next_url, wait_until="domcontentloaded", timeout=20000)
                                     next_clicked = True
+                                    # Carry the unadvertised-guess state through the
+                                    # repeated ?p=1 -> ?p=2 step, but never through
+                                    # genuine new rows or a board-owned pager.
+                                    last_advance_was_synthetic = (
+                                        continuing_synthetic_guess
+                                        or _paging_value(before_url) is None)
                             except Exception:
                                 pass
 
@@ -1962,12 +2770,13 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
 
                 saved_listing_complete=(bool(resume_batch.get('listing_completed'))if resume_details else
                     bool(ingested_count)and not persistence_errors and not browser_error and
-                    any(token in stop_reason for token in('next-page control disabled','end confirmed by an out-of-range probe','terminal pager and observed total reconciled'))and
+                    any(token in stop_reason for token in('next-page control disabled','end confirmed by an out-of-range probe','terminal pager and observed total reconciled','native append terminal and observed identities reconciled'))and
                     LAST_INGESTION_REPORT.get('stated_total',ingested_count)==ingested_count)
                 try:
                     save_batch(conn,url,seed_name,harvest_rows,run_id=run_id,
                         listing_completed=saved_listing_complete,pages=pages_visited,loads=loads,
                         source_subtype=source_subtype,stop_reason=stop_reason,
+                        refresh_descriptions=refresh_descriptions,refresh_started_at=refresh_started_at,
                         root_run_id=resume_batch.get('root_run_id','')if resume_batch else'',
                         continuation=LAST_INGESTION_REPORT.get('continuation')if not saved_listing_complete else{},stated_total=LAST_INGESTION_REPORT.get('stated_total'))
                 except Exception as exc:
@@ -1976,8 +2785,16 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                 # Full job descriptions use this explicitly human-cleared
                 # session, not listing teasers. Country and support share each
                 # fetched response, one budget/cache and one reused detail tab.
-                if known_listing_gate or(control is not None and control.save_requested):
-                    detail_enricher.defer_access('listing verification not accepted; no automatic JD hand-off; resume explicitly')
+                detail_gate=''
+                if stop_reason.startswith('native load-more unproven:'):
+                    detail_gate=_partial_listing_detail_gate(page,known_listing_gate,control,cancel_event)
+                elif known_listing_gate or(control is not None and control.save_requested):
+                    detail_gate='listing verification not accepted; no automatic JD hand-off; resume explicitly'
+                if detail_gate:
+                    detail_enricher.defer_access(detail_gate)
+                reader = getattr(scanner, '_saved_jd_reader', None)
+                if callable(getattr(reader,'priority',None)):
+                    pending_details.sort(key=lambda pair:reader.priority(pair[1]['url']))
                 detail_enricher.prime_lookahead([record['url']for record,_row in pending_details if record is not None])
                 for index,(record,row) in enumerate(pending_details,1):
                     if record is None:
@@ -2007,11 +2824,17 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         detail_interrupt_reason=(_translate('assisted browser closed during JD enrichment; {count} JDs unattempted; resume explicitly').format(count=deferred)
                             if'browser closed'in reason else reason)
                         stop_reason=detail_interrupt_reason
-                        break
+                        # Persist the current attempted read's actual outcome;
+                        # only later rows were genuinely unattempted.
                     updated=dict(record)
+                    if result.status in ('readable','truncated') and result.location:
+                        from sponsorscout.core.location_evidence import detail_location
+                        location=detail_location(record.get('location',''),result.location,result.country,
+                            source=record.get('location_source')or record.get('country_source',''))
+                        updated.update(location=location,raw_location=location)
                     if result.country:
                         updated.update(country=result.country,country_source=result.country_source or 'structured_job_country')
-                        row.update(country=result.country,country_source=result.country_source or 'structured_job_country',country_evidence='JobPosting.jobLocation.addressCountry'+(' (stored detail)'if result.reused else''))
+                        row.update(country=result.country,country_source=result.country_source or 'structured_job_country',country_evidence=('observed primary detail location'if result.country_source=='observed_detail_location'else'JobPosting.jobLocation.addressCountry')+(' (stored detail)'if result.reused else''))
                     if result.status in ('readable','truncated') and result.text:
                         updated=apply_support_to_job(scanner,updated,result.text,kind='detail',
                             read_status=result.status,method=result.method,captured_at=result.captured_at)
@@ -2039,12 +2862,18 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         jd_final_url=redact_url(result.final_url),jd_phase=result.phase,jd_error=result.error)
                     row.update({key:updated[key]for key in('jd_reason','jd_transport','jd_http_status','jd_http_title','jd_final_url','jd_phase','jd_error','jd_http_final_url','jd_browser_status','jd_browser_title','jd_browser_final_url','jd_browser_reason','jd_browser_evidence','jd_defer_kind','jd_browser_phase','jd_browser_error','jd_http_reason','jd_http_phase','jd_http_error')})
                     try:
+                        reader = getattr(scanner, '_saved_jd_reader', None)
+                        if callable(getattr(reader, 'bind_revision', None)):
+                            updated = reader.bind_revision(updated['url'], updated)
                         upsert_job(conn,updated)
                         row['observed_country']=updated.get('country','')
                         # Effective CSV values must agree with actual manual,
                         # richer-data and country-integrity persistence guards.
-                        from sponsorscout.core.job_identity import posting_identity
-                        saved=conn.execute('SELECT country,country_source,visa_sponsorship,relocation_support,eu_blue_card_verdict,relocation_required,support_confidence,support_evidence,support_evidence_url,support_evidence_type,blue_card_evidence FROM jobs WHERE url=? OR posting_key=? ORDER BY (url=?) DESC LIMIT 1',
+                        # Issue 005 P1: this local import used to shadow the module-level
+                        # `posting_identity` for the WHOLE function, so any use of it earlier
+                        # in the harvest raised UnboundLocalError and was swallowed as a
+                        # stopped run. The name is already imported at the top of this file.
+                        saved=conn.execute('SELECT location,country,country_source,visa_sponsorship,relocation_support,eu_blue_card_verdict,relocation_required,support_confidence,support_evidence,support_evidence_url,support_evidence_type,blue_card_evidence FROM jobs WHERE url=? OR posting_key=? ORDER BY (url=?) DESC LIMIT 1',
                             (updated['url'],posting_identity(updated['url']),updated['url'])).fetchone()
                         effective=dict(updated)
                         if saved is not None:effective.update(dict(saved))
@@ -2052,12 +2881,15 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                                     'support_confidence','support_evidence','support_evidence_url','support_evidence_type',
                                     'blue_card_evidence','jd_read_status','jd_source','jd_chars','support_guard_notes'):
                             row[key]=effective.get(key,'')
+                        row['location']=effective.get('location')or'Unknown'
                         row['country']=effective.get('country','')or''
                         row['country_source']=effective.get('country_source','none')
                     except Exception as exc:
                         conn.rollback()
                         persistence_errors.append({'url':record['url'],'error':str(exc)})
                         stop_reason='job-description enrichment write failed; saved vacancies retained'
+                        break
+                    if getattr(detail_enricher,'batch_interrupted',False):
                         break
             finally:
                 # Closing an externally closed browser must not skip history,
@@ -2113,6 +2945,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     try:
         save_batch(conn,url,seed_name,harvest_rows,run_id=run_id,listing_completed=listing_completed,
             pages=pages_visited,loads=loads,source_subtype=source_subtype,stop_reason=stop_reason,
+                        refresh_descriptions=refresh_descriptions,refresh_started_at=refresh_started_at,
             root_run_id=resume_batch.get('root_run_id','')if resume_batch else'',
             continuation=LAST_INGESTION_REPORT.get('continuation')if not listing_completed else{},stated_total=LAST_INGESTION_REPORT.get('stated_total'))
     except Exception as exc:
@@ -2190,7 +3023,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                      (run_id,'warning'if country_activity.get('blocked')else'info','assisted_country',seed_name,
                       json.dumps({'activity':country_activity,'samples':country_samples},ensure_ascii=False)))
         conn.execute('INSERT INTO scan_events(run_id,level,phase,company,message) VALUES(?,?,?,?,?)',
-                     (run_id,'info','runtime_info',seed_name,json.dumps({'support_flow_revision':FLOW_REVISION,'export_schema':5,'jd_enrichment_enabled':enrichment_enabled,'detail_parallel_tabs':LAST_INGESTION_REPORT.get('detail_parallel_tabs',3),'http_reprobe_enabled':LAST_INGESTION_REPORT.get('http_reprobe_enabled',True),'resumed_details':bool(resume_details),'resumed_listing':bool(resume_listing),'browser_version':LAST_INGESTION_REPORT.get('browser_version','')})))
+                     (run_id,'info','runtime_info',seed_name,json.dumps({'support_flow_revision':FLOW_REVISION,'export_schema':5,'jd_enrichment_enabled':enrichment_enabled,'detail_parallel_tabs':LAST_INGESTION_REPORT.get('detail_parallel_tabs',3),'http_reprobe_enabled':LAST_INGESTION_REPORT.get('http_reprobe_enabled',True),'resumed_details':bool(resume_details),'resumed_listing':bool(resume_listing),'browser_version':LAST_INGESTION_REPORT.get('browser_version',''),'effective_detail_time_budget_sec':getattr(scanner.config,'DETAIL_SCAN_TIME_BUDGET_SEC',None),'effective_detail_max_total':getattr(scanner.config,'MAX_DETAIL_SCAN_TOTAL',None),'effective_detail_max_per_company':getattr(scanner.config,'MAX_DETAIL_SCAN_PER_COMPANY',None)})))
         conn.execute('INSERT INTO scan_events(run_id,level,phase,company,message) VALUES(?,?,?,?,?)',
                      (run_id,'warning'if missing_jd else'info','assisted_jd_coverage',seed_name,
                       json.dumps({'coverage':jd_coverage,'activity':detail_activity,'samples':detail_samples},ensure_ascii=False)))
@@ -2207,6 +3040,10 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                 detail=LAST_INGESTION_REPORT.get('detail_verification_counts',{}),
                 retained_listing=len(LAST_INGESTION_REPORT.get('verification_events',[])),
                 retained_detail=len(LAST_INGESTION_REPORT.get('detail_verification_events',[]))))))
+        reader = getattr(scanner, '_saved_jd_reader', None)
+        if callable(getattr(reader, 'summary', None)):
+            conn.execute('INSERT INTO scan_events(run_id,level,phase,company,message) VALUES(?,?,?,?,?)',
+                (run_id,'info','repeat_scan',seed_name,json.dumps(reader.summary())))
         for event in LAST_INGESTION_REPORT.get('verification_events',[])+LAST_INGESTION_REPORT.get('detail_verification_events',[]):
             conn.execute('INSERT INTO scan_events(run_id,level,phase,company,message) VALUES(?,?,?,?,?)',
                 (run_id,'info','assisted_verification',seed_name,json.dumps(event,ensure_ascii=False)))
@@ -2262,6 +3099,9 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     except Exception as ex:
         logger.warning("Could not record scan_runs / scan_log for assisted ingestion: %s", ex)
 
+    reader = getattr(scanner, '_saved_jd_reader', None)
+    if callable(getattr(reader, 'summary', None)):
+        LAST_INGESTION_REPORT['repeat_scan'] = reader.summary()
     LAST_INGESTION_REPORT.update(
         url=url,
         ingested=new_count,
@@ -2287,6 +3127,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
         verification_cleared=LAST_INGESTION_REPORT.get('verification_counts',{}).get('verification_cleared',0)+LAST_INGESTION_REPORT.get('detail_verification_counts',{}).get('verification_cleared',0),
         access_deferred=sum(row.get('jd_defer_kind')=='access_gate'for row in harvest_rows),
         jd_coverage=jd_coverage,
+        posting_outcomes=[dict(url=row['url'],jd_read_status=row.get('jd_read_status','unattempted'))for row in harvest_rows],
         jd_enrichment_enabled=enrichment_enabled,
         detail_parallel_tabs=LAST_INGESTION_REPORT.get('detail_parallel_tabs',3),
         http_reprobe_enabled=LAST_INGESTION_REPORT.get('http_reprobe_enabled',True),
@@ -2374,7 +3215,7 @@ def _is_block_message(message: str, jobs_found=None) -> bool:
     return saved <= 0 and bool(_ANY_ACCESS_RE.search(value))
 
 
-def blocked_portals_from_errors_csv(csv_path, phase: str = "", yields=None) -> list[dict[str, str]]:
+def blocked_portals_from_errors_csv(csv_path, phase: str = "", yields=None, include_detail_issues=False) -> list[dict[str, str]]:
     """Actual blocked targets only, never a DNS failure or a fixed host list.
 
     `yields` maps a normalised listing URL to the jobs that listing already
@@ -2403,8 +3244,13 @@ def blocked_portals_from_errors_csv(csv_path, phase: str = "", yields=None) -> l
                         jobs = None
                 else:
                     jobs = yields.get(key) if yields else None
-                if key and _is_block_message(message + ' ' + diagnostics, jobs):
-                    found.append({'seed_name': str(row.get('Seed Name') or row.get('seed_name') or row.get('Company') or '').strip(),
+                combined = message + ' ' + diagnostics
+                listing_blocked = _is_block_message(combined, jobs)
+                detail_blocked = bool(include_detail_issues and jobs is not None and jobs > 0
+                                      and re.search(r'blocked access:\s*[1-9]\d*\s+unresolved', combined, re.I))
+                if key and (listing_blocked or detail_blocked):
+                    found.append({'access_scope': 'details' if detail_blocked and not listing_blocked else 'listing',
+                                  'seed_name': str(row.get('Seed Name') or row.get('seed_name') or row.get('Company') or '').strip(),
                                   'url':url,'reason':message or diagnostics,'phase':phase,
                                   'source_subtype':('recruiter' if str(row.get('Source Type') or row.get('source_type') or '').casefold() in ('recruiter','agency','aggregator') else '')})
     except Exception as exc:
@@ -2445,7 +3291,7 @@ def listing_yield_by_url(scan_log_csv) -> dict:
     return out
 
 
-def blocked_portals_from_summary(summary: dict) -> list[dict[str, str]]:
+def blocked_portals_from_summary(summary: dict, include_detail_issues=False) -> list[dict[str, str]]:
     """Both ATS and Career, including mid-listing partial blocks. No launch."""
     if not isinstance(summary, dict):
         return []
@@ -2461,7 +3307,7 @@ def blocked_portals_from_summary(summary: dict) -> list[dict[str, str]]:
         # CSVs are already produced as normal scan evidence. This only reads
         # the completed run, never seeds or connectivity before a scan.
         for kind in ('errors','scan_log'):
-            found.extend(blocked_portals_from_errors_csv(phase_artifacts.get(kind),phase=phase,yields=yields))
+            found.extend(blocked_portals_from_errors_csv(phase_artifacts.get(kind),phase=phase,yields=yields,include_detail_issues=include_detail_issues))
     unique = {}
     for row in found:
         key = portal_queue_key(row.get('url'))
@@ -2472,6 +3318,8 @@ def blocked_portals_from_summary(summary: dict) -> list[dict[str, str]]:
         else:
             unique[key]['seed_name'] = merge_sources(unique[key].get('seed_name'),row.get('seed_name'))
             unique[key]['phase'] = merge_sources(unique[key].get('phase'),row.get('phase'))
+            if row.get('access_scope', 'listing') == 'listing':
+                unique[key]['access_scope'] = 'listing'
             if row.get('source_subtype'):
                 unique[key]['source_subtype'] = row['source_subtype']
         saved = int(yields.get(key) or 0)
@@ -2492,3 +3340,37 @@ def open_in_default_browser(url: str) -> bool:
     except Exception as e:
         logger.warning("Could not open URL in external browser: %s", e)
         return False
+
+
+def backfill_recent_access_issues(db_path):
+    """Recover omitted JD diagnostics from existing exports; no scan/network.
+
+    Read the latest available artifact for each phase (bounded history). Do
+    not re-open resolved/dismissed rows or overwrite a user's queue decisions.
+    Intended for a write-capable background task, never the UI thread.
+    """
+    from pathlib import Path
+    from sponsorscout import paths
+    from sponsorscout.db import database as database
+    existing = {row['url_key'] for row in database.list_blocked_portals(db_path, include_resolved=True)}
+    output = Path(paths.ensure_scan_output_dir())
+    phases = {'ats', 'career'}
+    added = 0
+    for run in database.list_scan_runs(db_path, limit=25):
+        run_id = run[0]
+        for phase in tuple(sorted(phases)):
+            base = output / f'{run_id}_{phase}_jobs'
+            scan_log = base.with_name(base.name + '_scan_log.csv')
+            if not scan_log.is_file():
+                continue
+            phases.remove(phase)
+            summary = {'artifacts': {phase: {'scan_log': str(scan_log),
+                       'errors': str(base.with_name(base.name + '_errors.csv'))}}}
+            for portal in blocked_portals_from_summary(summary, include_detail_issues=True):
+                key = portal_queue_key(portal.get('url'))
+                if key and key not in existing:
+                    added += database.enqueue_blocked_portals(db_path, [portal], run_id=run_id)
+                    existing.add(key)
+        if not phases:
+            break
+    return added

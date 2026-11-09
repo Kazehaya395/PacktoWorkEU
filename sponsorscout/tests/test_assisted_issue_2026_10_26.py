@@ -195,10 +195,11 @@ def test_attention_label_has_neutral_idle_state():
 def test_partial_dialog_explains_resume_path():
     src = UI.read_text(encoding="utf-8")
     i18n = I18N.read_text(encoding="utf-8")
-    assert "Ingestion Partial" in src
-    assert "Ingestion Partial" in i18n
-    assert "Use Resume unread JDs to continue" in src
-    assert "Use Resume unread JDs to continue" in i18n
+    # The approved primary action now chooses listing or JD continuation.
+    assert "Descriptions read; listing not verified" in src
+    assert "Descriptions read; listing not verified" in i18n
+    assert "Collect / continue works on the saved descriptions" in src
+    assert "Collect / continue works on the saved descriptions" in i18n
 
 
 def test_session_details_uses_stable_content_read():

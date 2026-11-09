@@ -26,6 +26,7 @@ import requests
 
 from sponsorscout.db import database as db
 from sponsorscout.i18n import _
+from sponsorscout.core.jd_text import normalize_jd_text
 
 KIND_PROMPT = "ai_prompt"
 KIND_CV = "cv"
@@ -48,6 +49,7 @@ def build_clipboard_text(prompt: str, jd: str, cv: str, cl: str) -> str:
 
     Raises ValueError naming the required parts that are empty.
     """
+    jd = normalize_jd_text(jd)
     missing = []
     if not prompt.strip():
         missing.append(_("AI prompt"))
@@ -470,7 +472,7 @@ class TailoringTab(QWidget):
                 _("Select a job in the Search tab, or paste a job description link here."))
             return
         rec = db.get_job_for_tailoring(self.db_path, self._selected_url)
-        stored = strip_browser_notice((rec or {}).get("description", "")).strip()
+        stored = strip_browser_notice(normalize_jd_text((rec or {}).get("description", ""))).strip()
         if stored:
             self.jd_edit.setPlainText(stored)
             self.status_message.emit(_("Job description loaded."))
@@ -496,7 +498,7 @@ class TailoringTab(QWidget):
     def _on_fetched(self, ok: bool, payload: str):
         self._set_loading(False)
         if ok:
-            self.jd_edit.setPlainText(payload)
+            self.jd_edit.setPlainText(normalize_jd_text(payload))
             self.status_message.emit(_("Job description loaded."))
         else:
             QMessageBox.warning(

@@ -1,6 +1,6 @@
 """Small coalescing UI data loader; no QWidget/SQL work on the wrong thread.
 
-One read worker and one action worker per process, created lazily. Slow chart
+Two bounded read workers and one serialized action worker per process, created lazily. Slow chart
 reads cannot hold up a queue action. Latest request wins; obsolete SQLite reads
 are interrupted, and results from a closed or superseded view are discarded.
 """
@@ -21,7 +21,7 @@ def _pool(read_only):
     name = 'view' if read_only else 'action'
     with _pool_lock:
         if name not in _pools:
-            _pools[name] = ThreadPoolExecutor(max_workers=1, thread_name_prefix='UI-' + name)
+            _pools[name] = ThreadPoolExecutor(max_workers=2 if read_only else 1, thread_name_prefix='UI-' + name)
         return _pools[name]
 
 

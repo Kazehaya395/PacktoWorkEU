@@ -48,6 +48,7 @@ from sponsorscout.scanning.common import check_control
 from sponsorscout.scanning.common import completion_status,reconcile_scan_artifacts
 from sponsorscout.scanning.response_evidence import challenge_reason,http_error_reason,response_metadata,listing_block_message
 from sponsorscout.scanning.detail_state import DetailRequestState
+from sponsorscout.scanning.progress_events import final_diagnostics
 from sponsorscout.core.location_evidence import apply_row_geography
 from sponsorscout.core.job_identity import (posting_identity,metadata_title,evergreen_title,
     explicit_detail_url,merge_sources,merge_job_rows,finalize_job_csvs,read_job_csv,write_job_csv,
@@ -215,7 +216,8 @@ def classify_workload(employer_field="", title="", text=""):
         if _WL_PERMANENT_RE.search(src):
             return "Full-time"
     # 2. prose, boilerplate sentences discarded.
-    if _WL_INTERN_RE.search(body):
+    from sponsorscout.core.workload_evidence import internship_role_evidence
+    if internship_role_evidence(body):
         return "Internship"
     part = _wl_declared(body, _WL_PART_RE)
     full = _wl_declared(body, _WL_FULL_RE)
@@ -890,25 +892,11 @@ _RESERVE_MB = 1200
 # pipeline. The ``requested=`` cap the local copy offered is preserved in
 # ``common.recommended_workers``, so no caller lost functionality.
 from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
-# REBASE 2026-10-03 (R3): identical knob to career_scanner.py so the two
-# scanners still size themselves the same way. common.recommended_workers only
-# ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
-# the one way to raise it, opt-in, hard-capped.
+# One sizing policy for Career, ATS, pipeline and Assisted detail tabs.
+# Environment settings are downward clamps, never a hardware-budget bypass.
 def recommended_workers(kind="browser", requested=None):
-    n = _common_recommended_workers(kind, requested)
-    if kind not in ("browser", "http"):
-        return n
-    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
-                         else "SPONSORSCOUT_HTTP_WORKERS")
-    if not raw:
-        return n
-    try:
-        want = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return n
-    if want < 1:
-        return n
-    return min(want, 8 if kind == "browser" else 24)
+    return _common_recommended_workers(kind, requested)
+
 def describe_host_budget():
     """One-line host summary for the run header (helps users self-diagnose)."""
     cpus = _host_cpu_count()
@@ -1250,7 +1238,7 @@ SEED_UPGRADE = {
 # ATS types whose public list API is known to currently return 0/404 — surfaced
 # in the scan log diagnostics rather than silently reported as healthy.
 KNOWN_BOARD_ISSUES = {
-    "Ecosia": "Ashby board 'ecosia.org' currently returns 0 jobs (genuine hiring freeze; board verified live 2026-09-11)",
+    "Ecosia": "Historical note (2026-09-11): Ashby board 'ecosia.org' returned zero jobs. Current empty response does not establish a hiring freeze.",
     "Dbt Labs": "Greenhouse board 'dbtlabsinc' returns 404 (board taken private)",
     "Crealytics": "Personio board currently returns 0 positions",
 }
@@ -1697,7 +1685,7 @@ _WD_SITE_COUNTRY_CODES = {
 _BUSINESS_HEAD_RE = re.compile(
     r"\b(affairs|delivery|capacity|center|centre|relations|operations|services|"
     r"solutions|engineering|development|programme|program|partnerships?|policy|"
-    r"strategy|legal|finance|sales|marketing|talent|research)\b", re.I)
+    r"strategy|legal|finance|sales|marketing|communications?|talent|research)\b", re.I)
 # ── HTTP: per-host gate and keep-alive connections (2026-10-19) ─────────────
 # Many companies share one host (every Workday tenant is a myworkdayjobs.com
 # subdomain, SmartRecruiters and Personio are single hosts). Unlimited parallel
@@ -1841,6 +1829,9 @@ class ATSScanner:
             aliases = getattr(self, '_captured_jd_identities', None)
             if aliases is not None and len(cleaned) > len(aliases.get(identity, '')):
                 aliases[identity] = cleaned
+
+        from sponsorscout.core.saved_details import remember_capture
+        remember_capture(self,url,text)
 
     def get_captured_jd(self, url):
         if not url:
@@ -3140,7 +3131,16 @@ class ATSScanner:
         title = self._split_title_place(title)[0]
         title = strip_glued_remote_tail(title)
         low = title.lower()
-        if not title or len(title) > 180 or metadata_title(title):
+        parsed = urlparse(url)
+        provider_long_role = (len(title) <= 512 and _has_role_noun(title)
+            and (parsed.hostname or "").endswith(".myworkdayjobs.com")
+            and "/job/" in parsed.path
+            and re.search(r"_[A-Za-z0-9][\w-]*/?$", parsed.path))
+        if not title or (len(title) > 180 and not provider_long_role) or metadata_title(title):
+            return False
+        # Explicit pool/navigation exclusions must precede the evergreen-role
+        # allowance; a detail-shaped URL cannot make a talent pool a vacancy.
+        if any(p in low for p in ("talent community", "talent pool", "candidate database", "career day")):
             return False
         if evergreen_title(title) and url and self.valid_job_url(url):
             return True
@@ -3585,6 +3585,12 @@ class ATSScanner:
         # Support detection from explicit JD evidence only.
         blue, visa, reloc, reloc_req, conf, evidence, flag = self.classify_support(description, title, target["name"])
         rec["EU Blue Card"] = blue
+        rec["Blue Card Evidence"] = ""
+        if description and blue in (VERDICT_YES,VERDICT_NO):
+            from sponsorscout.scanning.jd_support import detect_blue_card_result
+            _blue_verdict, _blue_evidence = detect_blue_card_result(
+                self.detector, self._strip_html(description), self._other_company_names(target["name"]))
+            rec["Blue Card Evidence"] = _blue_evidence if _blue_verdict == blue else ""
         rec["Visa Sponsorship"] = visa
         rec["Relocation Support"] = reloc
         rec["Relocation Required"] = reloc_req
@@ -4389,14 +4395,24 @@ class ATSScanner:
                 page = ctx.new_page()
                 resp = page.goto(target["url"], wait_until="domcontentloaded", timeout=25000)
                 nav_status = resp.status if resp is not None else 0
-                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=nav_status,
+                from sponsorscout.scanning.access_readiness import observe_verification
+                access_started = time.monotonic()
+                access_state = {}
+                page._last_nav_status = nav_status
+                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=page._last_nav_status,
                     frame_urls=[getattr(f,'url','')for f in (getattr(page,'frames',None)or())])
+                _reason = observe_verification(
+                    page, _reason, self._target_notes, access_started, access_state,
+                    cancel_event=self.cancel_event, monotonic=time.monotonic)
                 if _reason:
                     browser.close()
                     raise RuntimeError(listing_block_message(_reason))
                 page.wait_for_timeout(1800)
-                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=nav_status,
+                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=page._last_nav_status,
                     frame_urls=[getattr(f,'url','')for f in (getattr(page,'frames',None)or())])
+                _reason = observe_verification(
+                    page, _reason, self._target_notes, access_started, access_state,
+                    cancel_event=self.cancel_event, monotonic=time.monotonic)
                 if _reason:
                     browser.close()
                     raise RuntimeError(listing_block_message(_reason))
@@ -4782,6 +4798,8 @@ class ATSScanner:
             if check_control(self.cancel_event, self.pause_event):
                 return
             started = time.monotonic()
+            _reporter = getattr(self, '_progress_reporter', None)
+            _progress_key = _reporter.begin(target) if _reporter else None
             print(f"\n[{idx}/{len(targets)}] {target['name']} ({target['ats_type']})")
             error = ""
             diagnostics = []
@@ -4833,15 +4851,15 @@ class ATSScanner:
             _transport = self._detail_state.transport_summary(target['url'])
             if _transport:
                 diagnostics.append(_transport)
+            _urls=[row.get('Job URL','')for row in accepted]
+            _coverage=self._detail_state.coverage(target['url'],_urls,self.get_captured_jd)
             if accepted:
-                _urls=[row.get('Job URL','')for row in accepted]
-                _coverage=self._detail_state.coverage(target['url'],_urls,self.get_captured_jd)
-                diagnostics.append(self._detail_state.coverage_summary(target['url'],_urls,self.get_captured_jd))
                 if _coverage['readable']<_coverage['observed']:
                     diagnostics.append('JD coverage incomplete: '+str(_coverage['observed']-_coverage['readable'])+' observed posting(s) without a usable full JD; Unknown is not a negative verdict')
             for row in accepted+quarantined:
                 apply_row_geography(row)
             dest = recruiter_csv if target["source_type"] == "recruiter" else self.output_file
+            diagnostics.append('JD coverage: ' + '; '.join(f'{k}={v}' for k, v in _coverage.items()))
             status = completion_status(len(accepted),error,diagnostics)
             with self._file_lock:
                 if accepted:
@@ -4866,13 +4884,15 @@ class ATSScanner:
                             if _r.get("Quarantine Reason")
                             == "outside_or_unproven_target_country"),
                         "Error": error,
-                        "Diagnostics": " | ".join(diagnostics)[-4000:],
+                        "Diagnostics": final_diagnostics(diagnostics, _coverage),
                         "Duration Sec": round(time.monotonic() - started, 1),
                         "Seed URL": target["url"],
                     })
             if error:
                 self._record_error(target["name"], "target", err_type, err_msg,
                                    target["url"])
+            if _reporter:
+                _reporter.end(_progress_key, status, coverage=_coverage)
             print(f"   {status.upper()}: [{target['name']}] wrote={len(accepted)}, quarantined={len(quarantined)}, dups={duplicates}")
 
         if ats_workers <= 1 or len(targets) <= 1:

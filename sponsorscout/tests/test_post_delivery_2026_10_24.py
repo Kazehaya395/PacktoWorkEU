@@ -79,10 +79,9 @@ def local_board():
     server.shutdown();server.server_close();thread.join(timeout=3)
 
 
-# 2026-10-28 contract change (issue: false bot blocks): a wall on ONE job-detail
-# URL is JD coverage, not a blocked portal, so the readable 'blocked' listing is
-# no longer queued. The wall is still reported in errors/scan-log (asserted below).
-@pytest.mark.parametrize('mode,expected_status,queue_count',[('blocked','partial',0),('readable','completed',0),('thin','partial',0)])
+# 2026-11-08: surface a JD-only access issue, never mislabel it as a
+# blocked listing or start another listing crawl. Saved jobs remain intact.
+@pytest.mark.parametrize('mode,expected_status,queue_count',[('blocked','partial',1),('readable','completed',0),('thin','partial',0)])
 @pytest.mark.parametrize('custom',[False,True])
 def test_actual_regular_transport_enrichment_pipeline_queue(local_board,tmp_path,monkeypatch,mode,expected_status,queue_count,custom):
     from sponsorscout.application import seed_manager
@@ -117,6 +116,7 @@ def test_actual_regular_transport_enrichment_pipeline_queue(local_board,tmp_path
         assert queue[0]['url']==local_board['url'] and queue[0]['source_subtype']=='recruiter'
         assert queue[0]['phase']=='career' and queue[0]['status']=='pending'
         assert '100001' in queue[0]['reason']
+        assert queue[0]['access_scope'] == 'details'
         db.enqueue_blocked_portals(path,summary['blocked_portals'],run_id=summary['run_id'])
         assert len(db.list_blocked_portals(path))==1
     artifacts=summary['artifacts']['career']
@@ -299,13 +299,13 @@ def test_actual_workday_nested_http_failure_to_ats_pipeline_queue(local_board,tm
     path=tmp_path/'ats.db';db.initialize(path)
     summary=pipeline.run_scan(db_path=path,run_ats=True,run_career=False,only_ats=['Generic Workday'])
     assert summary['ingested']==2 and summary['status']=='partial'
-    # The board answered and its rows were kept, so a walled job-detail URL is
-    # JD coverage, not a blocked listing: nothing is queued (2026-10-28). The
-    # evidence still has to survive into the artifacts.
-    assert summary['blocked_portals']==[]
+    # A diagnostic-only JD queue row does not re-crawl the readable listing.
+    assert len(summary['blocked_portals']) == 1
+    assert summary['blocked_portals'][0]['access_scope'] == 'details' 
     assert any('ThreadPoolExecutor' in name for name in workers)
-    assert len(db.list_blocked_portals(path))==0
-    assert_actual_finish_notice(summary,path,monkeypatch,0)
+    assert len(db.list_blocked_portals(path))==1
+    assert dict(db.list_blocked_portals(path)[0])['access_scope'] == 'details'
+    assert_actual_finish_notice(summary,path,monkeypatch,1)
     log=read_csv(summary['artifacts']['ats']['scan_log'])[0]
     assert log['Status']=='partial' and 'blocked access:' in log['Diagnostics']
     assert '100001' in log['Diagnostics'] or any('100001' in (r['Message']+r['Diagnostics']) for r in read_csv(summary['artifacts']['ats']['errors']))

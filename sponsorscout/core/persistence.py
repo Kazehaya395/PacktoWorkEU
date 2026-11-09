@@ -116,17 +116,8 @@ def upsert_job(conn, job, commit: bool = True):
         return
 
     posting_key = posting_identity(normalized_url)
-    try:
-        existing = conn.execute(
-            'SELECT * FROM jobs WHERE posting_key=? OR url=? '
-            'ORDER BY (url=?) DESC, id LIMIT 1',
-            (posting_key, normalized_url, normalized_url)).fetchone()
-    except Exception as exc:
-        # Legacy DBs are migrated at app start. Direct callers may still pass
-        # an older schema; the normal UPSERT compatibility guard below adds it.
-        if 'no such column: posting_key' not in str(exc):
-            raise
-        existing = conn.execute('SELECT * FROM jobs WHERE url=?',(normalized_url,)).fetchone()
+    from sponsorscout.core.job_identity import find_existing_posting
+    existing = find_existing_posting(conn, normalized_url)
     if existing is not None:
         previous = dict(existing)
         job['source_name'] = merge_sources(previous.get('source_name'),job.get('source_name'))
@@ -142,6 +133,18 @@ def upsert_job(conn, job, commit: bool = True):
         previous_marker=str(previous.get('support_evidence_type')or'')
         new_marker=str(job.get('support_evidence_type')or'')
         previous_detail=('jd_read_status=readable'in previous_marker or 'explicit_detail_sentence'in previous_marker)
+        # Failed/card-only refreshes must not detach the proof from a retained
+        # full description. Preserve its ORIGINAL capture time, not clearance
+        # or copied support verdicts. A new hash-bearing detail owns its proof.
+        if (not job.get('_support_authoritative') and 'jd_sha256=' not in new_marker
+                and (len(str(job.get('description') or '')) < len(str(previous.get('description') or ''))
+                     or str(job.get('description') or '') == str(previous.get('description') or ''))):
+            import hashlib, re
+            digest = re.findall(r'(?:^|;\s*)jd_sha256=([0-9a-f]{64})(?:;|$|\s)', previous_marker)
+            captured = re.findall(r'(?:^|;\s*)jd_captured_at=([^;\s]+)', previous_marker)
+            if (previous_detail and digest and captured
+                    and digest[-1] == hashlib.sha256(str(previous.get('description') or '').encode()).hexdigest()):
+                job['support_evidence_type'] = new_marker + '; stored_detail_retained; jd_read_status=readable; jd_sha256=' + digest[-1] + '; jd_captured_at=' + captured[-1]
         incoming_card=new_marker.startswith('listing_card_sentence')
         if previous_detail and incoming_card:
             # A listing teaser never replaces a real captured JD/known verdict.
@@ -156,7 +159,8 @@ def upsert_job(conn, job, commit: bool = True):
         unknown = ('','unknown','not specified','n/a','?','none')
         if str(job.get('location') or '').strip().casefold() in unknown:
             job['location'] = previous.get('location','')
-            if str(job.get('country') or '').strip().casefold() in unknown:
+            if (str(job.get('country') or '').strip().casefold() in unknown
+                    and str(job.get('country_source') or '').strip().casefold() != 'manual'):
                 job['country'] = previous.get('country','')
                 job['country_source'] = previous.get('country_source','none')
         preserved = False
@@ -166,6 +170,26 @@ def upsert_job(conn, job, commit: bool = True):
             evidence = previous.get('blue_card_evidence') if verdict=='eu_blue_card_verdict' else previous.get('support_evidence')
             rejected_by_fresh_detail=(job.get('_support_authoritative') and verdict in job.get('_support_guarded',())
                                       and 'manual'not in previous_marker.casefold())
+            if (job.get('_support_authoritative') and verdict=='relocation_support'
+                    and new in ('','unknown') and old in ('y','yes')
+                    and 'manual'not in previous_marker.casefold()
+                    and str(previous.get('source_type')or'').casefold()!='manual'):
+                # Retire this proved false-positive only on a fresh readable
+                # detail write; a teaser/failed fetch never erases known support.
+                from sponsorscout.scanning.jd_support import JDSupportDetector
+                detector=JDSupportDetector()
+                if (detector._object_relocation_duty(str(evidence or ''))
+                        and detector.detect(str(evidence or ''))['relocation']['verdict']!='Yes'):
+                    rejected_by_fresh_detail=True
+            if (job.get('_support_authoritative') and verdict=='visa_sponsorship'
+                    and new in ('','unknown') and old in ('y','yes')
+                    and 'manual'not in previous_marker.casefold()
+                    and str(previous.get('source_type')or'').casefold()!='manual'):
+                from sponsorscout.scanning.jd_support import JDSupportDetector, _OCCUPATIONAL_PERMIT_RE
+                old_evidence=str(evidence or '')
+                if (_OCCUPATIONAL_PERMIT_RE.search(old_evidence)
+                        and JDSupportDetector().detect(old_evidence)['visa']['verdict']!='Yes'):
+                    rejected_by_fresh_detail=True
             if new in ('','unknown','possible') and old in ('y','n','yes','no') and evidence and not rejected_by_fresh_detail:
                 job[verdict] = previous[verdict]
                 preserved = True
@@ -249,7 +273,9 @@ def upsert_job(conn, job, commit: bool = True):
             _loc_country = ""
     _explicit = str(job.get("country", "") or "").strip()
     _passed_source = str(job.get("country_source", "") or "").strip().lower()
-    if _passed_source == "manual" and _explicit:
+    # An explicit manual correction may deliberately clear the country.
+    # Do not infer it again from a location or restore a previous value.
+    if _passed_source == "manual":
         job_country = _explicit
         _country_source = "manual"
     elif _explicit and _passed_source in {'structured_job_country','job_address','observed_country_field','provider_country'}:
@@ -265,7 +291,7 @@ def upsert_job(conn, job, commit: bool = True):
         job_country = ""
         _country_source = "none"
 
-    if not job_country and existing is not None:
+    if not job_country and existing is not None and _passed_source != "manual":
         previous_country=str(dict(existing).get('country')or'').strip()
         previous_source=str(dict(existing).get('country_source')or'')
         if previous_country.casefold()not in ('','unknown','none','not specified','n/a','?') and not is_location_hint(previous_source):
@@ -277,12 +303,29 @@ def upsert_job(conn, job, commit: bool = True):
 
     if job.get('_support_authoritative') or 'jd_read_status='in str(job.get('support_evidence_type')or''):
         from sponsorscout.core.integrity import check_integrity
-        effective_country=(dict(existing).get('country') if existing is not None and dict(existing).get('country_source')=='manual' else job_country)
+        effective_country=(dict(existing).get('country') if existing is not None and dict(existing).get('country_source')=='manual' and _country_source!='manual' else job_country)
         if str(effective_country or '').strip().casefold() in ('unknown','none','not specified','n/a','?'):
             effective_country=''
         job,violations=check_integrity(dict(job,country=effective_country))
         if violations:
             job['support_evidence_type']=str(job.get('support_evidence_type')or'')+'; country_integrity='+','.join(violations)
+
+    # A real newer complete JD may be shorter than the previous version.
+    # Length is a quality fallback, not a content-version comparison.
+    _replace_proven_description = False
+    if existing is not None:
+        from sponsorscout.core.saved_details import _validated_capture
+        from datetime import datetime
+        old = dict(existing)
+        old_stamp = _validated_capture(old, str(old.get('support_evidence_type') or ''), max_age_seconds=float('inf'))
+        new_stamp = _validated_capture(job, str(job.get('support_evidence_type') or ''), max_age_seconds=float('inf'))
+        if old_stamp and new_stamp and datetime.fromisoformat(new_stamp) < datetime.fromisoformat(old_stamp):
+            for field in ('description','visa_sponsorship','relocation_support','eu_blue_card_verdict',
+                          'relocation_required','support_confidence','support_evidence',
+                          'support_evidence_url','support_evidence_type','blue_card_evidence'):
+                job[field] = old.get(field)
+        elif new_stamp and job.get('_description_authority') == 'detail':
+            _replace_proven_description = True
 
     _sql = """INSERT INTO jobs
            (external_id, title, company, country, location, url, ats_source,
@@ -300,7 +343,7 @@ def upsert_job(conn, job, commit: bool = True):
            ON CONFLICT(url) DO UPDATE SET
              title=excluded.title,
              company=excluded.company,
-             country=CASE WHEN COALESCE(country_source,'auto')='manual' THEN country ELSE excluded.country END,
+             country=CASE WHEN COALESCE(country_source,'auto')='manual' AND excluded.country_source!='manual' THEN country ELSE excluded.country END,
              location=excluded.location,
              ats_source=excluded.ats_source,
              source_type=excluded.source_type,
@@ -400,7 +443,7 @@ def upsert_job(conn, job, commit: bool = True):
         job.get("domain", "Unknown") or "Unknown",
         posting_key,
     )
-    if job.get('_replace_card_description'):
+    if job.get('_replace_card_description') or _replace_proven_description:
         _sql=_sql.replace('description=CASE\n               WHEN LENGTH', 'description=CASE\n               WHEN 1 THEN excluded.description\n               WHEN LENGTH',1)
     try:
         conn.execute(_sql, _params)

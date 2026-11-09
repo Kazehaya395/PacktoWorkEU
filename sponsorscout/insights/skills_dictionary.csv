@@ -83,7 +83,7 @@ Playwright,Technical Skills,(?:\bplaywright\b)|(?:(?<!\w)Playwright[\s\-_/]+test
 Leadership,Soft Skills,(?:\b(?:leadership|team\s+lead(?:ership)?|people\s+management)\b)|(?:(?<!\w)leadership(?!\w)|(?<!\w)Führung(?!\w)|(?<!\w)leiderschap(?!\w)|(?<!\w)przywództwo(?!\w)|(?<!\w)dirigeants(?!\w)),false
 Problem Solving,Soft Skills,(?:\bproblem[- ]solving\b)|(?:(?<!\w)problem\-solving(?!\w)|(?<!\w)problem[\s\-_/]+solving(?!\w)|(?<!\w)Problemlösung(?!\w)|(?<!\w)probleemoplossend[\s\-_/]+vermogen(?!\w)|(?<!\w)risoluzione[\s\-_/]+dei[\s\-_/]+problemi(?!\w)|(?<!\w)rozwiązywanie[\s\-_/]+problemów(?!\w)),false
 Communication,Soft Skills,\bcommunication\s+skills?\b,false
-Project Management,Soft Skills,(?:\bproject\s+management\b)|(?:(?<!\w)project[\s\-_/]+management(?!\w)|(?<!\w)Projektmanagement(?!\w)|(?<!\w)projectmanagement(?!\w)|(?<!\w)gestione[\s\-_/]+progetti(?!\w)|(?<!\w)zarządzanie[\s\-_/]+projektami(?!\w)|(?<!\w)gestion[\s\-_/]+de[\s\-_/]+projet(?!\w)|(?<!\w)gestión[\s\-_/]+de[\s\-_/]+proyectos(?!\w)),false
+Project Management,"Project, Product & Business Operations",(?:\bproject\s+management\b)|(?:(?<!\w)project[\s\-_/]+management(?!\w)|(?<!\w)Projektmanagement(?!\w)|(?<!\w)projectmanagement(?!\w)|(?<!\w)gestione[\s\-_/]+progetti(?!\w)|(?<!\w)zarządzanie[\s\-_/]+projektami(?!\w)|(?<!\w)gestion[\s\-_/]+de[\s\-_/]+projet(?!\w)|(?<!\w)gestión[\s\-_/]+de[\s\-_/]+proyectos(?!\w)),false
 Stakeholder Management,Soft Skills,(?:\bstakeholder(?:\s+management|\s+engagement)?\b)|(?:(?<!\w)stakeholder[\s\-_/]+management(?!\w)|(?<!\w)Stakeholdermanagement(?!\w)|(?<!\w)gestione[\s\-_/]+stakeholder(?!\w)|(?<!\w)zarządzanie[\s\-_/]+interesariuszami(?!\w)),false
 Strategic Thinking,Soft Skills,(?:\bstrategic\s+(?:thinking|mindset|vision)\b)|(?:(?<!\w)strategic[\s\-_/]+thinking(?!\w)|(?<!\w)strategisches[\s\-_/]+Denken(?!\w)|(?<!\w)strategisch[\s\-_/]+denken(?!\w)|(?<!\w)pensiero[\s\-_/]+strategico(?!\w)|(?<!\w)myślenie[\s\-_/]+strategiczne(?!\w)),false
 Mentorship,Soft Skills,\b(?:mentoring|mentorship|coaching)\b,false
@@ -103,10 +103,10 @@ DevOps Engineering,Technical Skills,\bdevops\s+(?:engineering|engineer)?\b,false
 Security & Compliance,Technical Skills,\bsecurity\s+compliance|infosec|soc\s*2|cybersecurity\b,false
 API Design & Integration,Technical Skills,\bapi\s+(?:design|integration|gateway)\b,false
 Distributed Systems,Technical Skills,(?:\bdistributed\s+systems?\b)|(?:(?<!\w)distributed[\s\-_/]+systems(?!\w)|(?<!\w)distributed[\s\-_/]+computing(?!\w)),false
-Financial Modeling,Technical Skills,(?:\bfinancial\s+model(?:ing)?|valuation\b)|(?:(?<!\w)financial[\s\-_/]+modeling(?!\w)|(?<!\w)financial[\s\-_/]+modelling(?!\w)|(?<!\w)financieel[\s\-_/]+modelleren(?!\w)|(?<!\w)modellazione[\s\-_/]+finanziaria(?!\w)|(?<!\w)modelowanie[\s\-_/]+finansowe(?!\w)),false
-Customer Relationship Management,Soft Skills,(?:\bcustomer\s+success|client\s+relationship|account\s+management\b)|(?:(?<!\w)customer[\s\-_/]+relationship[\s\-_/]+management(?!\w)|(?<!\w)CRM(?!\w)|(?<!\w)Kundenbeziehungsmanagement(?!\w)|(?<!\w)klantrelatiebeheer(?!\w)|(?<!\w)gestione[\s\-_/]+relazione[\s\-_/]+clienti(?!\w)),false
-Product Strategy,Soft Skills,\bproduct\s+(?:strategy|roadmap|lifecycle)\b,false
-Process Optimization,Soft Skills,\bprocess\s+(?:optimization|improvement|efficiency)\b,false
+Financial Modeling,"Finance, Accounting & Insurance",(?:\bfinancial\s+model(?:ing)?|valuation\b)|(?:(?<!\w)financial[\s\-_/]+modeling(?!\w)|(?<!\w)financial[\s\-_/]+modelling(?!\w)|(?<!\w)financieel[\s\-_/]+modelleren(?!\w)|(?<!\w)modellazione[\s\-_/]+finanziaria(?!\w)|(?<!\w)modelowanie[\s\-_/]+finansowe(?!\w)),false
+Customer Relationship Management,"Sales, Customer Success & Support",(?:\bcustomer\s+success|client\s+relationship|account\s+management\b)|(?:(?<!\w)customer[\s\-_/]+relationship[\s\-_/]+management(?!\w)|(?<!\w)CRM(?!\w)|(?<!\w)Kundenbeziehungsmanagement(?!\w)|(?<!\w)klantrelatiebeheer(?!\w)|(?<!\w)gestione[\s\-_/]+relazione[\s\-_/]+clienti(?!\w)),false
+Product Strategy,"Project, Product & Business Operations",\bproduct\s+(?:strategy|roadmap|lifecycle)\b,false
+Process Optimization,"Project, Product & Business Operations",\bprocess\s+(?:optimization|improvement|efficiency)\b,false
 Critical Thinking,Soft Skills,(?:\bcritical\s+thinking\b)|(?:(?<!\w)critical[\s\-_/]+thinking(?!\w)|(?<!\w)kritisches[\s\-_/]+Denken(?!\w)|(?<!\w)kritisch[\s\-_/]+denken(?!\w)|(?<!\w)pensiero[\s\-_/]+critico(?!\w)|(?<!\w)myślenie[\s\-_/]+krytyczne(?!\w)),false
 Team Collaboration,Soft Skills,\bteam\s+collaboration|teamwork\b,false
 Time Management,Soft Skills,(?:\btime\s+management|prioritization\b)|(?:(?<!\w)time[\s\-_/]+management(?!\w)|(?<!\w)Zeitmanagement(?!\w)|(?<!\w)tijdmanagement(?!\w)|(?<!\w)gestione[\s\-_/]+del[\s\-_/]+tempo(?!\w)|(?<!\w)zarządzanie[\s\-_/]+czasem(?!\w)),false
@@ -475,7 +475,7 @@ Cybersecurity,Cybersecurity & IT Support,(?:(?<!\w)cybersecurity(?!\w)|(?<!\w)cy
 Information security,Cybersecurity & IT Support,(?:(?<!\w)information[\s\-_/]+security(?!\w)|(?<!\w)InfoSec(?!\w)),false
 SOC operations,Cybersecurity & IT Support,(?:(?<!\w)security[\s\-_/]+operations[\s\-_/]+center(?!\w)|(?<!\w)SOC[\s\-_/]+analyst(?!\w)|(?<!\w)SOC[\s\-_/]+operations(?!\w)),false
 SIEM,Cybersecurity & IT Support,(?:(?<!\w)SIEM(?!\w)),false
-SOAR,Cybersecurity & IT Support,(?:(?<!\w)SOAR(?!\w)),false
+SOAR,Cybersecurity & IT Support,(?:(?<!\w)SOAR(?!\w)),true
 Splunk Enterprise Security,Cybersecurity & IT Support,(?:(?<!\w)Splunk[\s\-_/]+ES(?!\w)),false
 Microsoft Sentinel,Cybersecurity & IT Support,(?:(?<!\w)Microsoft[\s\-_/]+Sentinel(?!\w)|(?<!\w)Azure[\s\-_/]+Sentinel(?!\w)),false
 IBM QRadar,Cybersecurity & IT Support,(?:(?<!\w)QRadar(?!\w)),false
@@ -1430,29 +1430,29 @@ DELF,"Education, Research & Languages",(?:(?<!\w)DELF(?!\w)),false
 DALF,"Education, Research & Languages",(?:(?<!\w)DALF(?!\w)),false
 PLIDA,"Education, Research & Languages",(?:(?<!\w)PLIDA(?!\w)),false
 Polish language certificate,"Education, Research & Languages",(?:(?<!\w)certyfikat[\s\-_/]+znajomości[\s\-_/]+języka[\s\-_/]+polskiego(?!\w)),false
-People management,Professional Skills & Work Methods,(?:(?<!\w)people[\s\-_/]+management(?!\w)|(?<!\w)Mitarbeiterführung(?!\w)|(?<!\w)personeelsmanagement(?!\w)|(?<!\w)gestione[\s\-_/]+del[\s\-_/]+personale(?!\w)|(?<!\w)zarządzanie[\s\-_/]+ludźmi(?!\w)),false
-Team leadership,Professional Skills & Work Methods,(?:(?<!\w)team[\s\-_/]+leadership(?!\w)|(?<!\w)Teamleitung(?!\w)|(?<!\w)teamleider(?!\w)|(?<!\w)guida[\s\-_/]+del[\s\-_/]+team(?!\w)|(?<!\w)kierowanie[\s\-_/]+zespołem(?!\w)),false
-Communication skills,Professional Skills & Work Methods,(?:(?<!\w)communication[\s\-_/]+skills(?!\w)|(?<!\w)Kommunikationsfähigkeit(?!\w)|(?<!\w)communicatieve[\s\-_/]+vaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+comunicative(?!\w)|(?<!\w)umiejętności[\s\-_/]+komunikacyjne(?!\w)|(?<!\w)compétences[\s\-_/]+en[\s\-_/]+communication(?!\w)),false
-Written communication,Professional Skills & Work Methods,(?:(?<!\w)written[\s\-_/]+communication(?!\w)|(?<!\w)schriftliche[\s\-_/]+Kommunikation(?!\w)|(?<!\w)schriftelijke[\s\-_/]+communicatie(?!\w)|(?<!\w)comunicazione[\s\-_/]+scritta(?!\w)|(?<!\w)komunikacja[\s\-_/]+pisemna(?!\w)),false
-Presentation skills,Professional Skills & Work Methods,(?:(?<!\w)presentation[\s\-_/]+skills(?!\w)|(?<!\w)Präsentationsfähigkeiten(?!\w)|(?<!\w)presentatievaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+di[\s\-_/]+presentazione(?!\w)|(?<!\w)umiejętności[\s\-_/]+prezentacyjne(?!\w)),false
-Negotiation skills,Professional Skills & Work Methods,(?:(?<!\w)negotiation[\s\-_/]+skills(?!\w)|(?<!\w)Verhandlungsgeschick(?!\w)|(?<!\w)onderhandelingsvaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+negoziali(?!\w)|(?<!\w)umiejętności[\s\-_/]+negocjacyjne(?!\w)),false
-Analytical thinking,Professional Skills & Work Methods,(?:(?<!\w)analytical[\s\-_/]+thinking(?!\w)|(?<!\w)analytisches[\s\-_/]+Denken(?!\w)|(?<!\w)analytisch[\s\-_/]+denken(?!\w)|(?<!\w)pensiero[\s\-_/]+analitico(?!\w)|(?<!\w)myślenie[\s\-_/]+analityczne(?!\w)),false
-Decision making,Professional Skills & Work Methods,(?:(?<!\w)decision\-making(?!\w)|(?<!\w)Entscheidungsfindung(?!\w)|(?<!\w)besluitvorming(?!\w)|(?<!\w)processo[\s\-_/]+decisionale(?!\w)|(?<!\w)podejmowanie[\s\-_/]+decyzji(?!\w)),false
-Prioritization,Professional Skills & Work Methods,(?:(?<!\w)prioritisation(?!\w)|(?<!\w)prioritization(?!\w)|(?<!\w)Priorisierung(?!\w)|(?<!\w)prioriteren(?!\w)|(?<!\w)prioritizzazione(?!\w)|(?<!\w)ustalanie[\s\-_/]+priorytetów(?!\w)),false
-Attention to detail,Professional Skills & Work Methods,(?:(?<!\w)attention[\s\-_/]+to[\s\-_/]+detail(?!\w)|(?<!\w)Sorgfalt(?!\w)|(?<!\w)oog[\s\-_/]+voor[\s\-_/]+detail(?!\w)|(?<!\w)attenzione[\s\-_/]+ai[\s\-_/]+dettagli(?!\w)|(?<!\w)dbałość[\s\-_/]+o[\s\-_/]+szczegóły(?!\w)),false
-Adaptability,Professional Skills & Work Methods,(?:(?<!\w)adaptability(?!\w)|(?<!\w)Anpassungsfähigkeit(?!\w)|(?<!\w)aanpassingsvermogen(?!\w)|(?<!\w)adattabilità(?!\w)|(?<!\w)zdolność[\s\-_/]+adaptacji(?!\w)),false
-Resilience,Professional Skills & Work Methods,(?:(?<!\w)resilience(?!\w)|(?<!\w)Belastbarkeit(?!\w)|(?<!\w)veerkracht(?!\w)|(?<!\w)resilienza(?!\w)|(?<!\w)odporność[\s\-_/]+psychiczna(?!\w)),false
-Conflict resolution,Professional Skills & Work Methods,(?:(?<!\w)conflict[\s\-_/]+resolution(?!\w)|(?<!\w)Konfliktlösung(?!\w)|(?<!\w)conflictoplossing(?!\w)|(?<!\w)risoluzione[\s\-_/]+dei[\s\-_/]+conflitti(?!\w)|(?<!\w)rozwiązywanie[\s\-_/]+konfliktów(?!\w)),false
-Coaching,Professional Skills & Work Methods,(?:(?<!\w)coaching(?!\w)|(?<!\w)coachingvaardigheden(?!\w)),false
-Mentoring,Professional Skills & Work Methods,(?:(?<!\w)mentoring(?!\w)|(?<!\w)mentorschap(?!\w)),false
-Presentation and facilitation,Professional Skills & Work Methods,(?:(?<!\w)facilitation(?!\w)|(?<!\w)moderation(?!\w)|(?<!\w)Workshop\-Moderation(?!\w)),false
-Customer orientation,Professional Skills & Work Methods,(?:(?<!\w)customer[\s\-_/]+orientation(?!\w)|(?<!\w)Kundenorientierung(?!\w)|(?<!\w)klantgerichtheid(?!\w)|(?<!\w)orientamento[\s\-_/]+al[\s\-_/]+cliente(?!\w)|(?<!\w)orientacja[\s\-_/]+na[\s\-_/]+klienta(?!\w)),false
-Initiative,Professional Skills & Work Methods,(?:(?<!\w)initiative(?!\w)|(?<!\w)Eigeninitiative(?!\w)|(?<!\w)initiatief(?!\w)|(?<!\w)iniziativa(?!\w)|(?<!\w)inicjatywa(?!\w)),false
-Ownership,Professional Skills & Work Methods,(?:(?<!\w)ownership(?!\w)|(?<!\w)Verantwortungsbewusstsein(?!\w)|(?<!\w)eigenaarschap(?!\w)|(?<!\w)assunzione[\s\-_/]+di[\s\-_/]+responsabilità(?!\w)|(?<!\w)odpowiedzialność(?!\w)),false
-Collaboration,Professional Skills & Work Methods,(?:(?<!\w)collaboration(?!\w)|(?<!\w)Zusammenarbeit(?!\w)|(?<!\w)samenwerking(?!\w)|(?<!\w)collaborazione(?!\w)|(?<!\w)współpraca(?!\w)),false
-Creativity,Professional Skills & Work Methods,(?:(?<!\w)creativity(?!\w)|(?<!\w)Kreativität(?!\w)|(?<!\w)creativiteit(?!\w)|(?<!\w)creatività(?!\w)|(?<!\w)kreatywność(?!\w)),false
-Emotional intelligence,Professional Skills & Work Methods,(?:(?<!\w)emotional[\s\-_/]+intelligence(?!\w)|(?<!\w)emotionale[\s\-_/]+Intelligenz(?!\w)|(?<!\w)emotionele[\s\-_/]+intelligentie(?!\w)|(?<!\w)intelligenza[\s\-_/]+emotiva(?!\w)|(?<!\w)inteligencja[\s\-_/]+emocjonalna(?!\w)),false
-Cultural awareness,Professional Skills & Work Methods,(?:(?<!\w)cultural[\s\-_/]+awareness(?!\w)|(?<!\w)intercultural[\s\-_/]+competence(?!\w)|(?<!\w)interkulturelle[\s\-_/]+Kompetenz(?!\w)|(?<!\w)interculturele[\s\-_/]+vaardigheden(?!\w)|(?<!\w)competenze[\s\-_/]+interculturali(?!\w)),false
+People management,Soft Skills,(?:(?<!\w)people[\s\-_/]+management(?!\w)|(?<!\w)Mitarbeiterführung(?!\w)|(?<!\w)personeelsmanagement(?!\w)|(?<!\w)gestione[\s\-_/]+del[\s\-_/]+personale(?!\w)|(?<!\w)zarządzanie[\s\-_/]+ludźmi(?!\w)),false
+Team leadership,Soft Skills,(?:(?<!\w)team[\s\-_/]+leadership(?!\w)|(?<!\w)Teamleitung(?!\w)|(?<!\w)teamleider(?!\w)|(?<!\w)guida[\s\-_/]+del[\s\-_/]+team(?!\w)|(?<!\w)kierowanie[\s\-_/]+zespołem(?!\w)),false
+Communication skills,Soft Skills,(?:(?<!\w)communication[\s\-_/]+skills(?!\w)|(?<!\w)Kommunikationsfähigkeit(?!\w)|(?<!\w)communicatieve[\s\-_/]+vaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+comunicative(?!\w)|(?<!\w)umiejętności[\s\-_/]+komunikacyjne(?!\w)|(?<!\w)compétences[\s\-_/]+en[\s\-_/]+communication(?!\w)),false
+Written communication,Soft Skills,(?:(?<!\w)written[\s\-_/]+communication(?!\w)|(?<!\w)schriftliche[\s\-_/]+Kommunikation(?!\w)|(?<!\w)schriftelijke[\s\-_/]+communicatie(?!\w)|(?<!\w)comunicazione[\s\-_/]+scritta(?!\w)|(?<!\w)komunikacja[\s\-_/]+pisemna(?!\w)),false
+Presentation skills,Soft Skills,(?:(?<!\w)presentation[\s\-_/]+skills(?!\w)|(?<!\w)Präsentationsfähigkeiten(?!\w)|(?<!\w)presentatievaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+di[\s\-_/]+presentazione(?!\w)|(?<!\w)umiejętności[\s\-_/]+prezentacyjne(?!\w)),false
+Negotiation skills,Soft Skills,(?:(?<!\w)negotiation[\s\-_/]+skills(?!\w)|(?<!\w)Verhandlungsgeschick(?!\w)|(?<!\w)onderhandelingsvaardigheden(?!\w)|(?<!\w)capacità[\s\-_/]+negoziali(?!\w)|(?<!\w)umiejętności[\s\-_/]+negocjacyjne(?!\w)),false
+Analytical thinking,Soft Skills,(?:(?<!\w)analytical[\s\-_/]+thinking(?!\w)|(?<!\w)analytisches[\s\-_/]+Denken(?!\w)|(?<!\w)analytisch[\s\-_/]+denken(?!\w)|(?<!\w)pensiero[\s\-_/]+analitico(?!\w)|(?<!\w)myślenie[\s\-_/]+analityczne(?!\w)),false
+Decision making,Soft Skills,(?:(?<!\w)decision\-making(?!\w)|(?<!\w)Entscheidungsfindung(?!\w)|(?<!\w)besluitvorming(?!\w)|(?<!\w)processo[\s\-_/]+decisionale(?!\w)|(?<!\w)podejmowanie[\s\-_/]+decyzji(?!\w)),false
+Prioritization,Soft Skills,(?:(?<!\w)prioritisation(?!\w)|(?<!\w)prioritization(?!\w)|(?<!\w)Priorisierung(?!\w)|(?<!\w)prioriteren(?!\w)|(?<!\w)prioritizzazione(?!\w)|(?<!\w)ustalanie[\s\-_/]+priorytetów(?!\w)),false
+Attention to detail,Soft Skills,(?:(?<!\w)attention[\s\-_/]+to[\s\-_/]+detail(?!\w)|(?<!\w)Sorgfalt(?!\w)|(?<!\w)oog[\s\-_/]+voor[\s\-_/]+detail(?!\w)|(?<!\w)attenzione[\s\-_/]+ai[\s\-_/]+dettagli(?!\w)|(?<!\w)dbałość[\s\-_/]+o[\s\-_/]+szczegóły(?!\w)),false
+Adaptability,Soft Skills,(?:(?<!\w)adaptability(?!\w)|(?<!\w)Anpassungsfähigkeit(?!\w)|(?<!\w)aanpassingsvermogen(?!\w)|(?<!\w)adattabilità(?!\w)|(?<!\w)zdolność[\s\-_/]+adaptacji(?!\w)),false
+Resilience,Soft Skills,(?:(?<!\w)resilience(?!\w)|(?<!\w)Belastbarkeit(?!\w)|(?<!\w)veerkracht(?!\w)|(?<!\w)resilienza(?!\w)|(?<!\w)odporność[\s\-_/]+psychiczna(?!\w)),false
+Conflict resolution,Soft Skills,(?:(?<!\w)conflict[\s\-_/]+resolution(?!\w)|(?<!\w)Konfliktlösung(?!\w)|(?<!\w)conflictoplossing(?!\w)|(?<!\w)risoluzione[\s\-_/]+dei[\s\-_/]+conflitti(?!\w)|(?<!\w)rozwiązywanie[\s\-_/]+konfliktów(?!\w)),false
+Coaching,Soft Skills,(?:(?<!\w)coaching(?!\w)|(?<!\w)coachingvaardigheden(?!\w)),false
+Mentoring,Soft Skills,(?:(?<!\w)mentoring(?!\w)|(?<!\w)mentorschap(?!\w)),false
+Presentation and facilitation,Soft Skills,(?:(?<!\w)facilitation(?!\w)|(?<!\w)moderation(?!\w)|(?<!\w)Workshop\-Moderation(?!\w)),false
+Customer orientation,Soft Skills,(?:(?<!\w)customer[\s\-_/]+orientation(?!\w)|(?<!\w)Kundenorientierung(?!\w)|(?<!\w)klantgerichtheid(?!\w)|(?<!\w)orientamento[\s\-_/]+al[\s\-_/]+cliente(?!\w)|(?<!\w)orientacja[\s\-_/]+na[\s\-_/]+klienta(?!\w)),false
+Initiative,Soft Skills,(?:(?<!\w)initiative(?!\w)|(?<!\w)Eigeninitiative(?!\w)|(?<!\w)initiatief(?!\w)|(?<!\w)iniziativa(?!\w)|(?<!\w)inicjatywa(?!\w)),false
+Ownership,Soft Skills,(?:(?<!\w)ownership(?!\w)|(?<!\w)Verantwortungsbewusstsein(?!\w)|(?<!\w)eigenaarschap(?!\w)|(?<!\w)assunzione[\s\-_/]+di[\s\-_/]+responsabilità(?!\w)|(?<!\w)odpowiedzialność(?!\w)),false
+Collaboration,Soft Skills,(?:(?<!\w)collaboration(?!\w)|(?<!\w)Zusammenarbeit(?!\w)|(?<!\w)samenwerking(?!\w)|(?<!\w)collaborazione(?!\w)|(?<!\w)współpraca(?!\w)),false
+Creativity,Soft Skills,(?:(?<!\w)creativity(?!\w)|(?<!\w)Kreativität(?!\w)|(?<!\w)creativiteit(?!\w)|(?<!\w)creatività(?!\w)|(?<!\w)kreatywność(?!\w)),false
+Emotional intelligence,Soft Skills,(?:(?<!\w)emotional[\s\-_/]+intelligence(?!\w)|(?<!\w)emotionale[\s\-_/]+Intelligenz(?!\w)|(?<!\w)emotionele[\s\-_/]+intelligentie(?!\w)|(?<!\w)intelligenza[\s\-_/]+emotiva(?!\w)|(?<!\w)inteligencja[\s\-_/]+emocjonalna(?!\w)),false
+Cultural awareness,Soft Skills,(?:(?<!\w)cultural[\s\-_/]+awareness(?!\w)|(?<!\w)intercultural[\s\-_/]+competence(?!\w)|(?<!\w)interkulturelle[\s\-_/]+Kompetenz(?!\w)|(?<!\w)interculturele[\s\-_/]+vaardigheden(?!\w)|(?<!\w)competenze[\s\-_/]+interculturali(?!\w)),false
 PMP,Professional Skills & Work Methods,(?:(?<!\w)PMP(?!\w)|(?<!\w)Project[\s\-_/]+Management[\s\-_/]+Professional(?!\w)),false
 PRINCE2 Foundation,Professional Skills & Work Methods,(?:(?<!\w)PRINCE2[\s\-_/]+Foundation(?!\w)),false
 PRINCE2 Practitioner,Professional Skills & Work Methods,(?:(?<!\w)PRINCE2[\s\-_/]+Practitioner(?!\w)),false

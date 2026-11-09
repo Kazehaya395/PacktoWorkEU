@@ -1,0 +1,374 @@
+{
+  "en": {
+    "main_dashboard": {
+      "file": "assets/main_dashboard.png",
+      "tab": "Dashboard",
+      "visible_text": [
+        "0",
+        "0/0",
+        "1",
+        "1 + 1 hybrid",
+        "2",
+        "4",
+        "Applications",
+        "Dashboard",
+        "EU Blue Card",
+        "Jobs by Country",
+        "No Jobs (last run)",
+        "No Jobs Found (last run)",
+        "Refresh",
+        "Remote Jobs",
+        "Rescan Companies",
+        "Saved Jobs",
+        "Sponsored Jobs",
+        "Top Employers by Sponsor Score",
+        "Total Companies"
+      ],
+      "sha256": "474d50d752defa9712730083a3eb86359621ecf54ec790c53a1318d6eb0bda3a",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "job_search_table": {
+      "file": "assets/job_search_table.png",
+      "tab": "Search",
+      "visible_text": [
+        "Blue Card",
+        "Clear",
+        "Country:",
+        "Experience:",
+        "Regex",
+        "Reloc",
+        "Remote:",
+        "Run:",
+        "Search",
+        "Showing 1–4 of 4 results",
+        "Sponsor",
+        "▶",
+        "◀"
+      ],
+      "sha256": "f436a4f414f3cf42b7835adab3e2fec2e815e6c0a75c872097523b1518b0a41e",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "applications_dashboard": {
+      "file": "assets/applications_dashboard.png",
+      "tab": "Applications",
+      "visible_text": [
+        "Activity log",
+        "Cancel",
+        "Notes:",
+        "Remove Selected",
+        "Save",
+        "Saved applications",
+        "Status:"
+      ],
+      "sha256": "b35afee8dd4b94892f535c141649992032f6f253a0e9b0e969b44596c4224b34",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "scanning_tool": {
+      "file": "assets/scanning_tool.png",
+      "tab": "Tools",
+      "visible_text": [
+        "Active portal workers",
+        "Advanced maintenance and diagnostics",
+        "Checked does not mean readable. Totals grow as portals discover candidates.",
+        "Custom Scan",
+        "Download Scan Log",
+        "Every past scan run. Select a row to view or download its per-company log with errors.",
+        "Idle",
+        "JD checks — waiting for discovered candidates",
+        "Live scan output",
+        "Pause",
+        "Portal tasks — waiting to start",
+        "Resume",
+        "Scan Now",
+        "Scan now revisits configured company listings to find new jobs. Recent, confirmed descriptions can be reused; new, changed, stale or unread jobs need detail reads. Use Custom Scan for fewer companies. Pause waits; Stop saves a checkpoint.",
+        "Stop",
+        "View Per-Company Log"
+      ],
+      "sha256": "15c34a26224f514cda9dbb97080694a47092ad13c5cfdb4acaef5399230ba9fa",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "backend_data_management": {
+      "file": "assets/backend_data_management.png",
+      "tab": "Data Management",
+      "visible_text": [
+        "/tmp/sponsorscout-documentation-demo/seeds/company_ATS_seed.csv",
+        "81 companies",
+        "Add…",
+        "Delete",
+        "Edit…",
+        "File:",
+        "Manage the source URLs scanned by SponsorScout.  ATS portals are scanned via their job-board APIs; career portals are crawled on the company site.  Edits are saved to your personal seed files and take effect on the next scan.",
+        "Reload",
+        "Reset to bundled defaults",
+        "Save to CSV"
+      ],
+      "sha256": "0bb42d89a7837fc9be486b730142a7c64c5df585b373a4e1501f400f0e1e88c0",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "AI_tailoring_setup": {
+      "file": "assets/AI_tailoring_setup.png",
+      "tab": "AI Prompt Kit",
+      "visible_text": [
+        "Copy prompt + JD + CV + CL",
+        "Load JD",
+        "Save",
+        "Selected job:",
+        "or JD URL:"
+      ],
+      "sha256": "bec6b0b90412af3bc96d4802ee848b9339bf3276306b74e429a7def51cd1d09f",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "insights_dashboard": {
+      "file": "assets/insights_dashboard.png",
+      "tab": "Insights",
+      "visible_text": [
+        "* Insights reflect scanned job portals in SponsorScout's database, not the entire employment market.",
+        "Country:",
+        "Employer industry describes the company, not the job function: a healthcare company can hire salespeople or engineers. Chart total is the full distribution in that doughnut; a highlighted slice is the selection. Skills and coverage use the selected jobs.",
+        "Rebuild all",
+        "Refresh Insights",
+        "Selected jobs: 4 | Categorised: 4 / 4 (100.0%) | With Skills: 4 (100.0%)",
+        "Source:"
+      ],
+      "sha256": "a525d27d0539f850387f478746022c429acb6c568c893013df8fea4feefa5ced",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "assisted_ingestion": {
+      "file": "assets/assisted_ingestion.png",
+      "tab": "Assisted Ingestion",
+      "visible_text": [
+        "0 queued portals",
+        "Advanced options",
+        "Collect / continue",
+        "Company / Seed Name:",
+        "Idle — select a portal to begin.",
+        "Open website",
+        "Portal Careers URL:",
+        "Refresh queue",
+        "Select a portal to collect jobs in the assisted browser. Access is not guaranteed.",
+        "Stop",
+        "When a normal scan leaves an access issue, use this tab. 1. Select a company in the queue below, or enter its name and careers URL. 2. Click Collect / continue and follow any verification prompt in the app browser. 3. Wait for the saved-job result; use Stop if access keeps failing. Open website is view-only. Advanced contains saved batches and separate listing/JD resume controls."
+      ],
+      "sha256": "a248f31a03151330bf137adb7e3f72c411c3bf7c18dba16ac2b1e5d6ce6814db",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    }
+  },
+  "it": {
+    "main_dashboard": {
+      "file": "assets/main_dashboard_it.png",
+      "tab": "Pannello",
+      "visible_text": [
+        "0",
+        "0/0",
+        "1",
+        "1 + 1 hybrid",
+        "2",
+        "4",
+        "Aggiorna",
+        "Aziende Totali",
+        "Candidature",
+        "Carta Blu UE",
+        "Lavori Remoti",
+        "Lavori Sponsorizzati",
+        "Lavori per Paese",
+        "Nessun lavoro trovato (ultima esecuzione)",
+        "No Jobs (last run)",
+        "Offerte salvate",
+        "Pannello",
+        "Principali datori di lavoro per punteggio sponsor",
+        "Riscansiona Aziende"
+      ],
+      "sha256": "dcdb8669676d033f899d5f0855b6cdb237587ef221ca3950e791214f6f1fdd11",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "job_search_table": {
+      "file": "assets/job_search_table_it.png",
+      "tab": "Cerca",
+      "visible_text": [
+        "Azzera",
+        "Carta Blu",
+        "Cerca",
+        "Esegui:",
+        "Esperienza:",
+        "Mostrati 1–4 di 4 risultati",
+        "Paese:",
+        "Regex",
+        "Remoto:",
+        "Ricollocaz.",
+        "Sponsor",
+        "▶",
+        "◀"
+      ],
+      "sha256": "55367589825f8ca848926f39403f8fc5845be517af5343598a0e7683d00fbeea",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "applications_dashboard": {
+      "file": "assets/applications_dashboard_it.png",
+      "tab": "Candidature",
+      "visible_text": [
+        "Annulla",
+        "Candidature salvate",
+        "Note:",
+        "Registro attività",
+        "Rimuovi Selezionato",
+        "Salva",
+        "Stato:"
+      ],
+      "sha256": "8bb8c34b4cc6f9c9af799823aff6fb7ebce8146af7b9972089c332fe6ebe3acb",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "scanning_tool": {
+      "file": "assets/scanning_tool_it.png",
+      "tab": "Strumenti",
+      "visible_text": [
+        "Controllato non significa leggibile. I totali crescono quando i portali rilevano nuovi candidati.",
+        "Controlli descrizioni — in attesa dei candidati rilevati",
+        "Ferma",
+        "Inattivo",
+        "Manutenzione e diagnostica avanzate",
+        "Ogni scansione passata. Seleziona una riga per visualizzare o scaricare il suo registro per azienda con errori.",
+        "Pausa",
+        "Portali attivi",
+        "Portali — in attesa di avvio",
+        "Registro scansione in tempo reale",
+        "Riprendi",
+        "Scansiona Ora",
+        "Scansiona ora ricontrolla gli elenchi delle aziende configurate per trovare nuove offerte. Le descrizioni recenti e confermate possono essere riutilizzate; le offerte nuove, modificate, datate o non lette richiedono la lettura dei dettagli. Usa Scansione personalizzata per scegliere meno aziende. Pausa sospende; Ferma salva un punto di ripresa.",
+        "Scansione Personalizzata",
+        "Scarica Registro di Scansione",
+        "Vedi Registro per Azienda"
+      ],
+      "sha256": "7910547fd83cd6a47328f70c43bac0b239f8e573c56c3b024744f86d43b4bc94",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "backend_data_management": {
+      "file": "assets/backend_data_management_it.png",
+      "tab": "Gestione Dati",
+      "visible_text": [
+        "/tmp/sponsorscout-documentation-demo/seeds/company_ATS_seed.csv",
+        "81 companies",
+        "Aggiungi…",
+        "Elimina",
+        "File:",
+        "Gestisci gli URL delle fonti scansionate da SponsorScout. I portali ATS vengono scansionati tramite le API dei job board; i portali carriere vengono crawpati sul sito dell'azienda. Le modifiche sono salvate nei tuoi file seed personali e hanno effetto alla prossima scansione.",
+        "Modifica…",
+        "Ricarica",
+        "Ripristina i valori predefiniti inclusi",
+        "Salva in CSV"
+      ],
+      "sha256": "0176012e305aece007e0f8e6f6eb8062e031b8e1ac6f2e3d004855390889941d",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "AI_tailoring_setup": {
+      "file": "assets/AI_tailoring_setup_it.png",
+      "tab": "Kit Prompt IA",
+      "visible_text": [
+        "Carica JD",
+        "Copia prompt + JD + CV + CL",
+        "Lavoro selezionato:",
+        "Salva",
+        "oppure URL JD:"
+      ],
+      "sha256": "6e1538a677f8c433d993b95159b3e2a15b835eb6b4471300582e36a40f1838f5",
+      "size_pixels": [
+        1380,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "insights_dashboard": {
+      "file": "assets/insights_dashboard_it.png",
+      "tab": "Approfondimenti",
+      "visible_text": [
+        "* Gli approfondimenti riflettono i portali scansionati nel database di SponsorScout, non l'intero mercato del lavoro.",
+        "Aggiorna Approfondimenti",
+        "Fonte:",
+        "Il settore del datore di lavoro descrive l’azienda, non la mansione: un’azienda sanitaria può assumere commerciali o ingegneri. Il totale del grafico comprende l’intera distribuzione rappresentata; lo spicchio evidenziato indica la selezione. Competenze e copertura si riferiscono alle offerte selezionate.",
+        "Offerte selezionate: 4 | Classificate: 4 / 4 (100.0%) | Con competenze: 4 (100.0%)",
+        "Paese:",
+        "Ricostruisci tutto"
+      ],
+      "sha256": "25dcbc3ac15518d5623aadce3bb4036acd151283f1daec18fa04d6ffd6fbfcce",
+      "size_pixels": [
+        1416,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    },
+    "assisted_ingestion": {
+      "file": "assets/assisted_ingestion_it.png",
+      "tab": "Acquisizione assistita",
+      "visible_text": [
+        "0 portali in coda",
+        "Aggiorna coda",
+        "Apri sito web",
+        "Ferma",
+        "Inattivo — seleziona un portale per iniziare.",
+        "Nome azienda / seed:",
+        "Opzioni avanzate",
+        "Raccogli / continua",
+        "Seleziona un portale per raccogliere offerte nel browser assistito. L’accesso non è garantito.",
+        "URL carriera del portale:",
+        "Usa questa scheda se una scansione normale lascia problemi di accesso. 1. Seleziona un’azienda nella coda qui sotto, oppure inserisci il nome e l’URL della pagina carriere. 2. Fai clic su Raccogli / continua e segui le eventuali richieste di verifica nel browser dell’app. 3. Attendi il risultato delle offerte salvate; usa Ferma se l’accesso continua a fallire. Apri sito web serve solo per consultare il sito. Le opzioni avanzate includono i lotti salvati e comandi distinti per riprendere l’elenco o le descrizioni delle offerte."
+      ],
+      "sha256": "2ada0131802a4c2db62d97c33518fc8bcece64323918bcfe79dc00ac541ab03c",
+      "size_pixels": [
+        1416,
+        900
+      ],
+      "provenance": "Real current-source Qt widget capture with isolated fictional data, no live scan."
+    }
+  }
+}

@@ -59,11 +59,9 @@ class Notice:
     def clickedButton(self):return None
 
 
-# 2026-10-28 (false bot-block issue): 'blocked' walls only ONE job-detail URL
-# on a listing that kept 10 rows, so the portal is no longer queued - the
-# "nothing added" case is what the notice must handle by staying silent.
-# 'listingwall' is a proven listing-level wall with zero rows: that still queues.
-@pytest.mark.parametrize('mode,ingested,queue',[('blocked',10,0),('listingwall',0,1)])
+# 2026-11-08: both issues remain visible, but JD-only queue entries are
+# diagnostic-only; neither finish notice launches or repeats collection.
+@pytest.mark.parametrize('mode,ingested,queue',[('blocked',10,1),('listingwall',0,1)])
 def test_real_http_pipeline_full_window_notice_does_not_wait_for_hidden_reads(window,local_board,tmp_path,monkeypatch,heartbeat,mode,ingested,queue):
     from sponsorscout.application import seed_manager
     from sponsorscout.scanning import pipeline
@@ -95,6 +93,7 @@ def test_real_http_pipeline_full_window_notice_does_not_wait_for_hidden_reads(wi
     result=captured[0]
     assert result['status']=='partial'and result['ingested']==ingested
     assert len(db.list_blocked_portals(window.db_path))==queue
+    assert dict(db.list_blocked_portals(window.db_path)[0])['access_scope'] == ('details' if mode=='blocked' else 'listing')
     assert not hidden and len(Notice.records)==queue
     if queue:
         assert result['queue_persisted']is True
@@ -312,21 +311,23 @@ def test_real_assisted_587_board_full_window_and_page13_controls(window,tmp_path
     original_engine=bp.run_assisted_ingestion
     def engine(*a,**k):
         progress=k.get('progress_callback')
-        def notice(message):
-            if progress:progress(message)
-            if 'Action needed'in message:
-                if scenario in ('clear13','clear_initial'):
-                    pages[0].locator('#fixture-clear').click()
-                    if scenario=='clear_initial':time.sleep(.12)
-                elif scenario=='cancel13':k['cancel_event'].set()
-        k['progress_callback']=notice;k['clear_wait_s']=.01 if scenario=='clear_initial'else .25
+        from sponsorscout.tests._assisted_attention import drive_attention
+        def clear(info,page):
+            if scenario in ('clear13','clear_initial'):
+                page.locator('#fixture-clear').click()
+                if scenario=='clear_initial':time.sleep(.12)
+            elif scenario=='cancel13':k['cancel_event'].set()
+        drive_attention(k,pages,clear)
+        k['progress_callback']=progress;k['clear_wait_s']=.01 if scenario=='clear_initial'else 1.5
         return original_engine(*a,**k)
     monkeypatch.setattr(bp,'run_assisted_ingestion',engine)
     notices=[];monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k:notices.append(a))
     tab=window.assisted_tab;window.tabs.setCurrentWidget(tab);tab.url_edit.setText(url);tab.name_edit.setText('Generic Fixture');tab.source_type_combo.setCurrentIndex(1)
     try:
         tab._start_ingestion();worker=tab._worker
-        wait_until(lambda:tab._worker is None,100)
+        # Previous-release code also needed173s on this sandbox. Observe
+        # completion, keeping production budgets and300ms heartbeat unchanged.
+        wait_until(lambda:tab._worker is None,240)
         report=worker.report
         full=scenario in('full','passive13','clear13','clear_initial')
         assert report['harvested']==(587 if full else 120)

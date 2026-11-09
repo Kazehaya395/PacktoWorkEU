@@ -13,6 +13,48 @@ from sponsorscout.paths import USER_DATA_DIR
 # ── current locale (runtime, persisted separately) ──────────────────────────
 
 _locale: str = "en"
+_qt_translator = None
+_qt_locale = None
+
+
+def _supported_locale(locale) -> str:
+    return locale if isinstance(locale, str) and locale in ("en", "it") else "en"
+
+
+def sync_qt_locale() -> None:
+    """Use the app language for Qt-owned buttons/menus/file dialogs too.
+
+    Called on the GUI thread when loading/changing locale, never by _() or
+    worker messages. Pure scanner/CLI use does not require PySide6.
+    """
+    global _qt_translator, _qt_locale
+    try:
+        from PySide6.QtCore import QCoreApplication, QLibraryInfo, QTranslator, Qt
+    except ImportError:
+        return
+    app = QCoreApplication.instance()
+    if app is None:
+        return
+    # OS-native file pickers can follow the OS language instead of the app.
+    # Qt-rendered pickers use the same translated catalog as message boxes.
+    app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
+    if _qt_locale == _locale:
+        return
+    if _qt_translator is not None:
+        app.removeTranslator(_qt_translator)
+        _qt_translator.deleteLater()
+        _qt_translator = None
+    _qt_locale = _locale
+    if _locale == "it":
+        translator = QTranslator(app)
+        if translator.load("qtbase_it", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+            app.installTranslator(translator)
+            _qt_translator = translator
+        else:
+            # Retry if a catalog becomes available later (e.g. startup setup).
+            _qt_locale = None
+            import logging
+            logging.getLogger(__name__).warning("Qt Italian translation catalog was not found")
 
 # Config file for persisting language preference
 _I18N_CONFIG = USER_DATA_DIR / "locale.json"
@@ -21,11 +63,12 @@ _I18N_CONFIG = USER_DATA_DIR / "locale.json"
 def set_locale(locale: str) -> None:
     """Set the active locale at runtime."""
     global _locale
-    _locale = locale
+    _locale = _supported_locale(locale)
+    sync_qt_locale()
     # Persist to disk
     try:
         _I18N_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        _I18N_CONFIG.write_text(json.dumps({"locale": locale}))
+        _I18N_CONFIG.write_text(json.dumps({"locale": _locale}))
     except Exception:
         pass
 
@@ -38,12 +81,14 @@ def get_locale() -> str:
 def load_saved_locale() -> str:
     """Load persisted locale from disk. Returns 'en' if not found."""
     global _locale
+    _locale = "en"
     try:
         if _I18N_CONFIG.exists():
             data = json.loads(_I18N_CONFIG.read_text())
-            _locale = data.get("locale", "en")
+            _locale = _supported_locale(data.get("locale", "en"))
     except Exception:
         _locale = "en"
+    sync_qt_locale()
     return _locale
 
 
@@ -1223,6 +1268,8 @@ _FOLLOWUP_IT = {
     "Database write failed: {error}. Saved jobs are retained.": "Scrittura nel database non riuscita: {error}. Le offerte salvate vengono conservate."
 }
 _FOLLOWUP_IT["These portals were blocked, but their queue could not be saved: {error}. Add the URLs from this run's artifacts manually in Assisted Ingestion."] = 'Questi portali erano bloccati, ma non è stato possibile salvare la coda: {error}. Aggiungi manualmente in Acquisizione Assistita gli URL presenti nei file di questa esecuzione.'
+_FOLLOWUP_IT.update({'View JD access issue': 'Visualizza problema di accesso JD', 'JD access issue — listing jobs already saved. {reason}': 'Problema di accesso JD — annunci già salvati. {reason}', "Listing jobs are already saved. Some job-detail pages could not be read. This action does not start collection or bypass verification. See this run's scan log for the access evidence.": 'Gli annunci sono già salvati. Alcune descrizioni non erano leggibili. Questa azione non avvia la raccolta e non aggira le verifiche. Consulta il registro della scansione per le prove di accesso.', 'Listing or job-detail access issues have been added to Assisted Ingestion. Saved jobs are retained. JD-only entries show diagnostics and do not restart listing collection.': 'I problemi di accesso agli elenchi o alle descrizioni sono stati aggiunti ad Acquisizione Assistita. Gli annunci salvati sono conservati. Le voci solo JD mostrano la diagnostica e non riavviano la raccolta degli elenchi.', 'Nothing safe to resume. Runs without a saved target scope cannot be reconstructed safely; start an explicitly selected custom scan instead.': 'Nessuna scansione riprendibile in sicurezza. Le scansioni senza ambito salvato non possono essere ricostruite in sicurezza; avvia una scansione personalizzata con selezione esplicita.'})
+_FOLLOWUP_IT.update({'Listing and JD access issues from your scans': 'Problemi di accesso a elenchi e descrizioni dalle tue scansioni', 'Listing and JD access issues': 'Problemi di accesso a elenchi e descrizioni', "These access issues could not be saved to the queue: {error}. Add the URLs from this run's artifacts manually in Assisted Ingestion.": 'Impossibile salvare questi problemi di accesso nella coda: {error}. Aggiungi manualmente in Acquisizione Assistita gli URL presenti nei file di questa esecuzione.'})
 LANGUAGES['it'].update(_FOLLOWUP_IT)
 LANGUAGES['en'].update({key:key for key in _FOLLOWUP_IT})
 
@@ -1235,13 +1282,33 @@ def _(text: str) -> str:
     return LANGUAGES.get(_locale, {}).get(text, text)
 
 
+def set_table_header_labels(table, labels):
+    """Batch header notifications instead of triggering N auto-resizes.
+
+    QTableWidget emits headerDataChanged per label; ResizeToContents tables
+    can then remeasure all rows repeatedly on every locale switch. Notify
+    once, and skip identical captions, preserving normal Qt resizing policy.
+    """
+    labels = list(labels)
+    if all(table.horizontalHeaderItem(i) is not None and
+           table.horizontalHeaderItem(i).text() == label
+           for i, label in enumerate(labels)):
+        return
+    from PySide6.QtCore import QSignalBlocker, Qt
+    model = table.model()
+    with QSignalBlocker(model):
+        table.setHorizontalHeaderLabels(labels)
+    if labels:
+        model.headerDataChanged.emit(Qt.Horizontal, 0, len(labels)-1)
+
+
 def retranslate_widget_literals(root):
     """Update static labels without rebuilding a tab or touching input/worker state.
 
     Table data and editable text are not rewritten. Dynamic progress/results
     remain intact until the next progress event, already in the new locale.
     """
-    from PySide6.QtWidgets import QWidget,QLabel,QPushButton,QCheckBox,QGroupBox
+    from PySide6.QtWidgets import QWidget,QLabel,QAbstractButton,QGroupBox
     reverse={value:key for mapping in LANGUAGES.values() for key,value in mapping.items()}
     keys=set().union(*(mapping.keys() for mapping in LANGUAGES.values()))
     def translated(text):
@@ -1251,10 +1318,16 @@ def retranslate_widget_literals(root):
     for widget in root.findChildren(QWidget):
         if isinstance(widget,QGroupBox):
             widget.setTitle(translated(widget.title()))
-        elif isinstance(widget,(QLabel,QPushButton,QCheckBox)):
+        elif isinstance(widget,(QLabel,QAbstractButton)):
             widget.setText(translated(widget.text()))
         if widget.toolTip():
             widget.setToolTip(translated(widget.toolTip()))
+        # Placeholders are UI hints, not editable content (notably the four
+        # AI Prompt Kit text editors). Preserve the user's actual text.
+        placeholder = getattr(widget, 'placeholderText', None)
+        setter = getattr(widget, 'setPlaceholderText', None)
+        if callable(placeholder) and callable(setter):
+            setter(translated(placeholder()))
 
 
 # Approved shared geography/pagination and explicit data-review strings.
@@ -1319,3 +1392,235 @@ _ISSUE_002_DASHBOARD_KEYS = {
 for _key, _value in _ISSUE_002_DASHBOARD_KEYS.items():
     LANGUAGES["en"].setdefault(_key, _key)
     LANGUAGES["it"][_key] = _value
+
+
+# Explicit portal-name/URL provenance confirmation (2026-11-01).
+_PORTAL_IDENTITY_20261101 = {
+    "Confirm portal identity": "Conferma identità del portale",
+    "The URL differs from the selected queued portal, but the company name is unchanged. Continue with this exact name and URL?": "L'URL è diverso dal portale selezionato, ma il nome dell'azienda è invariato. Continuare con questo nome e URL esatti?",
+}
+for _key, _value in _PORTAL_IDENTITY_20261101.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value
+
+# Browser-state clarity retained after removal of pasted-JD fallback.
+_BROWSER_STATE_20261101 = {
+    'View only: opening your browser does not start ingestion or share its session with the app.': 'Solo visualizzazione: aprire il browser non avvia l’acquisizione né condivide la sessione con l’app.',
+    'Idle — no assisted browser is running. External browser is view-only.': 'Inattivo — nessun browser assistito in esecuzione. Il browser esterno serve solo alla visualizzazione.',
+    'Verification controls are active only while an assisted session is waiting for your action. Idle is not waiting. Continue checks the app-controlled Chromium, not your external browser.': 'I controlli di verifica sono attivi solo quando una sessione assistita attende una tua azione. Inattivo non significa in attesa. Continua verifica il Chromium controllato dall’app, non il browser esterno.',
+    'External browser opened for viewing only. No ingestion started and no browser session is shared. Launch Assisted starts a separate app-controlled browser; access is not guaranteed.': 'Browser esterno aperto solo per la visualizzazione. Nessuna acquisizione avviata e nessuna sessione condivisa. Avvia assistito apre un browser separato controllato dall’app; l’accesso non è garantito.',
+}
+for _key, _value in _BROWSER_STATE_20261101.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value
+
+# Approved final Assisted UI cleanup (no experimental browser pairing).
+_ASSISTED_CLEAN_UI = {
+    'Select a portal to collect jobs in the assisted browser. Access is not guaranteed.': 'Seleziona un portale per raccogliere offerte nel browser assistito. L’accesso non è garantito.',
+    'Portal': 'Portale',
+    'Start collection': 'Avvia raccolta',
+    'Open the app-controlled browser and collect jobs from this portal.': 'Apri il browser controllato dall’app e raccogli le offerte da questo portale.',
+    'Open website': 'Apri sito',
+    'Idle — select a portal to begin.': 'Inattivo — seleziona un portale per iniziare.',
+    'Complete verification in the assisted browser, then continue or save partial results.': 'Completa la verifica nel browser assistito, poi continua o salva i risultati parziali.',
+    'Advanced options': 'Opzioni avanzate',
+    'Saved batches, resume controls and run details.': 'Lotti salvati, controlli di ripresa e dettagli dell’esecuzione.',
+    'Run details appear here.': 'I dettagli dell’esecuzione appariranno qui.',
+    'Website opened for viewing only. Collection has not started.': 'Sito aperto solo per la visualizzazione. La raccolta non è stata avviata.',
+    'Opening the assisted browser…': 'Apertura del browser assistito…',
+    'Stopping collection… Saved jobs are retained.': 'Arresto della raccolta… Le offerte salvate vengono conservate.',
+    'Collection finished. See Advanced options for details.': 'Raccolta terminata. Consulta le Opzioni avanzate per i dettagli.',
+    'Collection failed. See Advanced options for details.': 'Raccolta non riuscita. Consulta le Opzioni avanzate per i dettagli.',
+    'Partial result. See Advanced options for details.': 'Risultato parziale. Consulta le Opzioni avanzate per i dettagli.',
+}
+for _key, _value in _ASSISTED_CLEAN_UI.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Structured two-operation scanner progress. Counts are operational, not success.
+_SCAN_WORK_PROGRESS = {
+    'Portal tasks — waiting to start': 'Portali — in attesa di avvio',
+    'JD checks — waiting for discovered candidates': 'Controlli descrizioni — in attesa dei candidati rilevati',
+    'Checked does not mean readable. Totals grow as portals discover candidates.': 'Controllato non significa leggibile. I totali crescono quando i portali rilevano nuovi candidati.',
+    'Active portal workers appear here.': 'Qui appariranno le attività dei portali in corso.',
+    'Portals settled: {done}/{total} · pending retries: {retry}': 'Portali conclusi: {done}/{total} · nuovi tentativi in attesa: {retry}',
+    'Listing/provider workers: {listing} · JD workers: {jd}': 'Attività elenco/provider: {listing} · attività descrizioni: {jd}',
+    'JD candidates classified: {checked}/{observed} currently observed': 'Candidati descrizioni classificati: {checked}/{observed} attualmente rilevati',
+    'Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · blocked: {blocked} · unattempted: {unattempted}': 'Leggibili: {readable} · brevi: {thin} · vuoti: {empty} · falliti: {failed} · bloccati: {blocked} · non tentati: {unattempted}',
+    'Reading JDs': 'Lettura descrizioni',
+    'Listing/provider collection (may include JD reads)': 'Raccolta elenco/provider (può includere letture descrizioni)',
+    '{company} — {stage} · JD candidates: {checked}/{total}': '{company} — {stage} · candidati descrizioni: {checked}/{total}',
+}
+for _key, _value in _SCAN_WORK_PROGRESS.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+for _key, _value in {
+    'Portal tasks: %p%': 'Portali: %p%',
+    'JD classifications: %p%': 'Classificazioni descrizioni: %p%',
+}.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Pending access does not imply a human CAPTCHA or a permanent denial.
+for _key, _value in {
+    'Access unavailable on page %d; waiting for current page recovery. No CAPTCHA was confirmed.': 'Accesso non disponibile alla pagina %d; attesa del ripristino della pagina corrente. Nessun CAPTCHA confermato.',
+    'Verification pending on page %d — waiting for the page to clear. Interact only if the page requests it.': 'Verifica in corso alla pagina %d — attesa del completamento. Interagisci solo se richiesto dalla pagina.',
+    'Access or verification pending in Chromium. Allow automatic checks to finish; interact only if the page requests it. An Access Denied page may offer no check.': 'Accesso o verifica in corso in Chromium. Attendi il completamento dei controlli automatici; interagisci solo se richiesto dalla pagina. Una pagina di accesso negato potrebbe non offrire alcuna verifica.',
+}.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Tools: readable section headings and compact performance control.
+for _key, _value in {
+    'Active portal workers': 'Portali attivi',
+    'Live scan output': 'Registro scansione in tempo reale',
+    'High-Performance Mode': 'Modalità ad alte prestazioni',
+}.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Plain resume guidance retained after experimental browser modes were removed.
+for _key, _value in {
+    'Resume unread job descriptions from this saved batch.': 'Riprendi le descrizioni delle offerte non lette da questo lotto salvato.',
+    'No saved jobs to resume. Load a non-empty saved batch, or use Start collection.': 'Nessuna offerta salvata da riprendere. Carica un lotto salvato non vuoto oppure usa Avvia raccolta.',
+}.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Clear collection outcomes and manual-access guidance, not browser experiments.
+for _key, _value in {
+    'Collection stopped': 'Raccolta interrotta',
+    'You stopped collection. Any jobs already saved are kept.': 'Hai interrotto la raccolta. Le offerte già salvate vengono conservate.',
+    'Collection complete': 'Raccolta completata',
+    'Collection finished. Saved jobs are available in the app.': 'Raccolta terminata. Le offerte salvate sono disponibili nell’app.',
+    'Website access unavailable': 'Accesso al sito non disponibile',
+    'The website blocked access or kept asking for verification, so SponsorScout could not finish reading it.\n\nUse Open website to view jobs and apply manually in your usual browser. If verification keeps looping, stop retrying.\n\nAny jobs already saved are kept. This does not mean the website has no vacancies.': 'Il sito ha bloccato l’accesso o ha continuato a richiedere la verifica, quindi SponsorScout non ha potuto completarne la lettura.\n\nUsa Apri sito web per consultare le offerte e candidarti manualmente nel tuo browser abituale. Se la verifica continua a ripetersi, interrompi i tentativi.\n\nLe offerte già salvate vengono conservate. Questo non significa che il sito non abbia offerte disponibili.',
+    'Partial results saved': 'Risultati parziali salvati',
+    'Collection stopped and any saved jobs are kept. You can view them in the app; use your usual browser for pages that remain inaccessible.': 'Raccolta interrotta; le offerte salvate vengono conservate e sono consultabili nell’app. Usa il tuo browser abituale per le pagine ancora inaccessibili.',
+    'Collection incomplete': 'Raccolta incompleta',
+    'Collection could not finish. Any jobs already saved are kept. See Advanced options for the reason and any available resume actions.': 'Non è stato possibile completare la raccolta. Le offerte già salvate vengono conservate. Consulta le Opzioni avanzate per il motivo e le eventuali azioni di ripresa.',
+}.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+
+# Final app-wide UI/popup audit: schema identifiers remain unchanged on disk.
+_UI_AUDIT_IT = {
+    "Scan log — {run_id}": "Registro scansione — {run_id}",
+    "Scan result: {status}; saved={saved}, duplicates={duplicates}, quarantined={quarantined}":
+        "Risultato scansione: {status}; salvati={saved}, duplicati={duplicates}, in quarantena={quarantined}",
+    "Seed": "Origine", "Source": "Fonte", "Quar.": "Quar.",
+    "Scope Rej.": "Fuori ambito", "Diagnostics": "Dettagli tecnici",
+    "Duration (s)": "Durata (s)", "Seed URL": "URL origine",
+    "Board Slug": "Identificativo portale", "English Friendly": "Compatibilità con l'inglese",
+    "direct_employer": "datore di lavoro diretto", "recruiter": "agenzia di selezione",
+    "government": "ente pubblico", "global": "globale", "seed_url": "URL di origine",
+    "job_location": "sede di lavoro",
+}
+for _key, _value in _UI_AUDIT_IT.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+
+# Explicit final JD coverage (a result, not a stuck/running progress bar).
+_FINAL_COVERAGE_IT = {
+    "Final JD coverage: %p%": "Copertura JD finale: %p%",
+    "Final JD coverage: {checked}/{observed} candidates classified; {unattempted} not attempted. No JD workers are running.":
+        "Copertura JD finale: {checked}/{observed} candidati classificati; {unattempted} non tentati. Nessun processo JD è in esecuzione.",
+    "Final coverage is not a running progress indicator. Unattempted candidates remain unread; saved jobs are retained.":
+        "La copertura finale non indica un'elaborazione in corso. I candidati non tentati restano non letti; le offerte salvate sono conservate.",
+}
+for _key, _value in _FINAL_COVERAGE_IT.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Unified explicit assisted action; phase outcomes stay distinct.
+_ASSISTED_UNIFIED_IT = {
+    'Collect / continue': 'Raccogli / continua',
+    'verified': 'verificato', 'not verified': 'non verificato',
+    'Collection failed. Saved jobs are retained.': 'Raccolta non riuscita. Le offerte salvate sono conservate.',
+    'Listing: {listing}; descriptions: {readable}/{observed} readable. {queue_note}': 'Elenco: {listing}; descrizioni: {readable}/{observed} leggibili. {queue_note}',
+    'Earlier saved-job gap not reconciled.': 'Lacuna delle offerte precedenti non riconciliata.',
+    'Descriptions read; listing not verified': 'Descrizioni lette; elenco non verificato',
+    'Listing collected; descriptions incomplete': 'Elenco raccolto; descrizioni incomplete',
+    'All {total} collected descriptions are readable, but listing completeness is not verified. Saved jobs are available. Collect / continue checks the remaining listing work and reuses valid saved descriptions.': 'Tutte le {total} descrizioni raccolte sono leggibili, ma la completezza dell’elenco non è verificata. Le offerte salvate sono disponibili. Raccogli / continua verifica il lavoro rimanente e riutilizza le descrizioni salvate valide.',
+    '{readable}/{total} descriptions are readable. Saved jobs are available. Collect / continue works on the saved descriptions without restarting the verified listing.': '{readable}/{total} descrizioni sono leggibili. Le offerte salvate sono disponibili. Raccogli / continua elabora le descrizioni salvate senza riavviare l’elenco verificato.',
+    'Browser closed before access was confirmed': 'Browser chiuso prima della conferma di accesso',
+    'The browser closed before a readable listing was accepted. This does not establish why it closed. Saved jobs are retained; website access is still unverified.': 'Il browser si è chiuso prima che venisse accettato un elenco leggibile. Questo non stabilisce il motivo della chiusura. Le offerte salvate sono conservate; l’accesso al sito non è ancora verificato.',
+    'No saved batch; collecting this exact portal.': 'Nessun gruppo salvato; raccolta da questo preciso portale.',
+    'Listing already verified; continuing saved descriptions only.': 'Elenco già verificato; continuano solo le descrizioni salvate.',
+    'Continuing the recorded listing; valid saved descriptions will be reused.': 'Continuazione dell’elenco registrato; le descrizioni salvate valide saranno riutilizzate.',
+    'Rechecking the incomplete listing; valid saved descriptions will be reused.': 'Nuova verifica dell’elenco incompleto; le descrizioni salvate valide saranno riutilizzate.',
+}
+for _key, _value in _ASSISTED_UNIFIED_IT.items():
+    LANGUAGES['en'].setdefault(_key, _key)
+    LANGUAGES['it'][_key] = _value
+
+# Approved access/outcome UI: records, classifications and readability are distinct.
+_ACCESS_OUTCOME_UI_IT = {
+    'Saved Jobs': 'Offerte salvate',
+    'Saved active job records, not verified full descriptions or sponsorship. See the Scanner JD outcomes for readable, blocked and unattempted descriptions.': 'Offerte attive salvate, non descrizioni complete o sponsorizzazioni verificate. Consulta gli esiti JD dello scanner per descrizioni leggibili, bloccate e non tentate.',
+    'Final JD outcomes classified: %p%': 'Esiti JD finali classificati: %p%',
+    'Final JD outcomes: {checked}/{observed} classified; {unattempted} not attempted. Readable full descriptions: {readable}/{observed} ({readable_percent}%). No JD workers are running.': 'Esiti JD finali: {checked}/{observed} classificati; {unattempted} non tentati. Descrizioni complete leggibili: {readable}/{observed} ({readable_percent}%). Nessun processo JD in esecuzione.',
+    'Classification includes readable, thin, empty, failed and blocked outcomes. It is not the percentage of readable descriptions. Unattempted is not proof of blocked access. Saved jobs are retained.': 'La classificazione comprende esiti leggibili, brevi, vuoti, falliti e bloccati. Non indica la percentuale di descrizioni leggibili. Non tentato non prova un blocco di accesso. Le offerte salvate sono conservate.',
+    'Select a queue row to read the full access reason and latest result.': 'Seleziona una riga per leggere il motivo completo e l’ultimo risultato.',
+    'Job descriptions: access unresolved. Saved records do not prove listing completeness. {reason}': 'Descrizioni: accesso non risolto. Le offerte salvate non provano la completezza dell’elenco. {reason}',
+    'Listing access unresolved. This does not mean there are no vacancies. {reason}': 'Accesso all’elenco non risolto. Non significa che non ci siano offerte. {reason}',
+}
+for _key,_value in _ACCESS_OUTCOME_UI_IT.items():
+    LANGUAGES['en'].setdefault(_key,_key)
+    LANGUAGES['it'][_key]=_value
+
+for _key,_value in {
+    'Portal tasks finished (includes partial/errors): %p%': 'Attività portali terminate (incluse parziali/errori): %p%',
+    'Listing or job-detail access issues have been added to Assisted Ingestion. Saved jobs are retained. Some descriptions may be unattempted after host protection paused reads. Collect / continue reuses saved work; only verified listings skip listing collection.': 'I problemi di accesso sono stati aggiunti ad Acquisizione Assistita. Le offerte salvate sono conservate. Alcune descrizioni potrebbero non essere state tentate dopo la sospensione protettiva delle letture. Raccogli / continua riutilizza il lavoro salvato; solo gli elenchi verificati non vengono raccolti nuovamente.',
+}.items():
+    LANGUAGES['en'].setdefault(_key,_key)
+    LANGUAGES['it'][_key]=_value
+
+
+# Approved Insights scopes, three-way skills and simple everyday workflows.
+_INSIGHTS_SIMPLE_IT = {
+    "Chart total": "Totale grafico",
+    "In-Demand Soft Skills": "Competenze trasversali richieste",
+    "Professional & Domain Skills": "Competenze professionali e di settore",
+    "Selected jobs: %d | Categorised: %d / %d (%.1f%%) | With Skills: %d (%.1f%%)": "Offerte selezionate: %d | Classificate: %d / %d (%.1f%%) | Con competenze: %d (%.1f%%)",
+    "Employer industry describes the company, not the job function: a healthcare company can hire salespeople or engineers. Chart total is the full distribution in that doughnut; a highlighted slice is the selection. Skills and coverage use the selected jobs.": "Il settore del datore di lavoro descrive l’azienda, non la mansione: un’azienda sanitaria può assumere commerciali o ingegneri. Il totale del grafico comprende l’intera distribuzione rappresentata; lo spicchio evidenziato indica la selezione. Competenze e copertura si riferiscono alle offerte selezionate.",
+    "Advanced maintenance and diagnostics": "Manutenzione e diagnostica avanzate",
+    "When a normal scan leaves an access issue, use this tab. 1. Select a company in the queue below, or enter its name and careers URL. 2. Click Collect / continue and follow any verification prompt in the app browser. 3. Wait for the saved-job result; use Stop if access keeps failing. Open website is view-only. Advanced contains saved batches and separate listing/JD resume controls.": "Usa questa scheda se una scansione normale lascia problemi di accesso. 1. Seleziona un’azienda nella coda qui sotto, oppure inserisci il nome e l’URL della pagina carriere. 2. Fai clic su Raccogli / continua e segui le eventuali richieste di verifica nel browser dell’app. 3. Attendi il risultato delle offerte salvate; usa Ferma se l’accesso continua a fallire. Apri sito web serve solo per consultare il sito. Le opzioni avanzate includono i lotti salvati e comandi distinti per riprendere l’elenco o le descrizioni delle offerte.",
+}
+for _key,_value in _INSIGHTS_SIMPLE_IT.items():
+    LANGUAGES['en'].setdefault(_key,_key)
+    LANGUAGES['it'][_key]=_value
+
+# Plain Italian terminology: seed = configured company, job = vacancy.
+_ITALIAN_TERMINOLOGY_REVIEW = {
+    'Open website': 'Apri sito web',
+    'Scanner description': 'Usa Scansiona ora per cercare offerte nelle aziende configurate. Usa Scansione personalizzata per sceglierne alcune. Pausa sospende la scansione; Ferma salva un punto di ripresa. Lo stato e i risultati compaiono qui sotto.',
+    'Scan every seeded company (ATS boards + career pages) and enrich each job from its detail page, so no listing misses its evidence.': 'Cerca offerte in tutte le aziende configurate, nei portali ATS e nelle pagine carriere, e prova a leggerne le descrizioni complete. Le offerte salvate restano distinte dalle descrizioni effettivamente lette.',
+    'Choose specific companies and/or source types (ATS and/or career portals) to scan instead of every seeded company.': 'Scegli le aziende e i tipi di fonte da analizzare: portali ATS, pagine carriere o entrambi, anziché tutte le aziende configurate.',
+    'Choose the source types and companies to scan. Selected companies are scanned exactly like in a full scan — the full scan simply covers every seeded company.': 'Scegli le fonti e le aziende da analizzare. Le aziende selezionate vengono elaborate come nella scansione completa, che include tutte le aziende configurate.',
+    'Freshness Check description': 'Ricontrolla le pagine delle offerte salvate e contrassegna quelle scadute.',
+}
+LANGUAGES['it'].update(_ITALIAN_TERMINOLOGY_REVIEW)
+
+# Repeat-scan policy: all new visible text has an explicit Italian translation.
+_INCREMENTAL_REFRESH_IT = {'Read saved descriptions again (next new run only)': 'Rileggi le descrizioni salvate (solo prossima nuova esecuzione)', 'Usually leave this off. Repeat scans revisit listings and reuse confirmed descriptions from the last 24 hours unless observed job details changed. This option requests new detail reads within the selected scope; access checks and limits still apply. Resume keeps the original campaign policy.': 'Normalmente lascia questa opzione disattivata. Le scansioni successive ricontrollano gli elenchi e riutilizzano le descrizioni confermate nelle ultime 24 ore, salvo modifiche osservate nell’offerta. Questa opzione richiede nuove letture per le aziende selezionate; restano validi controlli di accesso e limiti. Riprendi mantiene la regola della scansione originale.', 'Read saved descriptions again for this new run? This can take longer. Saved text is retained if a fresh read fails. Availability checks are separate.': 'Rileggere le descrizioni salvate per questa nuova esecuzione? Potrebbe richiedere più tempo. Se una nuova lettura non riesce, il testo salvato viene conservato. I controlli di disponibilità sono separati.', 'Read descriptions again?': 'Rileggere le descrizioni?', 'Counts cover observed jobs, not all jobs on inaccessible listings. Blocked and inconclusive are subsets of unread/unresolved; unattempted jobs are not called blocked.': 'I conteggi riguardano le offerte osservate, non tutte quelle di elenchi inaccessibili. Bloccate e inconcludenti sono comprese tra le non lette/irrisolte; le offerte non tentate non vengono indicate come bloccate.', 'Observed jobs — new: {new}; already saved: {existing}.': 'Offerte osservate — nuove: {new}; già salvate: {existing}.', 'Descriptions — reused: {reused}; read afresh: {fresh}; unread/unresolved: {pending} (blocked: {blocked}; inconclusive: {inconclusive}).': 'Descrizioni — riutilizzate: {reused}; lette nuovamente: {fresh}; non lette/irrisolte: {pending} (bloccate: {blocked}; inconcludenti: {inconclusive}).', 'Counts are partial: some observations could not be tracked.': 'Conteggi parziali: non è stato possibile registrare alcune osservazioni.', 'Job availability': 'Disponibilità delle offerte'}
+for _key, _value in _INCREMENTAL_REFRESH_IT.items():
+    LANGUAGES['en'][_key] = _key
+    LANGUAGES['it'][_key] = _value
+
+LANGUAGES['en']['Scanner description'] = 'Scan now revisits configured company listings to find new jobs. Recent, confirmed descriptions can be reused; new, changed, stale or unread jobs need detail reads. Use Custom Scan for fewer companies. Pause waits; Stop saves a checkpoint.'
+LANGUAGES['it']['Scanner description'] = 'Scansiona ora ricontrolla gli elenchi delle aziende configurate per trovare nuove offerte. Le descrizioni recenti e confermate possono essere riutilizzate; le offerte nuove, modificate, datate o non lette richiedono la lettura dei dettagli. Usa Scansione personalizzata per scegliere meno aziende. Pausa sospende; Ferma salva un punto di ripresa.'
+LANGUAGES['en']['Freshness Check description'] = 'Check whether saved jobs are still available. This does not force descriptions to be read again. Jobs checked in the last 7 days are skipped.'
+LANGUAGES['it']['Freshness Check description'] = 'Controlla se le offerte salvate sono ancora disponibili. Non forza la rilettura delle descrizioni. Le offerte già controllate negli ultimi 7 giorni vengono saltate.'
+
+# Finished JD coverage is a static result, not unfinished work progress.
+_FINISHED_JD_RESULTS_IT = {
+    'Final description results: {readable}/{observed} readable ({readable_percent}%); {unresolved} unresolved. No description workers are running.': 'Risultati finali delle descrizioni: {readable}/{observed} leggibili ({readable_percent}%); {unresolved} irrisolte. Nessuna lettura delle descrizioni è in corso.',
+    'No job descriptions were observed in this run. No description workers are running.': 'Nessuna descrizione di offerta osservata in questa esecuzione. Nessuna lettura delle descrizioni è in corso.',
+    'Description results are unavailable for this run. No description workers are running.': 'Risultati delle descrizioni non disponibili per questa esecuzione. Nessuna lettura delle descrizioni è in corso.',
+}
+for _key, _value in _FINISHED_JD_RESULTS_IT.items():
+    LANGUAGES['en'][_key] = _key
+    LANGUAGES['it'][_key] = _value

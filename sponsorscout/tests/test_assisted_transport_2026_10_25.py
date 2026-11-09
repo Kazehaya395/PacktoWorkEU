@@ -16,7 +16,7 @@ from sponsorscout.scanning.response_evidence import challenge_reason
 from sponsorscout.scanning.detail_state import DetailRequestState
 from sponsorscout.scanning.career.career_scanner import ProductionScannerConfig,CareerPortalScanner
 from sponsorscout.db import database as db
-from sponsorscout.tests._qt_support import application,wait_until
+from sponsorscout.tests._qt_support import application,wait_until,wait_loaders
 from sponsorscout.tests.test_responsiveness_2026_10_24 import window,heartbeat,max_gap
 from sponsorscout.tests.test_assisted_support_2026_10_24 import BASE,POS,NEG,SILENT,html_ld,job,scanner,URL
 
@@ -133,13 +133,23 @@ def test_regular_detail_budget_remains_twelve_and_retry_cannot_evade_limit():
     assert state.total==12
 
 
-def test_shared_time_limit_still_defers_without_any_request(monkeypatch):
+def test_shared_time_budget_charges_detail_fetch_time_not_wall_clock(monkeypatch):
+    # Issue 005 P5 deliberately changes what this budget measures. It used to run from
+    # `started` - wall clock since the first detail reserve - so a board whose LISTING
+    # phase was slow arrived with the budget already spent: Hays Germany made 3 detail
+    # requests, skipped 1,896 postings and reported `stop=shared detail time budget
+    # exhausted`. Time spent inside detail fetches is now the billable quantity, so
+    # elapsed time alone must no longer defer a detail, and spent fetch time must.
     reader,state,requests,visits,page=fake_reader(monkeypatch)
     state.register(URL,'scope');scope=state._scope(URL)
     scope['started']=time.monotonic()-reader.policy.DETAIL_SCAN_TIME_BUDGET_SEC-1
-    result=reader.read(URL)
+    assert reader.read(URL).status=='readable'
+    assert visits and not scope['pending']
+    second='https://fixture.invalid/jobs/900001-engineer.html'
+    scope['busy']=reader.policy.DETAIL_SCAN_TIME_BUDGET_SEC+1
+    result=reader.read(second)
     assert result.status=='budget_skipped'and'time budget exhausted'in result.reason
-    assert not requests and not visits and state.total==0
+    assert len(visits)==1
 
 
 @pytest.fixture
@@ -277,10 +287,13 @@ def test_actual_http_challenge_browser_transport_and_explicit_resume(window,tmp_
     original=bp.run_assisted_ingestion
     def engine(*a,**kw):
         progress=kw.get('progress_callback')
+        from sponsorscout.tests._assisted_attention import drive_attention
+        def clear(info,page):
+            if info['phase']=='listing':page.locator('#local-clear').click()
+            elif scenario=='client_clear':page.locator('#detail-clear').click()
+        drive_attention(kw,pages,clear)
         def action(message):
             if progress:progress(message)
-            if 'Action needed'in message and'job-detail'not in message:pages[0].locator('#local-clear').click()
-            if scenario=='client_clear'and'Action needed'in message and'job-detail'in message:pages[1 if len(pages)>1 else 0].locator('#detail-clear').click()
             if scenario=='detail_close'and message.startswith('Reading full job descriptions 4/'):
                 # Phase B may open up to 3 parallel detail tabs; close the
                 # first dedicated detail tab, not the listing page or a tab
@@ -312,17 +325,22 @@ def test_actual_http_challenge_browser_transport_and_explicit_resume(window,tmp_
             if scenario=='large580':assert report['pages_visited']==58
             if scenario=='first_error':assert report['session_detail_activity']['browser_retries']==1
         if scenario in('resume','legacy_resume'):
-            assert not report['completed']and report['jd_coverage']['readable']==14 and report['jd_coverage']['budget_skipped']==10
+            assert not report['completed']and report['jd_coverage']['readable']==13 and report['jd_coverage']['budget_skipped']==11
+            # Initial HTTP + 13 browser reads + one bounded HTTP re-probe = cap15.
+            assert sum(report['session_detail_activity'].get(k,0)for k in('http','browser','http_reprobe'))==15
             conn=db.get_connection(window.db_path)
             old_runs=[dict(r)for r in conn.execute('SELECT * FROM scan_runs ORDER BY started_at')]
             old_run=old_runs[-1]['run_id'];source=out/(old_run+'_career_jobs.csv');source_hash=hashlib.sha256(source.read_bytes()).hexdigest()
             stamps={r['url']:r['support_evidence_type']for r in conn.execute("SELECT url,support_evidence_type FROM jobs WHERE support_evidence_type LIKE '%jd_sha256=%'")}
             if scenario=='legacy_resume':resume._path(conn,url).unlink()
             conn.close();before_calls=len(calls);monkeypatch.setattr(ProductionScannerConfig,'MAX_DETAIL_SCAN_PER_COMPANY',1500)
-            tab.resume_btn.click();second=tab._worker
+            if scenario=='legacy_resume':
+                tab.batch_load_btn.click();wait_loaders(tab)
+                tab.batch_combo.setCurrentIndex(tab.batch_combo.findData(old_run))
+            tab.launch_btn.click();second=tab._worker;assert second is not None
             wait_until(lambda:tab._worker is None,100);final=dict(second.report)
             assert final['resumed_details']and final['completed']and final['jd_coverage']['readable']==n
-            assert final['session_detail_activity']['reused']==14 and final['session_detail_activity']['browser']==10
+            assert final['session_detail_activity']['reused']==13 and final['session_detail_activity']['browser']==11
             assert not any(not path.startswith('/jobs/')for path,nav,cookie in calls[before_calls:])
             assert second.count==0 and final['duplicates']==n and len(notices)==2
             assert hashlib.sha256(source.read_bytes()).hexdigest()==source_hash
@@ -336,12 +354,13 @@ def test_actual_http_challenge_browser_transport_and_explicit_resume(window,tmp_
         if scenario=='reblock':assert report['jd_coverage']['blocked']==1 and report['jd_coverage']['budget_skipped']==2
         if scenario in('cancel','window_close'):assert report['cancelled']and not report['completed']and report['jd_coverage']['readable']<n
         if scenario=='cancel':
-            before_calls=len(calls);tab.resume_btn.click();second=tab._worker
+            before_calls=len(calls);tab.launch_btn.click();second=tab._worker;assert second is not None
             wait_until(lambda:tab._worker is None,100)
             assert second.report['completed']and second.report['listing_completed']and second.count==0
             assert not any(not path.startswith('/jobs/')for path,nav,cookie in calls[before_calls:])
             report=dict(second.report)
-        if scenario=='detail_close':assert not report['completed']and report['jd_coverage']['failed']==1 and report['jd_coverage']['budget_skipped']==20
+        if scenario=='detail_close':assert not report['completed']and report['jd_coverage']['failed']==1 and report['jd_coverage']['unattempted']==20
+        if scenario=='detail_close':assert report['jd_interrupted'] and 'browser' in report['stop_reason']
         if scenario=='redirect':assert report['jd_coverage']['empty']==1 and not report['completed']
         conn=db.get_connection(window.db_path);rows=[dict(r)for r in conn.execute('SELECT * FROM jobs ORDER BY url')];conn.close()
         assert len(rows)==n

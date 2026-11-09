@@ -42,6 +42,7 @@ class ScanCoordinator(QObject):
 
     progress = Signal(str)
     progress_tick = Signal(int, int, str, str)
+    work_progress = Signal(dict)
     finished = Signal(dict)
     state_changed = Signal(str)
 
@@ -87,7 +88,7 @@ class ScanCoordinator(QObject):
         self._emit_state("running" if self.is_running() else "idle")
 
     def start(self, method: str = "full", resume_from: str | None = None,
-              scan_scope: dict | None = None) -> bool:
+              scan_scope: dict | None = None, refresh_descriptions: bool = False) -> bool:
         """Start a scan campaign. False if a scan is already running."""
         if self.is_running():
             return False
@@ -99,6 +100,8 @@ class ScanCoordinator(QObject):
         def worker():
             from sponsorscout.scanning import pipeline
 
+            from sponsorscout.application.scan_progress import ScanProgressState, parse_event
+            work_state = ScanProgressState()
             pending: list[str] = []
             lock = threading.Lock()
             dispatch_lock = threading.Lock()
@@ -115,10 +118,21 @@ class ScanCoordinator(QObject):
                         chunk = "\n".join(pending)
                         pending.clear()
                         last[0] = time.monotonic()
+                    work_changed = False
                     for line in chunk.splitlines():
+                        event = parse_event(line)
+                        if event is not None:
+                            try:
+                                work_state.apply(event)
+                                work_changed = True
+                            except (TypeError, ValueError, KeyError):
+                                logger.warning('Ignoring malformed structured progress event')
+                            continue
                         tick = _parse_progress_tick(line)
                         if tick is not None:
                             self.progress_tick.emit(*tick)
+                    if work_changed:
+                        self.work_progress.emit(work_state.snapshot())
                     self.progress.emit(chunk)
 
             def _periodic_flush():
@@ -139,7 +153,7 @@ class ScanCoordinator(QObject):
                 msg_s = str(message)
                 stripped = msg_s.lstrip()
                 immediate = stripped.startswith((
-                    "PROGRESS:", "Scan ", "ATS ", "Career ", "No ATS", "No career",
+                    "SCAN_EVENT:", "PROGRESS:", "Scan ", "ATS ", "Career ", "No ATS", "No career",
                     "v7 scan", "host (", "[", "OK", "EMPTY", "ERROR", "PARTIAL",
                 )) or "WROTE=" in stripped
                 with lock:
@@ -164,6 +178,7 @@ class ScanCoordinator(QObject):
                     run_ats=bool(scope.get("run_ats", True)) if scope else True,
                     run_career=bool(scope.get("run_career", True))
                     if scope else True,
+                    **(dict(refresh_descriptions=True) if refresh_descriptions else {}),
                 )
             except Exception as exc:
                 logger.exception("Scan worker thread crashed")

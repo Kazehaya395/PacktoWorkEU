@@ -1,0 +1,2 @@
+# The only runtime dependency. Python 3.9+.
+httpx>=0.24

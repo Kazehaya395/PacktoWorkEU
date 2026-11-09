@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from sponsorscout.db import database as db
 from sponsorscout.ui.async_load import AsyncLoader
-from sponsorscout.i18n import _
+from sponsorscout.i18n import _, set_table_header_labels
 
 # Canonical (untranslated) column order — this list defines the COLUMN
 # INDEXES, so it must never be translated or reordered. Only the visible
@@ -34,13 +34,9 @@ def _header_labels() -> list:
 
 URL_ROLE = Qt.UserRole + 1
 
-# Absolute filter sentinel: item 0 of every filter dropdown, added
-# UNTRANSLATED in all languages ("All" even in Italian — never "Tutti").
-# Rule for every filter option VALUE: canonical data strings (English /
-# raw DB values), never translated — only UI chrome (labels, buttons,
-# placeholders, tooltips) goes through _().  This keeps filters working
-# across language switches and keeps dropdown values byte-identical to
-# the rendered column values.
+# Canonical filter values are absolute/raw DB strings. The app-owned All
+# caption may be translated, but SQL always receives itemData == "All".
+# Experience specifications remain the agreed canonical data vocabulary.
 FILTER_ALL = "All"
 
 
@@ -567,7 +563,7 @@ class SearchTab(QWidget):
         # so every divider is draggable — including Title, which used to be
         # frozen wide enough only for its own HEADER LABEL.
         self.table.setHorizontalHeader(_SearchHeader(Qt.Horizontal, self.table))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -640,12 +636,13 @@ class SearchTab(QWidget):
     def _apply_static_filters(self, values, refresh_search=False):
         for combo, items in zip((self.country_combo, self.remote_combo,
                                  self.experience_combo, self.run_combo), values):
-            current = combo.currentText()
+            current = combo.currentData() or combo.currentText()
             combo.blockSignals(True)
             combo.clear()
-            combo.addItem(FILTER_ALL)
-            combo.addItems(items)
-            index = combo.findText(current)
+            combo.addItem(_("All"), FILTER_ALL)
+            for item in items:
+                combo.addItem(item, item)
+            index = combo.findData(current)
             if index >= 0:
                 combo.setCurrentIndex(index)
             combo.blockSignals(False)
@@ -667,11 +664,11 @@ class SearchTab(QWidget):
                         use_regex = False
                         break
         criteria = dict(title=self.title_edit.text().strip(), company=self.company_edit.text().strip(),
-            location=self.location_edit.text().strip(), country=self.country_combo.currentText(),
-            remote_filter=self.remote_combo.currentText(), sponsorship_only=self.sponsor_check.isChecked(),
+            location=self.location_edit.text().strip(), country=(self.country_combo.currentData() or FILTER_ALL),
+            remote_filter=(self.remote_combo.currentData() or FILTER_ALL), sponsorship_only=self.sponsor_check.isChecked(),
             eu_blue_card_only=self.bluecard_check.isChecked(), relocation_only=self.reloc_check.isChecked(),
-            regex=use_regex, run_filter=self.run_combo.currentText())
-        experience = self.experience_combo.currentText()
+            regex=use_regex, run_filter=(self.run_combo.currentData() or FILTER_ALL))
+        experience = self.experience_combo.currentData() or FILTER_ALL
         path = self.db_path
         def load():
             rows = [_LazyRow(row) for row in db.search_jobs(path, **criteria)]
@@ -758,9 +755,9 @@ class SearchTab(QWidget):
         pages = max(1, -(-total // size))  # ceil-div
         self._page = max(0, min(self._page, pages - 1))
         start = self._page * size
-        # Count the rows of the ORDERED list (same source _page_rows uses), so
-        # a user sort can never disagree with the label.
-        count = max(0, min(len(self._ordered_rows()) - start, size))
+        # Sorting changes order, never cardinality. Do not sort the entire
+        # result set again just to update this arithmetic-only label.
+        count = max(0, min(total - start, size))
         self.page_info.setText(
             _("Showing {a}–{b} of {n} results").format(
                 a=(start + 1) if count else 0,
@@ -1135,6 +1132,11 @@ class SearchTab(QWidget):
 
     # ── i18n ─────────────────────────────────────────────────────────────────
     def retranslate(self):
+        for combo in (self.country_combo, self.remote_combo, self.experience_combo, self.run_combo):
+            if combo.count() and combo.itemData(0) == FILTER_ALL:
+                combo.blockSignals(True)
+                combo.setItemText(0, _("All"))
+                combo.blockSignals(False)
         self.search_btn.setText(_("Search"))
         self.clear_btn.setText(_("Clear"))
         self.title_edit.setPlaceholderText(_("Job title"))
@@ -1154,7 +1156,7 @@ class SearchTab(QWidget):
         self.page_prev_btn.setToolTip(_("Previous page"))
         self.page_next_btn.setToolTip(_("Next page"))
         self.page_size_combo.setToolTip(_("Rows per page"))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
         # Cell tooltips are the only per-row text that depends on the locale.
         # They are updated in place (no rebuild, no re-sort) and ONLY when the
         # Search tab is actually visible — a full _render_page() here used to

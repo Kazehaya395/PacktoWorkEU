@@ -206,13 +206,13 @@ def test_real_cleared_session_full_jds_csv_sqlite_search_and_ui(window,tmp_path,
     original=bp.run_assisted_ingestion
     def engine(*a,**kw):
         progress=kw.get('progress_callback')
-        def action(message):
-            if progress:progress(message)
-            if 'Action needed'in message:
-                if 'job-detail'in message:
-                    if scenario=='detailclear':pages[1 if len(pages)>1 else 0].locator('#detail-clear').click();clears.append('detail')
-                else:pages[0].locator('#board-clear').click();clears.append('board')
-        kw['progress_callback']=action;kw['clear_wait_s']=.3
+        from sponsorscout.tests._assisted_attention import drive_attention
+        def clear(info,page):
+            if info['phase']=='detail':
+                if scenario=='detailclear':page.locator('#detail-clear').click();clears.append('detail')
+            else:page.locator('#board-clear').click();clears.append('board')
+        drive_attention(kw,pages,clear)
+        kw['progress_callback']=progress;kw['clear_wait_s']=1.5
         return original(*a,**kw)
     monkeypatch.setattr(bp,'run_assisted_ingestion',engine)
     monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k:notices.append(a))
@@ -312,7 +312,7 @@ def test_ambiguous_card_does_not_erase_previous_structured_country(tmp_path):
 
 
 @pytest.mark.parametrize('fresh,wall,expected',[(True,False,True),(False,False,False),(True,True,False)])
-def test_late_successful_navigation_requires_new_valid_content_not_url_or_wall(fresh,wall,expected):
+def test_late_successful_navigation_requires_new_valid_content_not_url_or_wall(fresh,wall,expected,monkeypatch):
     class Page:
         url='https://fixture.invalid/careers?page=3'
         frames=[]
@@ -321,4 +321,8 @@ def test_late_successful_navigation_requires_new_valid_content_not_url_or_wall(f
             links=''.join(f'<article><a href="/jobs/{123450+n}-engineer.html">Engineer {n}</a></article>'for n in range(3))
             return ('<h1>Verify you are human</h1><div id="cf-challenge-running"></div>'if wall else'<h1>Current vacancies</h1>')+links
         def evaluate(self,script):return 'new signature'if fresh else'old signature'
+    # This unit isolates late-navigation admission. Primary DOM identity
+    # extraction has its own browser regressions; a scalar evaluate adapter
+    # no longer implements that census contract.
+    monkeypatch.setattr(bp,'_first_listing_signature',lambda page:page.evaluate('signature'))
     assert bp._late_listing_advance(Page(),'old signature')is expected

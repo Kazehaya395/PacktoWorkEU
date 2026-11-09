@@ -1,0 +1,1114 @@
+{
+  "checks": [
+    {
+      "check": "README.md: local target #-english",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-english",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-italiano",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-italiano",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-screenshots",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-screenshots",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-quick-start",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-quick-start",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-the-eight-tabs",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-the-eight-tabs",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-screenshots",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-screenshots",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-quick-start",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-quick-start",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-the-eight-tabs",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-the-eight-tabs",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-download",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-download",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-what-it-does",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-what-it-does",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #current-source-stage",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #current-source-stage",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-scanning",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-scanning",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #verification-and-fix-register",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #verification-and-fix-register",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-where-your-data-lives",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-where-your-data-lives",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-troubleshooting",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-troubleshooting",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-requirements",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-requirements",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-license",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-license",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-building-from-source",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #1-dashboard",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #1-dashboard",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #2-search",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #2-search",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #3-applications",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #3-applications",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #4-tools",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #4-tools",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #5-data-management",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #5-data-management",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #6-ai-prompt-kit",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #6-ai-prompt-kit",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #7-insights",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #7-insights",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #8-assisted-ingestion",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #8-assisted-ingestion",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target Changelogs/final_review/report.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target LICENSE",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-schermate",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-schermate",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-avvio-rapido",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-avvio-rapido",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-le-otto-schede",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-le-otto-schede",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-scarica",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-scarica",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-cosa-fa",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-cosa-fa",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #stato-attuale-dei-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #stato-attuale-dei-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-scansione",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-scansione",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #verifica-e-registro-fix",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #verifica-e-registro-fix",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-dove-sono-i-tuoi-dati",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-dove-sono-i-tuoi-dati",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-risoluzione-problemi",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-risoluzione-problemi",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-requisiti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-requisiti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-licenza",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-licenza",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #-compilare-dai-sorgenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #1-pannello",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #1-pannello",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #2-cerca",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #2-cerca",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #3-candidature",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #3-candidature",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #4-strumenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #4-strumenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #5-gestione-dati",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #5-gestione-dati",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #6-kit-prompt-ia",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #6-kit-prompt-ia",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #7-approfondimenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #7-approfondimenti",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target #8-acquisizione-assistita",
+      "passed": true
+    },
+    {
+      "check": "README.md: heading #8-acquisizione-assistita",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target Changelogs/final_review/report.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target LICENSE",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_finished.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/main_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/job_search_table_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/applications_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/scanning_tool_finished.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/backend_data_management_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/AI_tailoring_setup_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/insights_dashboard_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/assisted_ingestion_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: local target assets/custom_portal_selection_it.png",
+      "passed": true
+    },
+    {
+      "check": "README.md: no unfinished test-result placeholder",
+      "passed": true
+    },
+    {
+      "check": "SponsorScout_codebase_guide.md: local target README.md",
+      "passed": true
+    },
+    {
+      "check": "SponsorScout_codebase_guide.md: local target Changelogs/final_review/report.md",
+      "passed": true
+    },
+    {
+      "check": "SponsorScout_codebase_guide.md: local target issues.md",
+      "passed": true
+    },
+    {
+      "check": "SponsorScout_codebase_guide.md: no unfinished test-result placeholder",
+      "passed": true
+    },
+    {
+      "check": "issues.md: local target Changelogs/final_review/report.md",
+      "passed": true
+    },
+    {
+      "check": "issues.md: no unfinished test-result placeholder",
+      "passed": true
+    },
+    {
+      "check": "Changelogs/final_review/report.md: local target ../../issues.md",
+      "passed": true
+    },
+    {
+      "check": "Changelogs/final_review/report.md: no unfinished test-result placeholder",
+      "passed": true
+    },
+    {
+      "check": "Detailed bilingual README retained",
+      "passed": true
+    },
+    {
+      "check": "Manychat explicitly unresolved in README",
+      "passed": true
+    },
+    {
+      "check": "Applications note-preservation risk disclosed",
+      "passed": true
+    },
+    {
+      "check": "en: eight tabs captured",
+      "passed": true
+    },
+    {
+      "check": "en: main_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "en: main_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "en: main_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: job_search_table exists",
+      "passed": true
+    },
+    {
+      "check": "en: job_search_table documented",
+      "passed": true
+    },
+    {
+      "check": "en: job_search_table real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: applications_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "en: applications_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "en: applications_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: scanning_tool exists",
+      "passed": true
+    },
+    {
+      "check": "en: scanning_tool documented",
+      "passed": true
+    },
+    {
+      "check": "en: scanning_tool real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: backend_data_management exists",
+      "passed": true
+    },
+    {
+      "check": "en: backend_data_management documented",
+      "passed": true
+    },
+    {
+      "check": "en: backend_data_management real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: AI_tailoring_setup exists",
+      "passed": true
+    },
+    {
+      "check": "en: AI_tailoring_setup documented",
+      "passed": true
+    },
+    {
+      "check": "en: AI_tailoring_setup real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: insights_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "en: insights_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "en: insights_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "en: assisted_ingestion exists",
+      "passed": true
+    },
+    {
+      "check": "en: assisted_ingestion documented",
+      "passed": true
+    },
+    {
+      "check": "en: assisted_ingestion real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: eight tabs captured",
+      "passed": true
+    },
+    {
+      "check": "it: main_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "it: main_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "it: main_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: job_search_table exists",
+      "passed": true
+    },
+    {
+      "check": "it: job_search_table documented",
+      "passed": true
+    },
+    {
+      "check": "it: job_search_table real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: applications_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "it: applications_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "it: applications_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: scanning_tool exists",
+      "passed": true
+    },
+    {
+      "check": "it: scanning_tool documented",
+      "passed": true
+    },
+    {
+      "check": "it: scanning_tool real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: backend_data_management exists",
+      "passed": true
+    },
+    {
+      "check": "it: backend_data_management documented",
+      "passed": true
+    },
+    {
+      "check": "it: backend_data_management real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: AI_tailoring_setup exists",
+      "passed": true
+    },
+    {
+      "check": "it: AI_tailoring_setup documented",
+      "passed": true
+    },
+    {
+      "check": "it: AI_tailoring_setup real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: insights_dashboard exists",
+      "passed": true
+    },
+    {
+      "check": "it: insights_dashboard documented",
+      "passed": true
+    },
+    {
+      "check": "it: insights_dashboard real PNG",
+      "passed": true
+    },
+    {
+      "check": "it: assisted_ingestion exists",
+      "passed": true
+    },
+    {
+      "check": "it: assisted_ingestion documented",
+      "passed": true
+    },
+    {
+      "check": "it: assisted_ingestion real PNG",
+      "passed": true
+    },
+    {
+      "check": "Actual Windows finished-run capture retained unchanged",
+      "passed": true
+    },
+    {
+      "check": "Unused nested legacy package removed",
+      "passed": true
+    },
+    {
+      "check": "Active regression modules retained",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/location_places.json",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/country_profile.json",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/default_profile.json",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/sponsorscout.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/sponsorscout.ico",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/insights/domains.json",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/insights/categories.json",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/insights/skills_dictionary.csv",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/db/schema.sql",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/seeds/company_Career_seed.csv",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/seeds/company_ATS_seed.csv",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_64.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_24.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_512.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_128.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/tick.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_96.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_16.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_256.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_32.png",
+      "passed": true
+    },
+    {
+      "check": "Resource unchanged: sponsorscout/data/icons/sponsorscout_48.png",
+      "passed": true
+    },
+    {
+      "check": "All active Python files compile without executing scans",
+      "passed": true
+    }
+  ],
+  "passed": 277,
+  "failures": 0
+}

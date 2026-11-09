@@ -82,19 +82,18 @@ WITH scoped AS (
            CASE WHEN j.category IS NULL OR j.category = '' OR j.category = 'Other'
                 THEN 1 ELSE 0 END                      AS uncategorized
     FROM jobs j WHERE j.verified_active = 1 AND j.is_expired = 0
-),
-skilled AS (SELECT DISTINCT job_id FROM job_terms WHERE kind = 'skill')
+)
 INSERT INTO {FACT}
     SELECT s.category, s.domain, s.country, COUNT(*),
            SUM(s.uncategorized),
-           SUM(CASE WHEN k.job_id IS NOT NULL THEN 1 ELSE 0 END),
+           SUM(CASE WHEN EXISTS (SELECT 1 FROM job_terms k WHERE k.job_id=s.id AND k.kind='skill') THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.visa_sponsorship = 'Y' THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.visa_sponsorship = 'N' THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.visa_sponsorship NOT IN ('Y', 'N') THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.relocation_support = 'Y' THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.relocation_support = 'N' THEN 1 ELSE 0 END),
            SUM(CASE WHEN s.relocation_support NOT IN ('Y', 'N') THEN 1 ELSE 0 END)
-    FROM scoped s LEFT JOIN skilled k ON k.job_id = s.id
+    FROM scoped s
     GROUP BY 1, 2, 3;
 DELETE FROM {SKILL};
 INSERT INTO {SKILL}
@@ -141,9 +140,6 @@ def _slice(category: str = "", domain: str = "", country: str = "") -> tuple[str
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
-_stamps: dict[tuple, str] = {}
-
-
 def _stamp(conn, *, cache: bool = True) -> str:
     """Change detector for the aggregate: taxonomy + rows + newest update.
 
@@ -157,19 +153,28 @@ def _stamp(conn, *, cache: bool = True) -> str:
     from sponsorscout.insights.terms import taxonomy_version
     task = current_database_task() if cache else None
     key = None
+    stamps = None
     if task is not None:
-        key = (id(task), str(getattr(conn, "database", "") or ""))
-        hit = _stamps.get(key)
+        # Cache belongs to the live task, not a recyclable integer id. Tasks
+        # may read different databases; SQLite connections lack .database.
+        stamps = getattr(task, '_insights_cube_stamps', None)
+        if stamps is None:
+            stamps = task._insights_cube_stamps = {}
+        key = conn.execute("PRAGMA database_list").fetchone()[2]
+        hit = stamps.get(key)
         if hit is not None:
             return hit
     columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     newest = "COALESCE(MAX(updated_at), '')" if "updated_at" in columns else "''"
-    count, last = conn.execute(f"SELECT COUNT(*), {newest} FROM jobs").fetchone()
-    stamp = f"{SCHEMA_VERSION}|{taxonomy_version()}|{count}|{last}"
+    # Derived-category/term writes do not update jobs.updated_at. Dirty and
+    # generation tokens invalidate the cube after every committed backfill.
+    dirty = "COALESCE(SUM(insights_dirty),0)" if "insights_dirty" in columns else "0"
+    generation = "COALESCE(SUM(insights_generation),0)" if "insights_generation" in columns else "0"
+    count, last, pending, inputs = conn.execute(
+        f"SELECT COUNT(*), {newest}, {dirty}, {generation} FROM jobs").fetchone()
+    stamp = f"{SCHEMA_VERSION}|{taxonomy_version()}|{count}|{last}|{pending}|{inputs}"
     if key is not None:
-        if len(_stamps) > 64:
-            _stamps.clear()
-        _stamps[key] = stamp
+        stamps[key] = stamp
     return stamp
 
 
@@ -202,7 +207,11 @@ def refresh(db_path, force: bool = False) -> bool:
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(f"DELETE FROM {FACT}")
-            conn.executescript(_BUILD)
+            # executescript implicitly commits: keep the complete replacement
+            # atomic instead, including rollback on any failed statement.
+            for statement in _BUILD.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
             conn.execute(f"INSERT OR REPLACE INTO {META}(key,value) VALUES('stamp',?)", (stamp,))
             conn.execute("COMMIT")
         except Exception:

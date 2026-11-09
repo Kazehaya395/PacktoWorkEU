@@ -2,8 +2,8 @@
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
 
-Find jobs that actually sponsor visas — scanned from official sources, stored
-on your own computer.
+Discover jobs from configured official sources and check the available
+sponsorship evidence. Results and application notes are stored on your computer.
 
 > **Start here:** [📸 Screenshots / Schermate](#-screenshots) ·
 > [🚀 Quick Start / Avvio Rapido](#-quick-start) ·
@@ -12,7 +12,13 @@ on your own computer.
 <img src="assets/main_dashboard.png" alt="SponsorScout eight-tab workspace — Dashboard, Search, Applications, Tools, Data Management, AI Prompt Kit, Insights and Assisted Ingestion" width="860">
 
 *The screenshots below are illustrative captures from the current eight-tab UI;
-they use a local sample database and no cloud account.*
+they use an isolated local demonstration database and no cloud account.
+They are real Qt captures, not mockups: four fictional postings and one fictional
+application. Tools and Assisted are idle, and Advanced starts collapsed.
+English and Italian sections have matching-language captures. Window decoration,
+font sizes, clipping, enabled buttons and counts depend on your OS and run state.
+Scroll inside Tools and Insights to reach lower controls/charts. A separate
+finished-run screenshot below is from the supplied Windows run, not demo data.*
 
 ---
 
@@ -26,6 +32,8 @@ they use a local sample database and no cloud account.*
 - **[🗂 The Eight Tabs](#-the-eight-tabs)** — the full workspace tour
 - [Download](#-download)
 - [What It Does](#-what-it-does)
+- [Current source stage](#current-source-stage)
+- [Open issues and verification](issues.md)
 - [Scanning](#-scanning)
 - [Verification and Fix Register](#verification-and-fix-register)
 - [Where Your Data Lives](#-where-your-data-lives)
@@ -38,7 +46,11 @@ they use a local sample database and no cloud account.*
 
 ## 📥 Download
 
-Installers are on the [GitHub Releases page](https://github.com/Kazehaya395/SponsorScout/releases):
+This delivery contains source, **not an installer**. Run it with Python/venv
+using [Building From Source](#-building-from-source). The build scripts support
+the formats below. Check the [GitHub Releases page](https://github.com/Kazehaya395/SponsorScout/releases)
+for any separately published assets; this review does not verify their availability
+or that an older installer contains these source changes:
 
 | Platform | File |
 |----------|------|
@@ -73,7 +85,7 @@ entry; the bundled Chromium is used automatically.
 <table>
   <tr>
     <td align="center"><strong>1 · Dashboard</strong><br><a href="assets/main_dashboard.png"><img src="assets/main_dashboard.png" alt="Dashboard tab with KPI cards, top employers by sponsor score and jobs by country" width="420"></a></td>
-    <td align="center"><strong>2 · Search</strong><br><a href="assets/job_search_table.png"><img src="assets/job_search_table.png" alt="Search tab with filters, tri-state sponsorship columns and pagination" width="420"></a></td>
+    <td align="center"><strong>2 · Search</strong><br><a href="assets/job_search_table.png"><img src="assets/job_search_table.png" alt="Search with positive sponsorship filters, tri-state result cells and pagination" width="420"></a></td>
   </tr>
   <tr>
     <td align="center"><strong>3 · Applications</strong><br><a href="assets/applications_dashboard.png"><img src="assets/applications_dashboard.png" alt="Applications tab with saved applications, status, dates and activity log" width="420"></a></td>
@@ -85,7 +97,7 @@ entry; the bundled Chromium is used automatically.
   </tr>
   <tr>
     <td align="center"><strong>7 · Insights</strong><br><a href="assets/insights_dashboard.png"><img src="assets/insights_dashboard.png" alt="Insights tab with category, skill, domain and sponsorship distributions" width="420"></a></td>
-    <td align="center"><strong>8 · Assisted Ingestion</strong><br><a href="assets/assisted_ingestion.png"><img src="assets/assisted_ingestion.png" alt="Assisted Ingestion tab for bot-blocked portals and direct database ingestion" width="420"></a></td>
+    <td align="center"><strong>8 · Assisted Ingestion</strong><br><a href="assets/assisted_ingestion.png"><img src="assets/assisted_ingestion.png" alt="Assisted Ingestion tab for explicit browser collection, access issues and saved recovery" width="420"></a></td>
   </tr>
 </table>
 
@@ -97,16 +109,19 @@ entry; the bundled Chromium is used automatically.
 
 ## ✨ What It Does
 
-- **Scans official sources only** — 8 ATS job boards (Ashby, Greenhouse,
-  Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday) through their
-  public APIs, plus company career pages with a headless browser when needed.
-- **Classifies every job** — sponsorship, relocation support, remote type and
+- **Scans seeded job sources** — 10 ATS provider types (Ashby, Greenhouse,
+  Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday, Teamtailor,
+  BambooHR) through their public job feeds/APIs, plus employer and recruiter
+  career boards with a headless browser when needed. A centralised board may
+  link to an external employer/aggregator detail page. Providers, access and
+  extracted attributes can be incomplete; consult the recorded outcomes.
+- **Analyses available job text** — sponsorship, relocation support, remote type and
   EU Blue Card eligibility, detected from the job description.
 - **Extracts the experience requirement** — the exact figure the ad states
   (`4+`, `3-5 years`, `6 months`), or the seniority level (`Senior`), read in
   English, German, Italian, Dutch, French, Spanish and Portuguese.
-- **Keeps everything local** — one SQLite file on your computer. Nothing is
-  uploaded.
+- **Stores app records locally** — SQLite plus local documents/logs. Scanning
+  fetches job sites; clipboard text is shared externally only if you paste it.
 - **Tracks applications** — Saved → Applied → Interview → Offer → Rejected.
 - **Two languages** — English and Italian, switchable at any time.
 
@@ -114,11 +129,11 @@ entry; the bundled Chromium is used automatically.
 
 ## 🚀 Quick Start
 
-> **New here?** Follow these steps. The first scan is the only slow part.
+> **New here?** Follow these steps. Later scans can also be slow if descriptions need rereading or access fails.
 
-1. **Install** — download the Windows or Linux package from
-   [Download](#-download) and launch SponsorScout. No Python is needed for the
-   installer.
+1. **Set up this source delivery** — follow the Python/venv commands under
+   [Building From Source](#-building-from-source), then launch the app.
+   Separately published installers, if available, are optional and may be older.
 2. **Run the first scan** — accept the first-run prompt, or press **Scan Now**
    in **Tools**. A full scan can take minutes to hours depending on how many
    companies are enabled. You can pause, stop and resume without losing the jobs
@@ -128,112 +143,243 @@ entry; the bundled Chromium is used automatically.
    **Applications**.
 4. **Go deeper** — open **Insights** for category, skill, domain and
    sponsorship charts, **AI Prompt Kit** to assemble an application prompt, and
-   **Assisted Ingestion** only for portals that require human verification.
+   **Assisted Ingestion** for explicit browser collection or access/recovery issues; access is not guaranteed.
 
 Running from source? See [Building From Source](#-building-from-source).
 
 ---
 
+## Current source stage
+
+This delivery is the **complete reviewed source code**, not a newly built
+installer. Package metadata remains **0.2.0**. For Python/venv users, extract into
+a fresh folder and run the source commands below; do not delete your existing
+user-data folder. Close the old app and back up that folder first.
+
+- Repeat scans still revisit selected listings. Confirmed, unchanged, active
+  descriptions captured within 24 hours can be reused; new, changed, stale or
+  unread jobs need detail reads. Reuse does not renew the original capture time.
+  A silent edit not exposed in listing metadata may wait for a later stale read
+  or your explicit reread; reuse is not proof that every hidden JD edit is detected.
+- **Read saved descriptions again (next new run only)** is a confirmed, one-shot
+  Advanced option. Resume retains its original targets, phases and refresh policy;
+  it does not widen a Career-only campaign into ATS or add companies.
+- Tools separates portal-task completion from readable descriptions. A finished
+  run shows static **Final description results**, not a still-running JD bar.
+  Partial/error/cancelled results retain their real counts; unavailable coverage
+  is not invented as zero. A new run restores live progress.
+- Maintenance and diagnostic controls are collapsed. Insights separates technical,
+  professional/domain and soft skills; employee benefits are not role skills.
+- **Manychat verification is an unresolved bug.** No bypass, universal access,
+  live pagination completeness or fresh Windows binary validation is claimed.
+  Read [issues.md](issues.md) for current limits and historical open reports.
+
+The detailed scanning, recovery, country maintenance, storage, troubleshooting
+and packaging sections remain below. Earlier stage-specific test figures are
+historical, not the final validation count; see the verification register.
+
+---
+
 ## 🗂 The Eight Tabs
 
-> The app is organised as eight tabs. Use this map first, then read the short
-> description and full-size screenshot for each one.
+Use the language selector at the top right to switch English/Italian. Job text,
+company names, raw diagnostics and some technical labels are not translated.
+The images show current widgets; they are examples, not promised job totals.
 
-| # | Tab | Use it for | Screenshot |
-|---|-----|------------|------------|
-| 1 | [Dashboard](#1-dashboard) | KPIs, top employers by sponsor score, jobs by country | [View](assets/main_dashboard.png) |
-| 2 | [Search](#2-search) | Filter, open and save every scanned vacancy | [View](assets/job_search_table.png) |
-| 3 | [Applications](#3-applications) | Track Saved → Applied → Interview → Offer → Rejected | [View](assets/applications_dashboard.png) |
-| 4 | [Tools](#4-tools) | Run scans, inspect history, check data quality | [View](assets/scanning_tool.png) |
-| 5 | [Data Management](#5-data-management) | Edit ATS and career seed files | [View](assets/backend_data_management.png) |
-| 6 | [AI Prompt Kit](#6-ai-prompt-kit) | Build one copy-ready prompt + JD + CV + CL message | [View](assets/AI_tailoring_setup.png) |
-| 7 | [Insights](#7-insights) | Explore category, skill, domain and sponsorship charts | [View](assets/insights_dashboard.png) |
-| 8 | [Assisted Ingestion](#8-assisted-ingestion) | Resolve bot-blocked portals and ingest jobs directly | [View](assets/assisted_ingestion.png) |
+| # | Tab | Main purpose | Screenshot |
+|---|-----|--------------|------------|
+| 1 | [Dashboard](#1-dashboard) | Saved-data overview and latest-run findings | [View](assets/main_dashboard.png) |
+| 2 | [Search](#2-search) | Filter, page through and open saved job rows | [View](assets/job_search_table.png) |
+| 3 | [Applications](#3-applications) | Edit local application status and notes | [View](assets/applications_dashboard.png) |
+| 4 | [Tools](#4-tools) | Scan, resume, inspect progress and history | [View](assets/scanning_tool.png) |
+| 5 | [Data Management](#5-data-management) | Edit your ATS/Career company lists | [View](assets/backend_data_management.png) |
+| 6 | [AI Prompt Kit](#6-ai-prompt-kit) | Assemble a clipboard message, not generate AI output | [View](assets/AI_tailoring_setup.png) |
+| 7 | [Insights](#7-insights) | Explore the selected saved-job data | [View](assets/insights_dashboard.png) |
+| 8 | [Assisted Ingestion](#8-assisted-ingestion) | Explicit app-browser collection and recovery | [View](assets/assisted_ingestion.png) |
 
 ### 1. Dashboard
-Company totals, explicit sponsorship / EU Blue Card counts, scan actions
-(**Scan Now**, **Custom Scan**) and per-company rescan; the entry point for
-every run. The employer table is ranked by **Max Sponsor Score**, not by a count
-of sponsored jobs, and the zero cards have tooltips explaining that `Unknown`
-is not `No`.
 
-<img src="assets/main_dashboard.png" alt="Dashboard tab: KPI cards, top companies by sponsorship and the scan action row" width="780">
+The top buttons are **Rescan Companies** and **Refresh**. The seven cards are
+**Total Companies**, **Saved Jobs**, **Sponsored Jobs**, **Remote Jobs**,
+**EU Blue Card**, **Applications** and **No Jobs (last run)**. This is a saved-data
+overview, not a count of every bundled seed or every vacancy on the Internet.
+The remote card can show remote and hybrid separately.
+
+Below are **Top Employers by Sponsor Score**, **Jobs by Country** and
+**No Jobs Found (last run)**. Employers are ranked by **Max Sponsor Score**, not
+by sponsored-job count. A zero sponsorship/Blue Card card means no saved positive
+evidence under that metric; it does not turn Unknown into No. The latest-run
+no-jobs table also displays status/provider/error information: a blocked Manychat
+row is **not proof that Manychat has no vacancies**. Inspect its error and Tools
+history. **Scan Now** and **Custom Scan** are in Tools, not this action row.
+
+<img src="assets/main_dashboard.png" alt="Dashboard: Rescan Companies, Refresh, seven cards and saved-data tables" width="860">
 
 ### 2. Search
-Every scanned vacancy with filters (country, title, sponsorship tri-state,
-Blue Card, remote type); open the original ad or send the job to the AI
-Prompt Kit.
 
-<img src="assets/job_search_table.png" alt="Search tab: filter row, tri-state Sponsor and Blue Card filters and the results table" width="780">
+Enter **Job title**, **Company** or **Location**, choose **Country**, **Remote**,
+**Experience** or **Run**, then press **Search**. **Clear** resets the filters.
+The **Sponsor**, **Blue Card** and **Reloc** checkboxes ask for positive matches;
+they are **not three-way Yes/No/Unknown filter menus**. The results themselves
+keep Yes/No/Unknown distinct (`?` means Unknown). **Regex** applies to the three
+text fields. Select 100/200/500/1000 rows per page and use **◀ / ▶**; the count
+line shows the current page range and total matching rows.
+
+Columns show title, company, country, location, experience, support verdicts,
+remote type and first-seen date. Unknown country is not guessed from the seed.
+A saved listing row does not prove a full JD was read; listing titles can include
+site metadata that still needs extraction-quality work (see issues).
+Double-click a row to open its original website, or right-click for **Open in
+browser**, **Copy URL**, **Save to Applications**. Selecting a job supplies the
+selection to AI Prompt Kit; use that tab's **Load JD** to load its text.
+
+<img src="assets/job_search_table.png" alt="Search: text filters, positive support checkboxes, page controls and four demo results" width="860">
 
 ### 3. Applications
-Per-job application tracking (status, dates, notes) stored locally.
 
-<img src="assets/applications_dashboard.png" alt="Applications tab: saved applications table, status, dates, notes and activity log" width="780">
+Save a job from Search's right-click menu first. **Saved applications** shows
+**Company**, **Title**, **Status**, **Saved on**, **URL** and **Latest notes**.
+Select a row to reveal the **Status** dropdown, **Notes**, **Save** and **Cancel**.
+The available states are saved, applied, interview, offer and rejected; you choose
+them yourself. Saving notes/status does **not** submit an application to an employer.
+
+**Remove Selected** removes the local tracker entry after confirmation.
+**Activity log** records status changes made in this session; it is not a permanent
+mailbox or a complete historical audit. Saved on is the original saved date,
+not an editable interview/follow-up calendar. Status and latest notes persist
+in SQLite. **Current limitation:** selecting a row starts the Notes input empty.
+Save replaces the stored latest note with that input, including an empty string.
+Copy/re-enter an existing note before a status-only save if you want to keep it;
+this review documents that preservation risk rather than silently changing it. The screenshot selects one fictional applied entry to show the editor.
+
+<img src="assets/applications_dashboard.png" alt="Applications: selected demo row, status and notes editor, Save, Cancel and session activity log" width="860">
 
 ### 4. Tools
-Scan control and history: progress, **Scan History** with the per-run log set
-(one merged jobs CSV plus quarantine, errors and scan log), seed shortcuts, diagnostics, and an optional
-**High-Performance Mode** toggle for multi-threaded parallel browser pools on
-capable PCs (>4 cores, >8 GB RAM).
 
-<img src="assets/scanning_tool.png" alt="Tools tab: Scan Now and Custom Scan buttons, progress and Scan History" width="780">
+The everyday row is **Scan Now**, **Custom Scan**, **Resume**, **Pause**, **Stop**.
+Buttons enable/disable according to the current worker and saved checkpoint.
+**Pause** suspends work cooperatively; **Stop** asks it to finish safely and retain
+saved work. **Resume** continues the original campaign, not a newly selected scope.
+
+During work, separate portal and JD labels/bars, **Active portal workers** and
+**Live scan output** show activity. Portal tasks reaching 100% includes partial
+and error outcomes: it is not 100% readable JDs or complete site coverage.
+After a run the JD bar is hidden and **Final description results** is static:
+readable / observed, readable percentage and unresolved count. No JD workers are
+running in that finished state. Outcomes retain readable, thin, empty, failed,
+blocked and unattempted counts. Observed new/already-saved and description
+reused/read-afresh/unresolved are different counters; blocked/inconclusive are
+subsets of unresolved, not extra jobs to add to it.
+
+**Scan History** remains visible below (scroll if necessary). Select a run before
+**View Per-Company Log** or **Download Scan Log**. The tab opens with
+**Advanced maintenance and diagnostics** collapsed. Expand it for **High-Performance
+Mode**, **Read saved descriptions again (next new run only)**, **Review alias
+merges**, **Clear Stale Data**, **Clear Scan Data**, **Review Quarantine**,
+**Review data quality** and **Job Availability Check**. The availability **Run**
+checks the chosen sample size; it is separate from forcing description rereads.
+Maintenance is explicit, not an automatic scan step. Back up before destructive
+cleanup. High-Performance Mode is optional; it does not guarantee speed on old PCs.
+
+<img src="assets/scanning_tool.png" alt="Tools idle: everyday scan controls, separate waiting progress, history and collapsed Advanced" width="860">
+
+**Real supplied Windows finished-run example:** the 3/3 portal tasks settled,
+but the saved listing observations had **0/163 readable JDs**: 4 blocked and
+159 unattempted. That is a finished **partial** run with 163 unresolved descriptions,
+not a JD worker stuck at zero. These numbers are from that run, not the demo images.
+
+<img src="assets/scanning_tool_finished.png" alt="Actual Windows run: partial, portal tasks finished 100%, static 0/163 readable, 4 blocked and 159 unattempted" width="860">
 
 ### 5. Data Management
-Edit the company lists that get scanned (**ATS portals** and **Career
-portals**). Changes apply on the next scan; **Reset to bundled defaults**
-restores the original lists.
 
-<img src="assets/backend_data_management.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
+Switch between **ATS portals** and **Career portals**. The path and company count
+identify your personal CSV, not the bundled file. The grid follows the CSV header;
+scroll sideways for remaining fields. **Add…**, **Edit…**, **Delete** change the
+working table; **Save to CSV** writes it. **Reload** reloads the saved file.
+**Reset to bundled defaults** is an explicit restore action, not routine refresh:
+back up custom companies before using it. Edits affect the next new scan; they do
+not silently replace the frozen targets of an existing Resume checkpoint.
+
+<img src="assets/backend_data_management.png" alt="Data Management: ATS and Career tabs, personal CSV path, editable list and Save, Reload, Reset controls" width="860">
 
 ### 6. AI Prompt Kit
-Build one message for any AI chatbot: **Load JD** fills the job description
-(or paste a link in **or JD URL**), then **Copy prompt + JD + CV + CL** copies
-prompt, job description, CV and cover letter in full, in that order. Prompt,
-CV and cover letter persist between sessions.
 
-<img src="assets/AI_tailoring_setup.png" alt="AI Prompt Kit tab: job description, AI prompt, CV and cover letter boxes with Load JD and Copy buttons" width="780">
+**Selected job** reflects the selected Search row. Alternatively enter **or JD URL**,
+then use **Load JD**. It can use saved text or attempt a website read; access can
+fail. You can paste a JD manually. The left pane is **Job description (session only)**:
+editing/pasting there does not save a new JD into the job database.
+
+The other panes are **AI prompt**, **CV** and **Cover letter (optional)**.
+Use each pane's **Save** to persist its text locally; typing alone is not a promise
+of persistence. **Copy prompt + JD + CV + CL** copies the current complete message
+to the clipboard, in that order. The app does **not** call an AI model, tailor
+documents automatically or submit applications. You decide whether to paste the
+message into an external AI service; that service's privacy rules then apply.
+The screenshot shows the empty editors and placeholders.
+
+<img src="assets/AI_tailoring_setup.png" alt="AI Prompt Kit: Selected job, JD URL, Load JD, four text panes, individual Save buttons and clipboard action" width="860">
 
 ### 7. Insights
-Aggregated visual market intelligence extracted from saved full job
-descriptions in SQLite outside the scan loop: category & role and
-employer-industry donut charts with click-to-cross-filter, in-demand technical
-and soft skill frequency lists without arbitrary truncation, a
-sponsorship-per-category table that keeps Yes / No / Unknown distinct. Every
-chart is a control: clicking a donut slice **or a bar** filters the whole tab to
-that category, employer domain or skill term, and clicking it again clears the
-filter, so a skill bar answers "which jobs actually ask for Python". Reads are
-answered from a version-stamped aggregate cube that the refresh pass rebuilds,
-which is why a filtered repaint costs milliseconds instead of a table scan; a
-filter the aggregate cannot answer (one run, or a source type) is computed live,
-and a
-**Refresh Insights** action (also triggered automatically in the background
-after each scan or assisted harvest). It processes only new/changed inputs or
-a changed packaged taxonomy, shows processed/total plus committed coverage,
-and yields while regular or assisted ingestion is active. `Other` / `Unknown`
-and no-skill outcomes count as completed. **Rebuild all** is an explicit,
-confirmed full rebuild; **Cancel refresh** retains committed batches.
 
-<img src="assets/insights_dashboard.png" alt="Insights tab: category and in-demand skills charts, domain distribution and category sponsorship breakdown" width="860">
+Choose **Country** and **Source**. The coverage line shows **Selected jobs**,
+**Categorised** and **With Skills**; these are different measures. Only active,
+non-expired jobs in the selected scope contribute. Role/category describes the
+job; employer industry describes the company. A health company can hire engineers.
+
+Charts include role/category and employer-industry doughnuts, granular category,
+**Technical Skills & Tools**, **Professional / Domain Skills**, **Soft Skills**,
+and the sponsorship-by-category table. Scroll down for the lower panels. Click
+a slice or bar to cross-filter; click again or clear the active selection to undo.
+A doughnut's **Chart total** describes its displayed distribution; the highlighted
+slice is a selection. Do not equate either with a global Dashboard total.
+
+**Refresh Insights** updates new/changed saved inputs in the background;
+**Rebuild all** asks confirmation to re-extract all saved jobs. During a refresh,
+progress and **Cancel refresh** appear; cancel retains committed batches.
+**Waiting for ingestion; 0/0 processed** can appear while normal/Assisted ingestion
+has priority. It does not mean there are zero saved jobs. Charts may still show a
+previous committed snapshot until ingestion and refresh finish. The supplied
+193-job Insights and 213-job Search captures are not proof of a counting bug:
+check scope, active/expired status and snapshot timing before comparing.
+Skills reflect requirements in available saved text; benefits are excluded.
+These charts are not statistics for the entire employment market.
+
+<img src="assets/insights_dashboard.png" alt="Insights: four selected demo jobs, category and industry charts, separate skill panels and refresh controls" width="860">
 
 ### 8. Assisted Ingestion
-Dedicated interactive browser environment for bot-guarded portals
-(Cloudflare, PerimeterX, Datadome, "Press & Hold"): launch an interactive
-Chromium window for any careers portal, clear the human verification once,
-and SponsorScout takes over — automatic pagination across all result pages
-and direct database ingestion, recorded with the same run logs as a regular
-scan (see [Scanning](#-scanning)).
 
-<img src="assets/assisted_ingestion.png" alt="Assisted Ingestion: interactive browser window for human verification with automated pagination and direct database ingestion" width="860">
+Select a queued portal, or enter **Company / Seed Name**, source type and
+**Portal Careers URL**. The current main button is **Collect / continue**.
+Clicking it explicitly starts the app-controlled Chromium workflow. **Stop**
+requests a cooperative stop and keeps committed jobs. **Open website** is
+**view-only** in your ordinary browser; it does not collect jobs or share that
+browser's cookies/session with SponsorScout. A queue selection alone is not a crawl.
+
+The queue shows **Company**, **Target URL**, **Reason / Phase**, **Status** and
+**Action**. Use **Refresh queue** after changes; select a row for its full reason
+and latest result. Pending, running, partial and resolved are workflow states,
+not proof that every JD or page is readable. A harvesting status such as
+“40 jobs ingested (30 new, 10 refreshed)” is live activity, not a final total.
+The screenshot shows the idle, empty-queue state.
+
+**Advanced options** starts collapsed. Expand it for saved batches, resolved
+filtering, detailed results and the separate **Resume unread JDs** / **Resume
+listing collection** controls. Resume is limited to the saved scope and observed
+continuation evidence. Human-verification controls appear only when an active
+session requests them. You perform checks yourself; **Continue after verification**
+asks for fresh inspection, not a bypass. **Manychat verification remains unresolved**.
+A finished/partial status or a successful different portal does not resolve it.
+
+<img src="assets/assisted_ingestion.png" alt="Assisted Ingestion idle: company, source, URL, Collect / continue, Stop, Open website, collapsed Advanced and queue" width="860">
 
 ---
 
 ## 🔍 Scanning
 
 ### Full scan
-The default. **Scan Now** (or the Dashboard's **Rescan Companies**) scans every
-seeded company, because a partial scan would silently hide jobs you did not ask
-for.
+The default. **Scan Now** (or the Dashboard’s **Rescan Companies**) covers the
+configured ATS and Career company lists. Use Custom Scan when
+you deliberately want a smaller scope; it uses the same quality and safeguards.
 
 ### Custom scan
 **Tools → Custom Scan** lets you choose:
@@ -246,21 +392,21 @@ A custom scan runs the exact same pipeline as a full scan, so result quality is
 identical — only the scope and duration change. Use it to re-scan companies you
 just edited. Custom runs appear as `custom` in Scan History.
 
-<img src="assets/custom_portal_selection.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
+<img src="assets/custom_portal_selection.png" alt="Custom Scan dialog: independent ATS and Career company selectors" width="780">
 
 ### What a scan does
 1. **ATS boards** — companies with a known ATS are pulled through the official
    job-board API.
-2. **Career pages** — every company is also crawled through its own career page,
-   so career-page-only companies are never skipped. Long lists are read page by
+2. **Career pages** — the enabled Career targets are crawled through their configured pages;
+   a Custom Scan can disable ATS or Career independently. Long lists are read page by
    page, following "next page" and "show more" links. On the fast path a board
    is read to at most 12 pages (`SPONSORSCOUT_STATIC_MAX_PAGES`). If more pages
    remain, the retained rows are marked **partial**, not falsely complete;
    browser listing caps and repeat stops are reported the same way.
 3. **Category-link check** — a link that leads to a department or category
    listing instead of a real job ad (its page shows more job links and no
-   apply button) is detected and dropped, so only actual postings reach the
-   database.
+   apply button) is detected and dropped, so the collector aims to keep actual postings rather than category pages.
+   Extraction can still be incomplete or include listing metadata; review errors.
 4. **Detail pages** — each job stays lightweight during scanning (extracting
    title, location, visa sponsorship / relocation / Blue Card evidence, and
    experience while saving the captured full JD text into SQLite for decoupled
@@ -271,11 +417,12 @@ just edited. Custom runs appear as `custom` in Scan History.
    are detected promptly without stalling the scan, logged as blocked portals
    for optional Assisted Ingestion, and skipped so remaining portals continue
    immediately.
-6. Results are saved to the local database and appear immediately; Insights
-   refreshes asynchronously from SQLite once the scan completes.
+6. Results are committed to the local database. Visible views refresh
+   asynchronously; hidden views load on entry. Insights can wait for ingestion
+   before refreshing its committed snapshot.
 
-Progress shows live (`ATS 12/46`, `Career 88/162`). A company with no open
-roles counts as done.
+Live portal-task progress is separate from JD outcomes. A settled task can
+have partial/error/empty results; completion is not proof of readable descriptions.
 
 ### Assisted ingestion and bot-guarded portals
 **Normal and custom scans never open an interactive browser or start Assisted
@@ -284,28 +431,18 @@ Career**, continue other targets, and at completion show one notice directing
 you to **Assisted Ingestion**. That tab automatically lists the deduplicated,
 scoped URLs with source/phase/reason/status; the queue survives a restart.
 
-**The queue lists listing-level walls, and only proven ones.** A portal is
-queued when its **job listing** was refused: a confirmed vendor challenge page
-(Cloudflare, Akamai, DataDome, PerimeterX, Imperva, "Press & Hold", …) or a
-listing that provably produced nothing. It is **not** queued because a single job
-description behind that listing could not be read, and a bare HTTP 401/403/429
-with no challenge evidence is recorded as `listing access blocked: … (no
-verification challenge observed)` rather than as bot protection. A listing whose
-rows were already saved still says so in its reason
-(`9 job row(s) were already saved from this listing`) when a real wall appeared
-mid-pagination, and the unresolved-description count remains in the scan log's
-Diagnostics as job-description coverage.
-Re-crawling a listing that already saved 1,210 jobs only to re-read the same
-descriptions was the cost this rule removes; in one 273-seed run it dropped the
-queue from 20 portals to 11 while keeping every genuinely walled listing.
-**Italiano:** la coda elenca solo i blocchi verificati della **lista** offerte,
-non la singola scheda lavoro non letta; un 403 senza prova di challenge è
-riportato come accesso bloccato, non come protezione anti-bot.
+**Inspect the queue's Reason / Phase, not just its status.** It can retain scoped
+listing or JD access issues. A bare HTTP denial, missing content, confirmed
+verification wall and unread JD are not interchangeable; do not call every
+failure a CAPTCHA. Already-saved rows and unresolved descriptions remain separate
+outcomes. A later smaller successful batch does not automatically clear an older
+JD issue whose original posting identities remain unread.
 
-Only an explicit **Load and Ingest**, **Launch Assisted Browser and Ingest**,
-**Resume unread JDs** or **Resume listing collection** opens Chromium. You
-complete any human verification yourself. A fresh launch does not use a saved
-batch merely because it is selected in the batch picker.
+Only explicit **Collect / continue**, the queue's collection action, or an
+Advanced **Resume unread JDs** / **Resume listing collection** starts collection.
+A fresh collection does not use a saved batch merely because it is selected.
+Complete human verification yourself. **Manychat is still unresolved**; no
+personal-browser session transfer, access solver or bypass is supplied.
 Only one assisted worker runs at a time; normal Scan/Custom/Resume and assisted
 launch controls exclude each other. Choose **Direct employer** or **Recruiter /
 agency** for a manual URL. Stop retains successful commits. A page cap, renewed
@@ -342,30 +479,15 @@ interrupted old queue entry is retryable explicitly, not auto-resumed.
   602/602 jobs over 61 pages, including a re-served page and a human-cleared
   mid-run challenge. Live results still depend on the portal and clearance.
 
-### Assisted launch configuration restoration — 25 October 2026
+### Assisted launch configuration and access limits
 
-The previous working67-file build and the I7 ZIP were compared directly. I7 had
-removed **two pre-existing Assisted launch/context values**: the existing
-`--disable-blink-features=AutomationControlled` argument and the fixed Chrome126
-user-agent override. At the user's direction, the exact previous launch/context
-block is restored; no new browser, profile, user-agent value or launch flag is
-invented. The existing bundled Chromium/fresh-context/CPU-only behavior remains.
-
-This is a **targeted launch rollback**, not a full I7 rollback. I7 saved-batch
-selection, observed-only listing continuation, controls, diagnostics and current
-content/identity guards remain. In particular, I7's computed-DOM observations
-are a separate retained difference; the source comparison alone does not prove
-which factor caused the live verification failure. Installed-Chrome/profile
-redesign was rejected and was not implemented; the working personal Chrome
-profile/cookies are never touched. No database/CSV/history/country repair.
-
-Current restoration verification: 1,140 passed / 3 unchanged disclosed baseline failures / 48 legacy skips / 0 collection errors (full suite, 28 October 2026), including the exact-old-launch regression. No new regression, no live CAPTCHA/Windows certification. Earlier I7
-measurements below are historical for the pre-restoration build. No localhost
-fixture certifies real CAPTCHA/provider acceptance or native Windows behavior.
-
-**Italiano:** ripristinati esattamente i due valori precedenti di avvio/contesto
-Assisted; nessun nuovo browser/profilo o valore inventato. Restano le funzioni I7
-e i dati; non è un rollback completo né una garanzia di verifica sul sito vivo.
+This final review does not change browser launch flags, identity, DNS policy,
+profiles, security checks, budgets or seed URLs. The app-controlled browser is
+separate from your ordinary browser; cookies are not imported from it.
+Historical launch/configuration experiments and their test counts do not establish
+that a live site's verification will accept the current session. Manychat remains
+open in [issues.md](issues.md). No browser switching, stealth additions or access
+bypass has been added by this review.
 
 ### Support detection after human verification
 Assisted performs a bounded full-JD pass after listing traversal. It reads the
@@ -401,7 +523,7 @@ While **Awaiting verification**, use **Show verification browser** to bring the
 existing Chromium forward, solve the check yourself, then **Continue after
 verification** to request a fresh inspection. Continue does not solve or certify
 verification, reset a deadline or add a new worker. **Save partial and close**
-retains committed rows and ends this session; **Stop assisted ingestion** and
+retains committed rows and ends this session; **Stop** and
 cooperative window close remain available. A detector timeout does **not** mean
 you did not solve a check. Each accepted clearance/re-block has its own bounded,
 timestamped evidence. An unresolved listing gate does not automatically trigger
@@ -409,7 +531,7 @@ another series of blocked JD requests/waits; fresh reads are deferred. Proven
 fresh cached JDs may still be reused without network access.
 
 **Choose a saved run deliberately:** select the queued row (selection only,
-not its fresh **Load and Ingest** action), check the same database/name/exact
+not its collection action), check the same database/name/exact
 URL with its filters/hash, then click **Load saved batches**. Loading is an
 explicit background metadata read, not a crawl/startup scan. Choose a retained
 run or leave **Latest saved batch**. Immutable per-run/content-hash snapshots
@@ -437,7 +559,7 @@ clearly—there is no whole-company/database/seed sweep or silent larger-scope
 fallback. The user's actual retained database/old JDs cannot be inferred from
 uploaded CSVs or a Search screenshot.
 
-CSV **schema 5**, flow **`20261025-visible-clearance-continuation-v3`**, separates
+CSV **schema 5**, flow **`20261101-bounded-finishing-no-paste-v5`**, separates
 HTTP and browser status/title/final URL/reason/error/phase. A browser-preferred
 row with no HTTP attempt has HTTP status `0`/empty fields, not a fabricated
 HTTP 403. `jd_defer_kind` distinguishes access-gate deferral from shared numeric/
@@ -497,7 +619,7 @@ jobs into the quarantine column.
 
 ### Explicit country / non-job review
 For existing Unknown countries or accidental job-alert/saved-search observations:
-open **Tools → Review data quality**, enter an optional company name (e.g. the
+open **Tools → Advanced maintenance and diagnostics → Review data quality**, enter an optional company name (e.g. the
 full source name, not a broad substring), then **Preview**. The virtualized
 preview lists each proposed country fill/non-job exclusion, protected rows and
 still-ambiguous locations. **Apply reviewed changes** asks for confirmation and
@@ -511,7 +633,8 @@ Backups/audits are in `maintenance_backups/` beside the DB; close the app and
 preserve the current DB before restoring a chosen `.sqlite3` backup. Never
 replace a live SQLite file. Historical run counters/CSV originals are not repaired.
 
-The exact supplied dataset previews165safe country fills and1non-job exclusion,
+**Historical offline example, not your current preview:** one earlier supplied
+dataset previewed 165 safe country fills and 1 non-job exclusion,
 with42genuinely ambiguous places left Unknown (if no manual/application conflicts).
 Do **not** force these to Netherlands from the host/seed. Fresh Assisted ingestion
 can read explicit `JobPosting.jobLocation.addressCountry` using the current
@@ -532,7 +655,7 @@ runtime download/update occurs. Existing correct literal/structured evidence win
 Unknown / Europe-Remote jobs; remote is a separate filter. Unknown stays
 Unknown, not a guessed seed/HQ country. Manual country corrections survive rescans.
 
-No destructive cleanup runs on startup or Scan. **Tools → Review alias merges**
+No destructive cleanup runs on startup or Scan. **Tools → Advanced maintenance and diagnostics → Review alias merges**
 first previews trusted posting aliases, asks for confirmation, then saves a
 full SQLite backup, SHA256 and JSON/in-database audit before merging. Conflicting
 manual countries are skipped; the retained ID/observed URL, longest JD, evidence,
@@ -569,10 +692,18 @@ Contains `sponsorscout.db` (jobs, companies, applications, scan history),
 `seeds/` (your editable company lists), `locale.json` (language) and raw scan
 logs under `scan_output/`.
 
-Copy `sponsorscout.db` to back everything up. Override the location with the
-`SPONSORSCOUT_DATA_DIR` (or `SPONSORSCOUT_DB_PATH`) environment variable.
+Close the app, then back up the **whole user-data folder**, including seeds,
+documents and scan history. A live SQLite database can also have WAL/SHM sidecars;
+copying only its `.db` while the app runs is not a complete backup.
+Set `SPONSORSCOUT_DATA_DIR` or `SPONSORSCOUT_DB_PATH` **before launching** to
+override the paths. A separately located custom database needs its own backup.
 
 ### Uninstalling
+
+**Source/venv users:** deleting a source checkout or its venv is not running an
+uninstaller. Keep your separate user-data folder unless you deliberately want
+to remove it. The following warnings apply to packaged uninstallers.
+
 
 The Windows installer, the Linux `.deb` and the Linux `.rpm` all remove
 SponsorScout-owned user data when the app is uninstalled — the SQLite database,
@@ -614,7 +745,7 @@ automatically and refuse to package a broken bundle. From source, run
 the app logs a warning and keeps working, but JS-rendered career pages return 0
 jobs. Install it once with `python -m playwright install chromium`. To restore
 the old automatic behaviour set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` — it is
-off by default because a ~130 MB download can block the scan for minutes.
+off by default because a large browser download can block the scan for minutes.
 Installed builds are unaffected: the browser ships inside the `.exe`, `.deb`
 and `.rpm`.
 
@@ -624,16 +755,19 @@ a malformed selected URL is logged as that company's error without blocking
 the other companies. Correct it in **Data Management**. The Scan button never
 rewrites your seed or upgrades its URLs behind your back.
 
-**Some companies returned no jobs.** They may have no open roles (`EMPTY` in
-the log), or they may temporarily block automated access — try again later.
-Nothing is dropped silently.
+**Some companies returned no jobs.** Check that seed's scan log and errors
+CSV. `empty` is **not** proof that a portal has no jobs: the site may have
+served a different response, failed to render cards, or returned an explicit
+server error (reported as `error` when observed). Five Career boards with
+visible postings remain under investigation; see [issues.md](issues.md).
+Do not assume a verification wall from a failed page or bypass one.
 
 **The scan is slow.** The detail-page pass is the slow part, and it is bounded:
 SponsorScout sizes its browser pool from your CPU/RAM, runs at below-normal
 priority, and blocks images/fonts/media while crawling. The Dashboard stays
 usable. You do not have to wait it out — press **Pause** to suspend the scan
-where it is (nothing is lost, browsers just wait) and click the same button
-again to continue instantly. **Stop** ends the run and keeps everything found,
+at cooperative checkpoints (saved work is retained) and click the same button
+again to request continuation. **Stop** ends the run and keeps everything found,
 and **Resume** later continues the unfinished companies, even after restarting
 the app.
 
@@ -641,7 +775,7 @@ the app.
 unattended without opening a visible browser. Read the one finish notice,
 then use the persistent **Assisted Ingestion** queue when ready. Its explicit
 launch opens Chromium for your verification and saves each successful job;
-**Open in External Browser** there is a separate manual browsing action.
+**Open website** there is a separate manual browsing action.
 
 **Insights is refreshing slowly.** The first pass on existing full JDs may
 still take time; processed/total and committed coverage show real progress.
@@ -662,12 +796,52 @@ quality, only the scope changes.
 type a pattern such as `(backend|platform).*engineer`. Case-insensitive; an
 invalid pattern warns and falls back to a normal search.
 
-**Does anything leave my computer?** No. The only outbound traffic is fetching
-the job listings you asked for.
+**Does anything leave my computer?** Scanning and JD loading contact websites;
+those sites and their embedded services receive ordinary request/network data.
+SponsorScout does not automatically upload your stored CV/notes to an AI service.
+Clipboard content leaves the app if you paste/share it elsewhere. **Open website**
+uses your external browser and that browser’s ordinary network/session behaviour.
 
 ---
 
 ## 🏗 Building From Source
+
+### Run from Python + venv (no binary build needed)
+
+From the extracted folder containing `pyproject.toml`, with Python 3.10+:
+
+```powershell
+# Windows PowerShell — activation is optional with explicit interpreter paths
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m sponsorscout.main
+```
+
+```bash
+# Linux
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m playwright install chromium
+.venv/bin/python -m sponsorscout.main
+```
+
+On supported Linux systems, Chromium may also need system libraries:
+`.venv/bin/python -m playwright install --with-deps chromium` (may require admin
+privileges). Native Qt libraries and a desktop session are needed for normal GUI use.
+For startup diagnostics use `python -m sponsorscout.main --self-check` and
+`python -m sponsorscout.main --self-check-browser` with that same venv interpreter.
+Do **not** use `python -m sponsorscout`: this tree has no `__main__.py`.
+After moving to a new checkout, reinstall `-e .` in the intended venv so an older
+editable install does not point at the wrong source folder. No source update
+requires deleting your database.
+
+### Optional native packaging and tests
+
+You do not need the following build steps to run from a terminal/venv.
+
 
 ```powershell
 python -m venv venv
@@ -682,8 +856,8 @@ python -m playwright install chromium
 `pytest` for the suite; `pip install -e .` alone is enough if you only want to
 run the app.
 
-If you skip `playwright install chromium`, the app still starts but
-JS-rendered career pages return 0 jobs. It will **not** download ~130 MB on its
+If you skip `playwright install chromium`, the app can still start but
+browser-dependent reads can fail or yield no jobs; inspect the reported error. It will **not** download the browser on its
 own; set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` if you want that behaviour back.
 
 **Windows installer:**
@@ -734,61 +908,26 @@ python -m pytest sponsorscout/tests
 ---
 
 ## Verification and Fix Register
-**Current approved correction — 25 October 2026, v0.2.0 (I7):** current visible
-clearance authority, human controls, selectable saved runs and observed listing
-continuation. Source changes are implemented; measured current verification is
-recorded in the
-[bilingual verification register](tools/verification_2026_10_24.md).
 
-- The newest supplied330run recorded260new/70refresh/33pages then a page34
-  denial; all3manual checks were solved, per the user's report. Detector logs
-  do not refute that. Search370 reconciles110+330−70, not proof of deletion.
-  The 309 observedNL/21ambiguous countries and Senegal/Rotterdam conflict were
-  not silently repaired. R7 originals remain immutable; no full live JD was
-  invented from their empty/deferred exports.
-- Current frozen verification: **1,119 passed / 3 unchanged baseline failures /
-  4 legacy skips / 0 collection errors across54fresh modules**. All56newcases
-  (45nonbrowser+11actualheaded) passed;15actualCSS/primary probes and explicit
-  Save330→observed34→580/58pages passed. This is local fixture evidence only.
-- New permanent visibility/recovery tests cover computed DOM, repeated/late/
-  failed clearance, split diagnostics, versioned580→330 scopes, zero-JD gate
-  handoff, observedpage34 continuation, controls/close, cache and scope/active
-  protections. Final measured results are in the linked verification register.
-- Classifier/ML/taxonomy/country/seeds/regular12/no-auto-visible remain unchanged;
-  noRust/GPU/bypass/whole-seed Scan probes/30kbenchmark repeat.
+**Final review:** documentation and screenshots are checked against the current
+eight-tab source, including finished JD results and EN/IT controls. The review
+record is [Changelogs/final_review/report.md](Changelogs/final_review/report.md).
+The exact source/resource hashes, cleanup inventory and fresh regression results
+are included there. Current result: **2,312 passed / 0 failures / 0 errors / 0 skips across 102 modules**.
 
-**Previous I6 transport/resume verification (historical, not I7 certification):**
+Manychat verification remains **unresolved** in [issues.md](issues.md). Earlier
+I6/I7/E2a/cleanup counts describe earlier revisions, not this final tree. The
+full pre-review README is retained as historical documentation in the workspace
+audit backup; its obsolete stage notes are not a current feature certificate.
+No whole-seed rescan, native Windows installer build, physical low-end-PC test
+or universal live-portal validation was performed for this review.
 
-- **53 isolated modules: 1,063 passed / 3 unchanged baseline failures /
-  4 legacy fixture-path skips / 0 collection errors.** Native exits/timeouts and
-  frozen Python/geography hashes checked. No whole-suite-green claim.
-- **32 new cases: 22 unit + 10 actual headed local Chromium/full-window cases.**
-  The missing combination is now covered: HTTP200 Client Challenge details,
-  same-session browser primary JDs beyond12, 580/580 readable over58listing pages,
-  evidence-onlyYes/No/Unknown/BlueCard→CSV→DB→Search. One HTTP attempt switches to
-  one reused detail tab. Retry/error provenance, re-block/client-human-clearance,
-  finite budgets, Stop→resume, window/detail close and redirects are exercised.
-- Native and legacy-CSV **Resume unread JDs** keep fresh evidence/original capture,
-  do not revisit listings, widen URL scope, resurrect excluded data or rewrite
-  history. Normal scans still never start an interactive browser automatically.
-- Earlier user run:580unique vacancies/470new+110refresh; all110regular URLs
-  retained; own declared total580/58pages reconciles. But11JDsreadable,1failed,
- 568empty with12browserattempts exposed the prior cap/interstitial gap. The
-  source correction does not fabricate sponsorship answers for those originals.
-- Current local10msGUIheartbeat recorded maximum **90.2ms**. Prior31support,
- 114country/terminal and28responsiveness cases, exactartifactreplays, EN/IT,
-  mirror/anchor and wheel/sdist/resource/frozen-simulation checks retained.
-- Sharedclassifier/ML/taxonomy/seed/geography/manual/country/identity rules and
-  v0.2.0/Essentials unchanged. NoRust/GPU/newruntime dependency/CAPTCHA bypass/
-  startupwhole-seed probe/30kbenchmark repeat or automatic historical repair.
-- **No live external portal was tested by the agent.** User-run artifacts are
-  offline replays; Chromium fixtures are localhost. Neither native Windows nor
-  real vendor clearance/all live JD accessibility is certified.
+---
 
 ## 📋 Requirements
 
 - Python 3.10 or newer (to run from source; installers need nothing)
-- Runtime: **PySide6-Essentials** (not the full meta-package), **requests**, **playwright** (`requirements.txt`)
+- Runtime: **PySide6-Essentials** (not the full meta-package), **requests**, **truststore**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`); `rpmbuild` for the `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
@@ -812,6 +951,8 @@ MIT — see [LICENSE](LICENSE).
 - **[🗂 Le Otto Schede](#-le-otto-schede)** — il tour completo dell'app
 - [Scarica](#-scarica)
 - [Cosa Fa](#-cosa-fa)
+- [Stato attuale dei sorgenti](#stato-attuale-dei-sorgenti)
+- [Problemi e verifiche aperte](issues.md)
 - [Scansione](#-scansione)
 - [Verifica e registro fix](#verifica-e-registro-fix)
 - [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati)
@@ -824,7 +965,11 @@ MIT — see [LICENSE](LICENSE).
 
 ## 📥 Scarica
 
-Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazehaya395/SponsorScout/releases):
+Questa consegna contiene sorgenti, **non un installer**: usa Python/venv come
+spiegato sotto. Gli script supportano i formati seguenti. Controlla la
+[pagina GitHub Releases](https://github.com/Kazehaya395/SponsorScout/releases) per
+eventuali file pubblicati separatamente; disponibilità e aggiornamento di quei
+file non sono verificati da questa revisione:
 
 | Piattaforma | File |
 |-------------|------|
@@ -857,46 +1002,53 @@ automaticamente.
 > **Tutta l'app a colpo d'occhio.** Queste sono catture aggiornate delle otto
 > schede. Clicca un'immagine per aprirla a dimensione piena.
 
+Schermate reali dell’app Qt attuale, con quattro offerte e una candidatura
+fittizie in un database locale isolato. Strumenti e Acquisizione sono inattivi;
+le opzioni avanzate partono chiuse. Non sono promesse sui risultati di scansione.
+La schermata Windows del risultato finale, separata sotto, proviene invece
+dall’esecuzione fornita dall’utente ed è in inglese.
+
 <table>
   <tr>
-    <td align="center"><strong>1 · Pannello</strong><br><a href="assets/main_dashboard.png"><img src="assets/main_dashboard.png" alt="Scheda Pannello con KPI, principali datori di lavoro per punteggio sponsor e lavori per paese" width="420"></a></td>
-    <td align="center"><strong>2 · Cerca</strong><br><a href="assets/job_search_table.png"><img src="assets/job_search_table.png" alt="Scheda Cerca con filtri, colonne tri-stato e paginazione" width="420"></a></td>
+    <td align="center"><strong>1 · Pannello</strong><br><a href="assets/main_dashboard_it.png"><img src="assets/main_dashboard_it.png" alt="Scheda Pannello con KPI, principali datori di lavoro per punteggio sponsor e lavori per paese" width="420"></a></td>
+    <td align="center"><strong>2 · Cerca</strong><br><a href="assets/job_search_table_it.png"><img src="assets/job_search_table_it.png" alt="Scheda Cerca con filtri, colonne tri-stato e paginazione" width="420"></a></td>
   </tr>
   <tr>
-    <td align="center"><strong>3 · Candidature</strong><br><a href="assets/applications_dashboard.png"><img src="assets/applications_dashboard.png" alt="Scheda Candidature con candidature salvate, stato, date e registro attività" width="420"></a></td>
-    <td align="center"><strong>4 · Strumenti</strong><br><a href="assets/scanning_tool.png"><img src="assets/scanning_tool.png" alt="Scheda Strumenti con controllo scansione, log live, cronologia e qualità dati" width="420"></a></td>
+    <td align="center"><strong>3 · Candidature</strong><br><a href="assets/applications_dashboard_it.png"><img src="assets/applications_dashboard_it.png" alt="Scheda Candidature con candidature salvate, stato, date e registro attività" width="420"></a></td>
+    <td align="center"><strong>4 · Strumenti</strong><br><a href="assets/scanning_tool_it.png"><img src="assets/scanning_tool_it.png" alt="Scheda Strumenti con controllo scansione, log live, cronologia e qualità dati" width="420"></a></td>
   </tr>
   <tr>
-    <td align="center"><strong>5 · Gestione Dati</strong><br><a href="assets/backend_data_management.png"><img src="assets/backend_data_management.png" alt="Scheda Gestione Dati con file seed ATS e Career modificabili" width="420"></a></td>
-    <td align="center"><strong>6 · Kit Prompt AI</strong><br><a href="assets/AI_tailoring_setup.png"><img src="assets/AI_tailoring_setup.png" alt="Scheda Kit Prompt AI con descrizione lavoro, prompt IA, CV e lettera" width="420"></a></td>
+    <td align="center"><strong>5 · Gestione Dati</strong><br><a href="assets/backend_data_management_it.png"><img src="assets/backend_data_management_it.png" alt="Scheda Gestione Dati con file seed ATS e Career modificabili" width="420"></a></td>
+    <td align="center"><strong>6 · Kit Prompt IA</strong><br><a href="assets/AI_tailoring_setup_it.png"><img src="assets/AI_tailoring_setup_it.png" alt="Scheda Kit Prompt IA con descrizione lavoro, prompt IA, CV e lettera" width="420"></a></td>
   </tr>
   <tr>
-    <td align="center"><strong>7 · Approfondimenti</strong><br><a href="assets/insights_dashboard.png"><img src="assets/insights_dashboard.png" alt="Scheda Approfondimenti con distribuzioni per categoria, competenze, settore e sponsorizzazione" width="420"></a></td>
-    <td align="center"><strong>8 · Acquisizione Assistita</strong><br><a href="assets/assisted_ingestion.png"><img src="assets/assisted_ingestion.png" alt="Scheda Acquisizione Assistita per portali protetti e inserimento diretto nel database" width="420"></a></td>
+    <td align="center"><strong>7 · Approfondimenti</strong><br><a href="assets/insights_dashboard_it.png"><img src="assets/insights_dashboard_it.png" alt="Scheda Approfondimenti con distribuzioni per categoria, competenze, settore e sponsorizzazione" width="420"></a></td>
+    <td align="center"><strong>8 · Acquisizione Assistita</strong><br><a href="assets/assisted_ingestion_it.png"><img src="assets/assisted_ingestion_it.png" alt="Scheda Acquisizione Assistita per portali protetti e inserimento diretto nel database" width="420"></a></td>
   </tr>
 </table>
 
 **Extra — Scansione personalizzata:** scegli tipi di fonte e aziende prima di
 un'esecuzione mirata.
 
-<a href="assets/custom_portal_selection.png"><img src="assets/custom_portal_selection.png" alt="Finestra Scansione Personalizzata con selezione dei portali ATS e Career" width="860"></a>
+<a href="assets/custom_portal_selection_it.png"><img src="assets/custom_portal_selection_it.png" alt="Finestra Scansione Personalizzata con selezione dei portali ATS e Career" width="860"></a>
 
 ---
 
 ## ✨ Cosa Fa
 
-- **Scansiona solo fonti ufficiali** — 8 bacheche ATS (Ashby, Greenhouse,
-  Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday) tramite le
-  loro API pubbliche, più le pagine carriera delle aziende con un browser
-  headless quando necessario.
-- **Classifica ogni lavoro** — sponsorizzazione, trasferimento, tipo di lavoro
+- **Scansiona le fonti configurate** — 10 tipi di provider ATS (Ashby,
+  Greenhouse, Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday,
+  Teamtailor, BambooHR) tramite feed/API pubbliche, più le pagine carriera di
+  aziende e recruiter con un browser headless quando necessario. Un portale
+  centralizzato può rimandare a una scheda lavoro su un altro sito.
+- **Analizza il testo disponibile** — sponsorizzazione, trasferimento, tipo di lavoro
   remoto e idoneità alla Carta Blu UE, rilevati dalla descrizione.
 - **Estrae l'esperienza richiesta** — la cifra esatta indicata
   (`4+`, `3-5 anni`, `6 mesi`), oppure il livello di seniority (`Senior`),
   riconosciuta in inglese, tedesco, italiano, olandese, francese, spagnolo e
   portoghese.
-- **Mantiene tutto in locale** — un unico file SQLite sul tuo computer. Nulla
-  viene caricato online.
+- **Conserva i dati dell’app in locale** — SQLite, documenti e log. Le letture
+  contattano siti esterni; condividi il testo degli appunti solo se lo incolli.
 - **Gestisce le candidature** — Salvata → Inviata → Colloquio → Offerta →
   Rifiutata.
 - **Due lingue** — Italiano e Inglese, selezionabili in qualsiasi momento.
@@ -905,10 +1057,11 @@ un'esecuzione mirata.
 
 ## 🚀 Avvio Rapido
 
-> **È la prima volta?** Segui questi passi. Solo la prima scansione è lenta.
+> **È la prima volta?** Segui questi passi. Anche le successive possono richiedere tempo se servono nuove letture o l’accesso fallisce.
 
-1. **Installa** — scarica il pacchetto Windows o Linux da
-   [Scarica](#-scarica) e avvia SponsorScout. Con l'installer non serve Python.
+1. **Prepara questi sorgenti** — segui i comandi Python/venv in
+   [Compilare dai Sorgenti](#-compilare-dai-sorgenti), poi avvia l’app. Gli
+   installer pubblicati separatamente sono facoltativi e possono essere vecchi.
 2. **Esegui la prima scansione** — accetta la richiesta al primo avvio, oppure
    premi **Scansiona Ora** in **Strumenti**. Una scansione completa può richiedere
    da pochi minuti a ore in base alle aziende attive. Puoi mettere in pausa,
@@ -917,100 +1070,231 @@ un'esecuzione mirata.
    titolo, sponsorizzazione del visto, Carta Blu UE, modalità remota e regex;
    salva le offerte interessanti in **Candidature**.
 4. **Approfondisci** — apri **Approfondimenti** per i grafici su categorie,
-   competenze, settori e sponsorizzazione, **Kit Prompt AI** per preparare un
-   messaggio di candidatura e **Acquisizione Assistita** solo per i portali che
-   richiedono verifica umana.
+   competenze, settori e sponsorizzazione, **Kit Prompt IA** per preparare un
+   messaggio di candidatura e **Acquisizione assistita** per raccolta esplicita e problemi di accesso o ripresa,
+   senza garanzia che la verifica riesca.
 
 Esegui dai sorgenti? Vedi [Compilare dai Sorgenti](#-compilare-dai-sorgenti).
 
 ---
 
+## Stato attuale dei sorgenti
+
+Questa consegna contiene **tutti i sorgenti revisionati**, non un nuovo installer.
+La versione nei metadati resta **0.2.0**. Se usi Python e venv, estrai i sorgenti
+in una cartella nuova e usa i comandi qui sotto. Chiudi prima la vecchia app e
+salva l'intera cartella dei dati utente: non eliminarla per applicare l'aggiornamento.
+
+- Le scansioni successive ricontrollano gli elenchi selezionati. Le descrizioni
+  confermate, attive, invariate e acquisite nelle ultime 24 ore possono essere
+  riutilizzate senza rinnovare la data originale; offerte nuove, modificate,
+  datate o non lette richiedono letture dei dettagli. Una modifica silenziosa
+  non visibile nei metadati può attendere una lettura successiva o una rilettura
+  esplicita: il riuso non garantisce di rilevare ogni cambiamento nascosto.
+- L'opzione avanzata per rileggere le descrizioni vale solo per la prossima nuova
+  esecuzione e richiede conferma. Riprendi mantiene aziende, fasi e politica della
+  campagna originale: una campagna solo Career non aggiunge ATS o nuove aziende.
+- Strumenti separa il completamento dei portali dalla leggibilità delle JD.
+  A fine esecuzione mostra un risultato statico, non una barra JD ancora attiva.
+  Gli esiti parziali, annullati o con errori conservano i conteggi reali; dati
+  mancanti non vengono inventati come zero. Una nuova esecuzione ripristina
+  l'avanzamento live.
+- La manutenzione parte chiusa. Approfondimenti distingue competenze tecniche,
+  professionali/di dominio e trasversali, escludendo i benefit dai requisiti.
+- **La verifica Manychat resta un bug irrisolto.** Nessuna promessa di bypass,
+  accesso universale, paginazione completa sui siti reali o nuova build Windows.
+  Vedi [issues.md](issues.md) per limiti attuali e vecchie segnalazioni aperte.
+
+Restano sotto le istruzioni dettagliate su scansione, ripresa, paesi, manutenzione,
+dati, problemi e pacchetti. I vecchi risultati di test non sono il conteggio finale.
+
+---
+
 ## 🗂 Le Otto Schede
 
-> L'app è organizzata in otto schede. Usa prima questa mappa, poi leggi la
-> descrizione e guarda lo screenshot a dimensione piena di ciascuna.
+Il selettore in alto a destra cambia lingua. Testi delle offerte, nomi delle aziende,
+diagnostica grezza e alcune etichette tecniche non vengono tradotti. Le schermate
+italiane provengono dai widget attuali con dati fittizi, non da risultati promessi.
 
-| # | Scheda | Serve per | Schermata |
-|---|--------|-----------|-----------|
-| 1 | [Pannello](#1-pannello) | KPI, principali datori di lavoro per punteggio sponsor, lavori per paese | [Vedi](assets/main_dashboard.png) |
-| 2 | [Cerca](#2-cerca) | Filtrare, aprire e salvare tutte le offerte scansionate | [Vedi](assets/job_search_table.png) |
-| 3 | [Candidature](#3-candidature) | Gestire Salvata → Inviata → Colloquio → Offerta → Rifiutata | [Vedi](assets/applications_dashboard.png) |
-| 4 | [Strumenti](#4-strumenti) | Avviare scansioni, controllare cronologia e qualità dati | [Vedi](assets/scanning_tool.png) |
-| 5 | [Gestione Dati](#5-gestione-dati) | Modificare i file seed ATS e Career | [Vedi](assets/backend_data_management.png) |
-| 6 | [Kit Prompt AI](#6-kit-prompt-ai) | Creare un messaggio pronto con prompt + JD + CV + CL | [Vedi](assets/AI_tailoring_setup.png) |
-| 7 | [Approfondimenti](#7-approfondimenti) | Esplorare grafici per categoria, competenze, settore e sponsorizzazione | [Vedi](assets/insights_dashboard.png) |
-| 8 | [Acquisizione Assistita](#8-acquisizione-assistita) | Risolvere i portali bloccati e importare le offerte direttamente | [Vedi](assets/assisted_ingestion.png) |
+| # | Scheda | Uso principale | Schermata |
+|---|--------|----------------|-----------|
+| 1 | [Pannello](#1-pannello) | Dati salvati ed esiti dell'ultima esecuzione | [Vedi](assets/main_dashboard_it.png) |
+| 2 | [Cerca](#2-cerca) | Filtrare e aprire le offerte salvate | [Vedi](assets/job_search_table_it.png) |
+| 3 | [Candidature](#3-candidature) | Stato e note delle candidature locali | [Vedi](assets/applications_dashboard_it.png) |
+| 4 | [Strumenti](#4-strumenti) | Scansioni, ripresa, avanzamento e cronologia | [Vedi](assets/scanning_tool_it.png) |
+| 5 | [Gestione Dati](#5-gestione-dati) | Elenchi personali ATS/Career | [Vedi](assets/backend_data_management_it.png) |
+| 6 | [Kit Prompt IA](#6-kit-prompt-ia) | Preparare testo da copiare, non generare risposte IA | [Vedi](assets/AI_tailoring_setup_it.png) |
+| 7 | [Approfondimenti](#7-approfondimenti) | Analizzare le offerte salvate selezionate | [Vedi](assets/insights_dashboard_it.png) |
+| 8 | [Acquisizione assistita](#8-acquisizione-assistita) | Raccolta esplicita con il browser dell'app | [Vedi](assets/assisted_ingestion_it.png) |
 
 ### 1. Pannello
-Totali aziende, conteggi espliciti di sponsorizzazione e Carta Blu UE, azioni
-di scansione (**Scansiona Ora**, **Scansione Personalizzata**) e riscansione per
-azienda; il punto di ingresso di ogni esecuzione. La tabella dei datori di
-lavoro è ordinata per **Punteggio sponsor massimo**, non per numero di offerte
-sponsorizzate, e le card a zero hanno tooltip che spiegano che `Sconosciuto`
-non significa `No`.
 
-<img src="assets/main_dashboard.png" alt="Scheda Pannello: card KPI, migliori aziende per sponsorizzazione e riga azioni di scansione" width="780">
+I pulsanti in alto sono **Riscansiona Aziende** e **Aggiorna**, non Scansiona Ora
+e Scansione Personalizzata (che sono in Strumenti). Le sette card mostrano aziende,
+offerte salvate, lavori sponsorizzati, remoti, Carta Blu UE, candidature e
+**No Jobs (last run)**; quest'ultima etichetta tecnica può restare in inglese.
+La card remoti può distinguere remoti e ibridi. Non sono conteggi di tutti i seed
+o di tutte le offerte pubblicate su Internet.
+
+Sotto trovi i principali datori per punteggio sponsor, i lavori per paese e
+**Nessun lavoro trovato (ultima esecuzione)**. La classifica usa il punteggio
+sponsor massimo, non il numero di lavori sponsorizzati. Zero evidenze positive
+non significa che gli Sconosciuti siano No. La tabella dell'ultima esecuzione
+mostra anche provider, stato ed errori: Manychat bloccato non prova che non abbia
+offerte. Controlla l'errore e la cronologia in Strumenti.
+
+<img src="assets/main_dashboard_it.png" alt="Pannello attuale: Riscansiona Aziende, Aggiorna, sette card e tabelle dei dati salvati" width="860">
 
 ### 2. Cerca
-Tutte le offerte scansionate con filtri (paese, titolo, sponsorizzazione a tre
-stati, Blue Card, modalità remota); apri l'annuncio originale o invia l'offerta
-al Kit Prompt AI.
 
-<img src="assets/job_search_table.png" alt="Scheda Cerca: riga filtri, filtri Sponsor e Blue Card a tre stati e tabella risultati" width="780">
+Inserisci titolo, azienda o località e scegli **Paese**, **Remoto**, **Esperienza**
+o **Esegui** (esecuzione); premi **Cerca**. **Azzera** ripristina i filtri.
+Le caselle **Sponsor**, **Carta Blu** e **Ricollocaz.** richiedono risultati
+positivi: non sono menu a tre stati. Nelle righe restano distinti Sì, No e `?`
+(Sconosciuto). **Regex** agisce sui tre campi testuali. Scegli 100/200/500/1000
+righe per pagina e usa **◀ / ▶**; il testo sopra indica intervallo e totale.
+
+Le colonne mostrano titolo, azienda, paese, località, esperienza, verdetti di
+supporto, modalità remota e prima osservazione. Il paese sconosciuto non viene
+inventato dal seed. Una riga salvata non prova che la JD sia leggibile: alcuni
+titoli possono ancora contenere metadati del sito (vedi problemi aperti).
+Doppio clic apre il sito originale; il menu con tasto destro permette di aprire,
+copiare l'URL o salvare in Candidature. La selezione passa al Kit Prompt IA;
+usa **Carica JD** in quella scheda per leggere il testo.
+
+<img src="assets/job_search_table_it.png" alt="Cerca: filtri, caselle positive, paginazione e quattro risultati dimostrativi" width="860">
 
 ### 3. Candidature
-Tracciamento delle candidature per offerta (stato, date, note) salvato in
-locale.
 
-<img src="assets/applications_dashboard.png" alt="Scheda Candidature: tabella candidature salvate, stato, date, note e registro attività" width="780">
+Salva prima un'offerta dal menu di Cerca. **Candidature salvate** mostra azienda,
+titolo, stato, data di salvataggio, URL e ultime note. Seleziona una riga per
+aprire **Stato**, **Note**, **Salva** e **Annulla**. Gli stati salvata, inviata,
+colloquio, offerta e rifiutata sono scelti da te: cambiare stato non invia
+nessuna candidatura al datore di lavoro.
+
+**Rimuovi Selezionato** elimina la voce locale dopo conferma. Il **Registro
+attività** registra modifiche di stato della sessione corrente, non una cronologia
+permanente completa. La data è quella originale del salvataggio, non un calendario
+modificabile di colloqui o solleciti. Stato e ultime note restano in SQLite. **Limite attuale:** selezionare una riga
+lascia vuoto il campo Note. Salva sostituisce l’ultima nota anche con testo vuoto.
+Copia/reinserisci la nota precedente prima di salvare solo uno stato se vuoi
+conservarla; questa revisione documenta il rischio senza cambiare il comportamento.
+La schermata seleziona una candidatura fittizia per rendere visibile l'editor.
+
+<img src="assets/applications_dashboard_it.png" alt="Candidature: riga fittizia selezionata, editor di stato e note, Salva e registro della sessione" width="860">
 
 ### 4. Strumenti
-Controllo e cronologia scansioni: avanzamento, **Cronologia Scansioni** con il
-set di log per esecuzione (offerte unite in un CSV più quarantena, errori e registro), scorciatoie ai seed, diagnostica e
-opzione **Modalità Alte Prestazioni** per pool di browser paralleli multi-thread
-sui PC più potenti (>4 core, >8 GB RAM).
 
-<img src="assets/scanning_tool.png" alt="Scheda Strumenti: pulsanti Scansiona Ora e Scansione Personalizzata, avanzamento e Cronologia Scansioni" width="780">
+I comandi quotidiani sono **Scansiona Ora**, **Scansione Personalizzata**,
+**Riprendi**, **Pausa**, **Ferma**. Si abilitano secondo lo stato del worker e
+del punto di ripresa. Pausa e Ferma sono cooperative; Ferma conserva il lavoro
+salvato. Riprendi continua aziende, fasi e politica della campagna originale.
+
+Durante il lavoro sono separati avanzamento dei portali e delle descrizioni,
+**Portali attivi** e **Registro scansione in tempo reale**. Il 100% dei portali
+include anche errori e risultati parziali: non significa 100% di JD leggibili.
+A fine esecuzione la barra JD scompare; il risultato statico mostra leggibili /
+osservate, percentuale e irrisolte. In quello stato non ci sono worker JD attivi.
+Restano i dettagli leggibili, brevi, vuote, fallite, bloccate e non tentate.
+Nuove/già salvate e riutilizzate/rilette/irrisolte sono misure diverse; bloccate e
+inconcludenti sono sottoinsiemi delle irrisolte, non righe aggiuntive.
+
+La cronologia resta sotto: scorri e seleziona un'esecuzione prima di **Vedi
+Registro per Azienda** o **Scarica Registro di Scansione**.
+**Manutenzione e diagnostica avanzate** parte chiusa. Dentro ci sono modalità
+alte prestazioni, rilettura delle descrizioni solo per la prossima nuova esecuzione,
+revisione fusioni alias, pulizia dati obsoleti/di scansione, quarantena, revisione
+qualità e controllo disponibilità. Il controllo disponibilità di un campione
+è distinto dalla rilettura delle JD. Le operazioni di manutenzione sono esplicite;
+fai un backup prima di eliminazioni. Nessuna velocità garantita sui PC datati.
+
+<img src="assets/scanning_tool_it.png" alt="Strumenti inattivo: comandi scansione, avanzamenti separati, cronologia e manutenzione chiusa" width="860">
+
+**Esempio Windows reale fornito, in inglese:** 3/3 portali terminati, ma
+**0/163 JD leggibili**, 4 bloccate e 159 non tentate. È una scansione finita
+parzialmente con 163 descrizioni irrisolte, non un worker fermo sullo zero.
+I numeri appartengono a quell'esecuzione, non al database dimostrativo.
+
+<img src="assets/scanning_tool_finished.png" alt="Esecuzione Windows reale: parziale, portali al 100%, risultato JD statico 0/163" width="860">
 
 ### 5. Gestione Dati
-Modifica gli elenchi di aziende da scansionare (**Portali ATS** e **Portali
-Career**). Le modifiche valgono dalla scansione successiva; **Ripristina
-predefiniti** riporta le liste originali.
 
-<img src="assets/backend_data_management.png" alt="Scheda Gestione Dati: editor dei seed Portali ATS e Portali Career con Salva su CSV, Ricarica e Ripristina" width="780">
+Scegli la sotto-scheda ATS o Career. Percorso e conteggio identificano il tuo CSV
+personale; la griglia segue le sue intestazioni e può richiedere scorrimento
+orizzontale. **Aggiungi…**, **Modifica…**, **Elimina** cambiano la tabella;
+**Salva in CSV** scrive il file, **Ricarica** rilegge quello salvato.
+**Ripristina i valori predefiniti inclusi** ripristina esplicitamente i seed:
+salva prima le aziende personalizzate. Le modifiche valgono per la prossima nuova
+scansione, non sostituiscono di nascosto l'ambito congelato di Riprendi.
 
-### 6. Kit Prompt AI
-Costruisci un unico messaggio per qualsiasi chatbot: **Load JD** compila la
-descrizione del lavoro (o incolla un link in **or JD URL**), poi **Copy prompt
-+ JD + CV + CL** copia prompt, descrizione, CV e lettera di presentazione per
-intero, in quest'ordine. Prompt, CV e lettera persistono tra le sessioni.
+<img src="assets/backend_data_management_it.png" alt="Gestione Dati: elenchi ATS e Career, percorso personale e comandi di modifica e salvataggio" width="860">
 
-<img src="assets/AI_tailoring_setup.png" alt="Scheda Kit Prompt AI: caselle descrizione lavoro, prompt AI, CV e lettera di presentazione con pulsanti Load JD e Copy" width="780">
+### 6. Kit Prompt IA
+
+**Lavoro selezionato** deriva dalla riga scelta in Cerca. Puoi invece usare
+**oppure URL JD**, poi **Carica JD**. L'app usa il testo salvato oppure tenta
+la lettura del sito; l'accesso può fallire. Puoi incollare la JD. Il riquadro
+sinistro è solo di sessione: modificarlo non salva una nuova JD nel database.
+
+Gli altri riquadri sono prompt IA, CV e lettera facoltativa. Usa **Salva** per
+ciascun documento da conservare localmente: scrivere da solo non garantisce il
+salvataggio. **Copia prompt + JD + CV + CL** prepara il messaggio completo negli
+appunti in quell'ordine. Non chiama un modello IA, non genera documenti e non
+invia candidature. Sei tu a decidere se incollare i dati in un servizio esterno,
+con le sue regole di privacy. La schermata mostra gli editor vuoti e i segnaposto.
+
+<img src="assets/AI_tailoring_setup_it.png" alt="Kit Prompt IA: lavoro selezionato, URL JD, Carica JD, quattro riquadri, Salva e Copia" width="860">
 
 ### 7. Approfondimenti
-Intelligence di mercato aggregata, estratta dalle descrizioni complete salvate
-in SQLite al di fuori del ciclo di scansione: grafici a ciambella per
-categoria/ruolo e settore industriale con cross-filter al clic, elenchi di
-frequenza delle competenze tecniche e soft senza troncamenti arbitrari, tabella
-di sponsorizzazione per categoria che mantiene distinti Sì / No / Sconosciuto e
-il pulsante **Aggiorna Approfondimenti** (avviato anche in background al termine
-di scansioni e acquisizioni). Elabora solo input nuovi/modificati o una tassonomia
-inclusa cambiata, mostra elaborate/totali e copertura dei lotti confermati e cede
-la priorità alle acquisizioni normali/assistite. `Other`, `Unknown` e nessuna
-competenza sono esiti completati. **Ricostruisci tutto** richiede conferma;
-**Annulla aggiornamento** conserva i lotti già salvati.
 
-<img src="assets/insights_dashboard.png" alt="Scheda Approfondimenti: grafici di categorie e competenze più richieste, distribuzione settoriale e ripartizione sponsorizzazioni per categoria" width="860">
+Scegli **Paese** e **Fonte**. **Offerte selezionate**, **Classificate** e
+**Con competenze** misurano cose diverse. Contribuiscono solo le offerte attive,
+non scadute, nell'ambito scelto. La categoria descrive la mansione, il settore
+l'azienda: un datore sanitario può assumere ingegneri o commerciali.
 
-### 8. Acquisizione Assistita
-Ambiente browser interattivo dedicato ai portali con protezione bot
-(Cloudflare, PerimeterX, Datadome, "Press & Hold"): avvia una finestra
-Chromium interattiva per qualsiasi portale career, supera una sola volta la
-verifica umana e SponsorScout prende il comando — paginazione automatica su
-tutte le pagine dei risultati e inserimento diretto nel database, registrato
-con gli stessi log di una scansione regolare (vedi [Scansione](#-scansione)).
+Trovi grafici a ciambella per mansione e settore, categoria dettagliata, competenze
+tecniche/strumenti, professionali/di dominio, trasversali e tabella sponsor per
+categoria. Scorri per i pannelli inferiori. Clic su spicchio/barra filtra la
+scheda; ripeti il clic o annulla la selezione per toglierlo. Il totale nella
+ciambella è la distribuzione mostrata, non necessariamente tutte le offerte del
+Pannello. Lo spicchio evidenziato è la selezione.
 
-<img src="assets/assisted_ingestion.png" alt="Acquisizione Assistita: finestra browser interattiva per la verifica umana con paginazione automatica e inserimento diretto nel database" width="860">
+**Aggiorna Approfondimenti** elabora input salvati nuovi o modificati;
+**Ricostruisci tutto** richiede conferma per rielaborare tutto. Durante il lavoro
+compaiono avanzamento e annullamento; i lotti già salvati restano. L'attesa
+**Waiting for ingestion; 0/0 processed** (localizzata in italiano) può indicare
+che la raccolta normale/assistita ha precedenza: non significa zero offerte.
+I grafici possono mostrare l'ultimo stato consolidato fino al termine del lavoro.
+Le schermate fornite con 193 e 213 righe non provano da sole un errore di conteggio:
+confronta filtri, stato attivo/scaduto e momento dell'aggiornamento.
+I benefit non sono requisiti professionali. Non è una statistica di tutto il mercato.
+
+<img src="assets/insights_dashboard_it.png" alt="Approfondimenti: quattro offerte dimostrative, categorie, settori, pannelli competenze distinti e aggiornamento" width="860">
+
+### 8. Acquisizione assistita
+
+Scegli una riga in coda oppure inserisci **Nome azienda / seed**, tipo di fonte e
+**URL carriera del portale**. Il pulsante principale attuale è **Raccogli /
+continua**. Avvia esplicitamente Chromium controllato dall'app. **Ferma** chiede
+l'arresto cooperativo conservando i dati già salvati. **Apri sito web** serve
+solo a consultare nel browser normale: non raccoglie offerte e non condivide
+cookie o sessioni con l'app. Selezionare una riga non avvia una scansione.
+
+La coda mostra azienda, URL, motivo/fase, stato e azione. Usa **Aggiorna coda**
+per ricaricarla e seleziona una riga per motivo completo ed esito più recente.
+In attesa, in corso, parziale e risolto sono stati del flusso, non prove di JD
+o paginazione complete. “40 offerte acquisite, 30 nuove e 10 aggiornate” è
+avanzamento live, non il totale finale. La schermata mostra la coda vuota e inattiva.
+
+**Opzioni avanzate** parte chiusa: contiene lotti salvati, filtro risolti, dettagli
+e riprese separate delle JD non lette e dell'elenco. La ripresa conserva l'ambito
+salvato e richiede evidenze di continuazione osservata. I comandi di verifica
+compaiono solo se richiesti dalla sessione attiva. Completi tu la verifica;
+Continua richiede una nuova ispezione, non risolve né aggira il controllo.
+**Il bug di verifica Manychat resta irrisolto**, anche se un altro portale funziona
+o una voce risulta parziale/terminata.
+
+<img src="assets/assisted_ingestion_it.png" alt="Acquisizione assistita inattiva: nome, tipo, URL, Raccogli / continua, Ferma, Apri sito web e coda" width="860">
 
 ---
 
@@ -1018,8 +1302,8 @@ con gli stessi log di una scansione regolare (vedi [Scansione](#-scansione)).
 
 ### Scansione completa
 Quella predefinita. **Scansiona Ora** (o **Riscansiona Aziende** nel Pannello)
-scansiona ogni azienda negli elenchi, perché una scansione parziale
-nasconderebbe in silenzio dei lavori che non hai chiesto.
+copre gli elenchi ATS e Career configurati. Usa Scansione Personalizzata
+per scegliere un ambito minore, con gli stessi controlli e la stessa qualità.
 
 ### Scansione personalizzata
 **Strumenti → Scansione Personalizzata** ti lascia scegliere:
@@ -1034,14 +1318,13 @@ completa, quindi la qualità dei risultati è identica: cambiano solo ambito
 e durata. Usala per riscanare le aziende che hai appena modificato. Le
 esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
 
-<img src="assets/custom_portal_selection.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
+<img src="assets/custom_portal_selection_it.png" alt="Custom Scan dialog: independent ATS and Career company selectors" width="780">
 
 ### Cosa fa una scansione
 1. **Bacheche ATS** — le aziende con un ATS noto vengono interrogate tramite
    l'API ufficiale della bacheca.
-2. **Pagine carriera** — ogni azienda viene esplorata anche sulla propria
-   pagina carriera, quindi le aziende con la sola pagina carriera non vengono
-   saltate. Le liste lunghe vengono lette pagina per pagina, seguendo i link
+2. **Pagine carriera** — vengono visitati i target Career abilitati; in una scansione
+   personalizzata le fasi ATS e Career si selezionano separatamente. Le liste lunghe vengono lette pagina per pagina, seguendo i link
    "pagina successiva" e "mostra altri". Nel percorso rapido una bacheca viene
    letta al massimo per 12 pagine (`SPONSORSCOUT_STATIC_MAX_PAGES`). Se ne
    restano altre, le offerte salvate sono indicate come **parziali**, non complete;
@@ -1049,7 +1332,8 @@ esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
 3. **Controllo link di categoria** — un link che porta a un elenco di reparto
    o categoria invece che a un vero annuncio (la pagina mostra altri link a
    lavori e nessun pulsante di candidatura) viene riconosciuto e scartato,
-   così nel database entrano solo gli annunci reali.
+   per limitare i falsi annunci; estrazione incompleta e metadati nei titoli
+   restano possibili e vanno controllati.
 4. **Pagine di dettaglio** — la scansione resta leggera (estrae titolo,
    località, evidenze di sponsorizzazione visto / trasferimento / Carta Blu UE
    ed esperienza, salvando il testo completo della JD in SQLite per
@@ -1061,11 +1345,12 @@ esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
    vengono rilevati subito senza bloccare la scansione, registrati come portali
    bloccati per l'Acquisizione Assistita e saltati per proseguire immediatamente
    sugli altri portali.
-6. I risultati vengono salvati nel database locale e compaiono subito; la
-   scheda Approfondimenti si aggiorna in background da SQLite a fine scansione.
+6. I risultati vengono salvati nel database locale. Le viste si aggiornano
+   in modo asincrono e quelle nascoste quando vengono aperte; Approfondimenti
+   può attendere la fine della raccolta prima di aggiornare i grafici.
 
-L'avanzamento è live (`ATS 12/46`, `Carriere 88/162`). Un'azienda senza
-posizioni aperte conta come completata.
+L'avanzamento dei portali è distinto dalle JD. Un target terminato può avere
+un esito parziale, vuoto o con errore: completamento non significa JD leggibili.
 
 ### Acquisizione assistita e portali con protezione bot
 **Le scansioni normali e personalizzate non aprono mai un browser interattivo
@@ -1074,8 +1359,10 @@ da **ATS e Career**, proseguono sugli altri portali e mostrano un unico avviso
 finale. La scheda **Acquisizione Assistita** contiene automaticamente gli URL
 con ambito, fonte/fase/motivo/stato, senza duplicati; la coda resta dopo il riavvio.
 
-Chromium si apre solo con **Carica e acquisisci** su una riga o **Avvia browser
-assistito e acquisisci**. Completi personalmente la verifica umana. Si esegue
+Chromium per la raccolta si apre esplicitamente con **Raccogli / continua**,
+l’azione di raccolta in coda o le riprese nelle **Opzioni avanzate**. La coda
+può conservare problemi di elenco o JD: leggi motivo/fase, senza chiamare
+CAPTCHA ogni errore. **Manychat resta irrisolto**. Completi personalmente la verifica umana. Si esegue
 un solo worker assistito: i controlli di scansione/ripresa e acquisizione si
 escludono a vicenda. Per un URL manuale scegli **Datore di lavoro diretto** o
 **Recruiter / agenzia**. Ferma conserva gli inserimenti riusciti. Limiti,
@@ -1142,7 +1429,7 @@ chiusura cooperativa conservano le righe salvate. Un timeout del rilevatore non
 significa che tu non abbia risolto. Un blocco elenco irrisolto non avvia altre
 attese/richieste JD automatiche; cache recente e verificata può essere riusata.
 
-Seleziona il portale (non **Load and Ingest**, che riparte da zero), controlla
+Seleziona il portale (non l’azione di raccolta, che avvia una raccolta nuova), controlla
 stesso DB/nome/URL esatto con filtri/hash, poi **Carica lotti salvati**. Scegli
 esplicitamente il run: un lotto completo precedente resta disponibile dopo uno
 parziale nuovo. Caricamento metadati in background solo su richiesta, non crawl
@@ -1160,7 +1447,7 @@ compatibilità v1/CSVschema3+ con cronologia abbinata. Conserva dati/scan_output
   Stato assente, segreto/oscurato, obsoleto, fuori ambito o solo widget vivo =
   errore chiaro, non ripresa inventata. Elenco completo = usare ripresa JD.
 
-CSV **schema5**/revisione **`20261025-visible-clearance-continuation-v3`** separa
+CSV **schema5**/revisione **`20261101-bounded-finishing-no-paste-v5`** separa
 status/titolo/URL/causa/errore/fase HTTP e browser. Senza tentativoHTTP i campi
 restano0/vuoti; `jd_defer_kind` distingue blocco accesso da budget numerico/
 temporale. Prime/ultime evidenze distinte e contatori esatti conservano i blocchi
@@ -1213,7 +1500,7 @@ non posizioni che potrebbero spostare le offerte nella colonna quarantena.
 
 
 ### Revisione esplicita di paesi e azioni non lavorative
-Apri **Strumenti → Esamina qualità dati**, inserisci l'eventuale azienda e premi
+Apri **Strumenti → Manutenzione e diagnostica avanzate → Esamina qualità dati**, inserisci l'eventuale azienda e premi
 **Anteprima**. La tabella mostra modifiche proposte, record protetti e luoghi
 ancora ambigui. **Applica modifiche esaminate** richiede conferma e salva prima
 backup SQLite completo/SHA/audit nel worker. Mai all'avvio o da Scan.
@@ -1225,7 +1512,8 @@ storici restano. Anteprima superata/scrittura esterna/errore audit annullano
 l'operazione. Backup in `maintenance_backups/` accanto al DB: chiudi l'app e
 conserva il DB attuale prima di ripristinare; non sostituire un SQLite aperto.
 
-Il dataset originale propone165paesi sicuri +1esclusione e lascia42luoghi
+**Esempio storico offline, non anteprima attuale:** un dataset precedente
+proponeva 165 paesi sicuri, 1 esclusione e lasciava 42 luoghi
 ambigui se non ci sono conflitti manuali/candidature. Non dedurli dall'host:
 l'acquisizione nuova può leggere il paese esplicito dell'indirizzo JobPosting,
 con cookie della sessione e budget limitato, dopo la raccolta delle liste.
@@ -1283,10 +1571,17 @@ Contiene `sponsorscout.db` (lavori, aziende, candidature, cronologia scansioni),
 `seeds/` (i tuoi elenchi modificabili), `locale.json` (lingua) e i log grezzi
 in `scan_output/`.
 
-Copia `sponsorscout.db` per salvare tutto. Puoi cambiare la posizione con la
-variabile d'ambiente `SPONSORSCOUT_DATA_DIR` (o `SPONSORSCOUT_DB_PATH`).
+Chiudi l'app e salva **l'intera cartella dati**, inclusi seed, documenti e log.
+Copiare solo un database aperto può perdere dati nei file WAL/SHM. Imposta
+`SPONSORSCOUT_DATA_DIR` o `SPONSORSCOUT_DB_PATH` prima dell'avvio; un database
+separato richiede anche un backup della sua posizione.
 
 ### Disinstallazione
+
+**Uso da sorgenti/venv:** eliminare sorgenti o venv non esegue un programma di
+disinstallazione. Conserva la cartella dati separata. Gli avvisi sotto riguardano
+i pacchetti e i relativi programmi di disinstallazione.
+
 
 L'installer Windows, il pacchetto Linux `.deb` e il pacchetto Linux `.rpm`
 rimuovono durante la disinstallazione tutti i dati locali di SponsorScout:
@@ -1332,7 +1627,7 @@ scrive un avviso e continua a funzionare, ma le pagine carriera renderizzate via
 JavaScript restituiscono 0 lavori. Installalo una volta con
 `python -m playwright install chromium`. Per riattivare il comportamento
 automatico di prima imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1`: e disattivato
-perche un download di ~130 MB puo bloccare la scansione per minuti. Le build
+perche un grande download del browser puo bloccare la scansione per minuti. Le build
 installate non ne risentono: il browser e incluso dentro `.exe`, `.deb` e
 `.rpm`.
 
@@ -1342,24 +1637,27 @@ un URL errato selezionato viene registrato come errore della singola azienda,
 senza bloccare le altre. Correggilo in **Gestione Dati**. Il pulsante di
 scansione non riscrive il seed e non cambia automaticamente gli URL.
 
-**Alcune aziende non hanno restituito lavori.** Potrebbero non avere posizioni
-aperte (`EMPTY` nel log) oppure bloccare temporaneamente l'accesso automatico:
-riprova più tardi. Nulla viene perso in silenzio.
+**Alcune aziende non hanno restituito offerte.** Controlla il log e il CSV
+degli errori del seed. `empty` **non dimostra** che il portale sia senza
+posizioni: potrebbe aver restituito una risposta diversa, non aver mostrato le
+card o aver presentato un errore esplicito del server (se osservato, viene
+registrato come `error`). Cinque portali Career con offerte visibili sono
+ancora in analisi; vedi [issues.md](issues.md). Non dedurre una protezione
+anti-bot da un caricamento fallito e non aggirare eventuali verifiche.
 
 **La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
 SponsorScout dimensiona i browser in base a CPU/RAM, gira con priorità
 inferiore al normale e blocca immagini/font/media. Il Pannello resta
 utilizzabile. Non devi aspettare tutto: premi **Pausa** per sospendere la
-scansione dove si trova (nulla va perso, i browser attendono) e clicca di nuovo
-lo stesso pulsante per continuare subito. **Ferma** termina l'esecuzione
+scansione a un punto cooperativo (i dati già salvati restano) e clicca di nuovo
+lo stesso pulsante per richiedere la continuazione. **Ferma** termina l'esecuzione
 mantenendo tutto ciò che è stato trovato, e **Riprendi** più tardi continua le
 aziende non finite, anche dopo aver riavviato l'app.
 
 **Un portale richiede la verifica umana.** Le scansioni normali/personalizzate
 terminano senza aprire browser visibili. Leggi l'unico avviso finale, poi usa
 la coda persistente in **Acquisizione Assistita** quando vuoi. Solo il comando
-esplicito apre Chromium per la verifica e salva le offerte riuscite. **Apri
-nel browser esterno** nella stessa scheda è un'azione manuale separata.
+esplicito apre Chromium per la verifica e salva le offerte riuscite. **Apri sito web** nella stessa scheda è un'azione manuale separata.
 
 **Approfondimenti è lento.** La prima elaborazione delle JD complete esistenti
 può richiedere tempo: elaborate/totali e copertura confermata mostrano i
@@ -1381,12 +1679,49 @@ digita un pattern come `(backend|platform).*engineer`. Non distingue
 maiuscole/minuscole; un pattern non valido mostra un avviso e ripiega su una
 ricerca normale.
 
-**Qualcosa esce dal mio computer?** No. L'unico traffico in uscita sono gli
-annunci lavori che hai chiesto di scaricare.
+**Qualcosa esce dal mio computer?** Le letture contattano siti e servizi
+esterni, che ricevono i normali dati di rete/richiesta. L’app non carica
+automaticamente CV o note in un servizio IA. Se incolli altrove gli appunti,
+condividi quel testo. Apri sito web usa rete e sessione del browser esterno.
 
 ---
 
 ## 🏗 Compilare dai Sorgenti
+
+### Eseguire con Python + venv (senza compilare un binario)
+
+Dalla cartella estratta con `pyproject.toml`, usando Python 3.10 o successivo:
+
+```powershell
+# Windows PowerShell, senza bisogno di attivare l'ambiente
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m sponsorscout.main
+```
+
+```bash
+# Linux
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m playwright install chromium
+.venv/bin/python -m sponsorscout.main
+```
+
+Su Linux possono servire librerie di sistema Chromium: usa
+`.venv/bin/python -m playwright install --with-deps chromium` sui sistemi supportati
+(può richiedere privilegi amministrativi). Servono anche librerie native Qt e una
+sessione desktop. Per la diagnostica usa lo stesso interprete venv con
+`-m sponsorscout.main --self-check` o `--self-check-browser`. Non usare
+`python -m sponsorscout`: manca `__main__.py`. Dopo aver spostato i sorgenti,
+ripeti `pip install -e .` nell'ambiente corretto, senza eliminare il database.
+
+### Pacchetti nativi e test facoltativi
+
+I passaggi di compilazione sotto non servono per avviare l'app dal terminale.
+
 
 ```powershell
 python -m venv venv
@@ -1396,9 +1731,8 @@ pip install -e ".[dev]"          # pytest, per la suite di test
 python -m playwright install chromium
 ```
 
-Se salti `playwright install chromium` l'app parte comunque, ma le pagine
-carriere renderizzate via JavaScript restituiscono 0 lavori. Non scarica da solo
-~130 MB; imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` per riattivarlo.
+Se salti `playwright install chromium` l’app può partire, ma le letture
+che richiedono il browser possono fallire o non trovare offerte: controlla l’errore. Non scarica il browser da solo; imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` per riattivarlo.
 
 **Installer Windows:**
 ```powershell
@@ -1449,47 +1783,24 @@ python -m pytest sponsorscout/tests
 ---
 
 ## Verifica e registro fix
-**Correzione attuale approvata — 25 ottobre 2026, v0.2.0 (I7):** visibilità
-corrente, controlli umani, lotti selezionabili e ripresa elenco da stato osservato.
-Il codice è implementato; i risultati correnti misurati sono nel
-[registro bilingue](tools/verification_2026_10_24.md).
 
-- Ultimo run330:260nuovi/70aggiornati/33pagine poi pagina34bloccata; l’utente
-  ha risolto tutte3verifiche. Il timeout del rilevatore non lo smentisce.
-  Ricerca370=110+330−70, non prova cancellazioni. Nessuna correzione silenziosa
- 309NL/21paesiambigui o conflitto Senegal/Rotterdam; originali invariati.
-- Nuovi test permanenti per DOM visibile, tre/late/fallite verifiche, controlli,
-  diagnostica separata, scope580→330, zeroJDdopo blocco, ripresa osservata34,
-  cache e dati manuali/inattivi/esclusi. Risultati misurati nel registro linkato.
-- Nessun cambio detector/ML/tassonomia/paesi/seed/12fallback/browsernormale;
-  nienteRust/GPU/bypass/probeglobale/benchmark30k ripetuto.
+La revisione finale confronta documentazione, schermate e sorgenti attuali delle
+otto schede, inclusi i risultati JD finali e i controlli EN/IT. Vedi
+[Changelogs/final_review/report.md](Changelogs/final_review/report.md) per hash,
+inventario pulizia ed esiti freschi dei test. Risultato: **2.312 test superati / 0 fallimenti / 0 errori / 0 saltati, in 102 moduli**.
 
-**Verifica I6 precedente (storica, non certificazione I7):**
+La verifica Manychat resta **irrisolta** in [issues.md](issues.md). I vecchi conteggi
+I6/I7/E2a/pulizia erano di revisioni precedenti, non certificano questo albero.
+Il README precedente resta nel backup storico del workspace; le vecchie note
+non sono garanzie sulle funzioni attuali. Nessuna nuova scansione di tutti i seed,
+build nativa Windows, prova su vecchio PC fisico o verifica universale dei siti.
 
-- **53moduli isolati:1.063superati/3baseline invariati/4salti legacy/0errori
-  di raccolta**, hash e uscite native verificati. Non tutta la suite verde.
-- **32nuovicasi:22unit+10Chromium locali con finestra completa.** HTTP200Client
-  Challenge ma JDleggibili nel browser oltre12;580/580JD/58pagine/una richiesta
-  HTTP e una scheda dettagli riusata. Yes/No/Unknown/BlueCard→CSV→DB→Ricerca.
-  Anche errori/retry, nuovo blocco/verifica manuale, budget, Stop→ripresa,
-  chiusura finestra/scheda e redirect ad altra offerta.
-- Ripresa nativa/CSVprecedente senza rileggere liste, allargare filtri o
-  ricreare esclusioni. Evidenze recenti e cattura originale preservate;
-  nessuna riscrittura cronologia o browser normale automatico.
-- Runutente580ID/470nuovi+110aggiornati; tutti110URLnormali presenti. Totale
- 580/58pagine riconciliato ma11JDlette/1errore/568vuote/12browser: difetto reale
-  del precedente limite/rilevamento. Nessun verdetto datore inventato.
-- Heartbeatlocale10ms:massimo**90.2ms**. Restano test precedenti31supporto,
- 114paesi/terminale,28reattività, replayoriginali/ENIT/gate/pacchetti.
-- Detector/ML/seed/geografia/manuali/identità e0.2.0/Essentials invariati.
-  NienteRust/GPU/nuovedipendenze/bypass/probeglobale/benchmark30k/repair automatico.
-- **Nessun portale esterno vivo testato dall'agente.** Replaydatiutente e
-  Chromiumlocalhost, non certificazioneWindows/CAPTCHA/vendor/JDvivecomplete.
+---
 
 ## 📋 Requisiti
 
 - Python 3.10 o successivo (per eseguire da sorgenti; gli installer non richiedono nulla)
-- Runtime: **PySide6-Essentials** (non il meta-pacchetto completo), **requests**, **playwright** (`requirements.txt`)
+- Runtime: **PySide6-Essentials** (non il meta-pacchetto completo), **requests**, **truststore**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`); `rpmbuild` per il `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)

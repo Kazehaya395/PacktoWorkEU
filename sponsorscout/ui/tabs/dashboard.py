@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from sponsorscout.db import database as db
 from sponsorscout.ui.async_load import AsyncLoader
-from sponsorscout.i18n import _
+from sponsorscout.i18n import _, set_table_header_labels
 
 
 def _stat_card(title_key: str):
@@ -31,7 +31,7 @@ def _stat_card(title_key: str):
 
 def _make_table(headers: list[str]) -> QTableWidget:
     table = QTableWidget(0, len(headers))
-    table.setHorizontalHeaderLabels(headers)
+    set_table_header_labels(table, headers)
     table.verticalHeader().setVisible(False)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -54,7 +54,7 @@ class DashboardTab(QWidget):
     # FIX UI-3 (P9): a company that returned nothing was invisible here --
     # 97 of 208 in run 20261003T233023, 58 minutes of scanning with nothing
     # to show for it. It now has a card and a table of its own.
-    CARD_KEYS = ("Total Companies", "Verified Jobs", "Sponsored Jobs",
+    CARD_KEYS = ("Total Companies", "Saved Jobs", "Sponsored Jobs",
                  "Remote Jobs", "EU Blue Card", "Applications",
                  "No Jobs (last run)")
 
@@ -159,7 +159,7 @@ class DashboardTab(QWidget):
                            if _hybrid else str(_remote))
             mapping = {
                 "Total Companies": stats.get("companies", 0),
-                "Verified Jobs": stats.get("verified_jobs", 0),
+                "Saved Jobs": stats.get("verified_jobs", 0),
                 "Sponsored Jobs": stats.get("sponsored_jobs", 0),
                 "Remote Jobs": remote_text,
                 "EU Blue Card": stats.get("eu_blue_card_jobs", 0),
@@ -224,6 +224,9 @@ class DashboardTab(QWidget):
 
     # ── i18n ─────────────────────────────────────────────────────────────────
     def _set_card_tooltips(self):
+        self._value_labels["Saved Jobs"].setToolTip(_(
+            "Saved active job records, not verified full descriptions or sponsorship. "
+            "See the Scanner JD outcomes for readable, blocked and unattempted descriptions."))
         self._value_labels["Sponsored Jobs"].setToolTip(_(
             "Counts jobs with an explicit Yes visa-sponsorship verdict. "
             "Unknown is not No; unread JDs stay Unknown."))
@@ -241,9 +244,9 @@ class DashboardTab(QWidget):
         for key in self.CARD_KEYS:
             card = self._value_labels[key].parentWidget()
             card.findChild(QLabel, "CardTitle").setText(_(key))
-        self.companies_table.setHorizontalHeaderLabels(
+        set_table_header_labels(self.companies_table, 
             [_("Company"), _("Country"), _("Jobs"), _("Max Sponsor Score")])
         self._set_card_tooltips()
-        self.country_table.setHorizontalHeaderLabels([_("Country"), _("Jobs")])
-        self.empty_table.setHorizontalHeaderLabels(
+        set_table_header_labels(self.country_table, [_("Country"), _("Jobs")])
+        set_table_header_labels(self.empty_table, 
             [_("Company"), _("Provider"), _("Why")])

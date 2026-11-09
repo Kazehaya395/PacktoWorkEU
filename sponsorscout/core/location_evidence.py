@@ -54,3 +54,18 @@ def apply_row_geography(row):
     row['Job Location']=loc or 'Unknown'
     row['Job Country']=country or 'Unknown'
     return row
+
+
+def detail_location(existing, incoming, country='', source=''):
+    """Country-only JD metadata must not erase a compatible observed place.
+
+    Preserve only geography already supported by this posting, never seed/HQ
+    hints or conflicting/ambiguous countries. A more specific JD place wins.
+    """
+    from sponsorscout.core.place_index import explicit_country_name
+    observed,observed_country=observed_geography(existing,source=source)
+    incoming=str(incoming or '').strip()
+    if (incoming and country and observed and observed_country==country
+            and explicit_country_name(incoming,allow_code=True)==country):
+        return observed
+    return incoming

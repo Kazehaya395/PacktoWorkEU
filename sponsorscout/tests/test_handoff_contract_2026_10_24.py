@@ -226,7 +226,7 @@ def test_live_language_switch_preserves_inputs_filters_and_idle_workers(monkeypa
             assert insights.active_pie_filter==('category','Backend Engineering')
             assert assisted._worker is None and insights._insights_worker is None
             assert assisted.portals_table.rowCount()==1
-            assert assisted.launch_btn.text()==i18n._('Launch Assisted Browser and Ingest')
+            assert assisted.launch_btn.text()==i18n._('Collect / continue')
             assert insights.rebuild_btn.text()==i18n._('Rebuild all')
             assert assisted.portals_table.horizontalHeaderItem(2).text()==i18n._('Reason / Phase')
         assert not launches

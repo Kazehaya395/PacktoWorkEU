@@ -419,13 +419,20 @@ def test_api_jd_is_reused_even_when_sponsorship_is_unknown(monkeypatch):
 
 def test_detail_http_403_opens_breaker_after_two_requests(monkeypatch):
     import urllib.error
+    import io
+    # Only a response with actual challenge evidence closes both transports.
     scanner = career_mod.CareerPortalScanner()
+    # Measure the two-completed-response threshold without an already-in-flight
+    # third request racing it. Parallel/default-host bounds are tested separately.
+    from sponsorscout.scanning.career.http_schedule import HttpSchedule
+    scanner._http_schedule = HttpSchedule(total=3, per_host=1)
     _no_disk_jd_cache(monkeypatch)
     requests = []
 
     def forbidden(req, **kw):
         requests.append(req.full_url)
-        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+        wall = b'<title>Just a moment...</title><h1>Verify you are human</h1><div id="cf-challenge-running"></div>'
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(wall))
 
     monkeypatch.setattr(career_mod.urllib.request, "urlopen", forbidden)
     monkeypatch.setattr(scanner, "_fetch_jd_text_browser", lambda *a, **kw: pytest.fail("never browser-retry a blocked HTTP URL"))
@@ -488,7 +495,7 @@ def test_real_assisted_challenge_prompts_and_does_not_reload_cleared_listing(mon
     messages = []
     assert bp._recover_blank_page(page, page.url, 43, progress_cb=messages.append) == "cleared"
     assert foreground == [True]
-    assert "Action needed" in messages[0]
+    assert "Verification pending on page 43" in messages[0]
 
 
 def test_paging_owns_its_paths_and_rejects_cross_origin_or_blog_links():
@@ -544,6 +551,9 @@ def test_ajax_wait_does_not_accept_changed_url_with_stale_cards(monkeypatch):
         def wait_for_load_state(self, *a, **kw):
             pass
     page = Page()
+    # The signature now uses the admitted identity census, not raw evaluate
+    # strings. Isolate the waiting loop here; real census/AJAX has E2E tests.
+    monkeypatch.setattr(bp, "_first_listing_signature", lambda p:p.evaluate(None))
     assert bp._wait_for_page_advance(page, "https://board.example/jobs?page=26", "old")
     assert page.reads == 4
     assert clock[0] >= 3.0  # poll for the real swap, then keep the polite dwell
@@ -736,7 +746,7 @@ def test_assisted_harvest_reads_all_61_pages_despite_a_reserve_and_human_challen
     monkeypatch.setattr(session_details, 'time', SimpleNamespace(monotonic=real_time.monotonic,sleep=lambda s: real_time.sleep(min(s,0.002))))
     def progress(message):
         messages.append(message)
-        if "Action needed" in message:
+        if "Verification pending on page" in message:
             # A synthetic human action on our own fixture, not automatic
             # solving/bypassing of a third-party challenge.
             pages[0].locator("#human").click()
@@ -754,7 +764,7 @@ def test_assisted_harvest_reads_all_61_pages_despite_a_reserve_and_human_challen
         assert "last page reached" in bp.LAST_INGESTION_REPORT["stop_reason"]
         assert visits[27] == 2  # retry the denied page; never skip it or wait 180 s
         assert visits[43] == 2  # synthetic human clears it; no redundant reload over it
-        assert any("Action needed" in m for m in messages)
+        assert any("Verification pending on page" in m for m in messages)
         assert any("page 61" in m for m in messages)
         assert sum(ms >= 6000 for ms in waits) == 3  # breathers on pages 20, 40, 60
         for artifact in outputs.glob("*.csv"):
