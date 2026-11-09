@@ -1,5 +1,0 @@
-Shopify
-Atlassian
-Doctolib
-Zendesk
-Qonto
