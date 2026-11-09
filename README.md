@@ -1,3 +1,5 @@
+<img src="sponsorscout/data/sponsorscout.png" alt="SponsorScout" width="420">
+
 # SponsorScout
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
