@@ -1,6 +1,0 @@
-name,careers_url,provider,board_slug,source_type,target_country,scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes
-Poste Italiane,https://carriere.posteitaliane.it/en/sites/CX_3001/jobs?mode=location,oracle,0,direct_employer,Global,global,Logistics/Services,25,60,70,0
-Manychat,https://careers.manychat.com/positions,auto,0,direct_employer,Spain,job_location,Unknown,0,0,0,added 2026-09 batch; scores unset
-Doctolib,https://careers.doctolib.com/jobs/,auto,0,direct_employer,Global,global,HealthTech,80,85,55,0
-Personio,https://www.personio.com/about-personio/careers/,auto,0,direct_employer,Global,global,HR Tech,80,90,65,0
-Tenth Revolution Group,https://www.tenthrevolution.com/jobs/?show_results=1&query=&location=&salary_from=&salary_to=&currency_code=,auto,0,recruiter,Global,global,Recruitment,70,85,35,formerly Nigel Frank; existing 'Nigel Frank' row uses nigelfrank.com

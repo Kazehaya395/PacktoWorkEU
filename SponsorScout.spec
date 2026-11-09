@@ -1,28 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
-from pathlib import Path
 
 datas = []
-binaries = []
 hiddenimports = ['greenlet', 'pyee']
 datas += collect_data_files('sponsorscout')
 hiddenimports += collect_submodules('sponsorscout')
 hiddenimports += collect_submodules('PySide6')
-# The custom hook collects the complete driver but excludes .local-browsers.
-hiddenimports += collect_submodules('playwright')
 
 
 a = Analysis(
     ['sponsorscout/main.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[str(Path(SPECPATH) / 'build_hooks')],
+    hookspath=['build_hooks'],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas', 'PIL', 'bs4', 'lxml', 'tkinter', 'pytest', 'PySide6.QtQuick', 'PySide6.QtQuickWidgets', 'PySide6.QtQuickControls2', 'PySide6.QtQuickTest', 'PySide6.QtQml', 'PySide6.QtQmlFeatures', 'PySide6.QtDesigner', 'PySide6.QtHelp', 'PySide6.QtSql', 'PySide6.QtSvg', 'PySide6.QtSvgWidgets', 'PySide6.QtOpenGL', 'PySide6.QtOpenGLWidgets', 'PySide6.QtUiTools', 'PySide6.QtXml', 'PySide6.QtTest', 'PySide6.QtConcurrent'],
+    excludes=['pandas', 'PIL', 'bs4', 'lxml', 'tkinter', 'pytest', 'PySide6.QtQuick', 'PySide6.QtQuickWidgets', 'PySide6.QtQuickControls2', 'PySide6.QtQuickTest', 'PySide6.QtQml', 'PySide6.QtQmlFeatures', 'PySide6.QtDesigner', 'PySide6.QtHelp', 'PySide6.QtSql', 'PySide6.QtSvg', 'PySide6.QtSvgWidgets', 'PySide6.QtOpenGL', 'PySide6.QtOpenGLWidgets', 'PySide6.QtUiTools', 'PySide6.QtXml', 'PySide6.QtTest', 'PySide6.QtConcurrent', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets', 'PySide6.QtPdf', 'PySide6.QtPdfWidgets', 'PySide6.QtQuick3D'],
     noarchive=False,
     optimize=0,
 )
@@ -44,6 +40,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['sponsorscout/data/sponsorscout.ico'],
 )
 coll = COLLECT(
     exe,
