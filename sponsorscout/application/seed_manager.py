@@ -64,7 +64,9 @@ SUPPORTED_ATS_TYPES = (
 )
 
 SCOPE_POLICIES = ("global", "seed_url", "job_location")
-SOURCE_TYPES = ("direct_employer", "recruiter")
+# Preserve the government category already present in the bundled Career seed.
+# The editor uses this same enum; collectors retain the source value unchanged.
+SOURCE_TYPES = ("direct_employer", "recruiter", "government")
 
 
 def _bundled_dir() -> Path:
@@ -144,6 +146,9 @@ def _sync_to_revision(log_fn=print) -> dict:
         u = read_seed_rows(user)
         backup.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(user, backup / user.name)
+        from sponsorscout.services.data_ownership import register_artifacts, register_empty_directory
+        register_artifacts(backup / user.name)
+        register_empty_directory(backup.parent)
         bundled_list = [r for r in b["rows"] if not is_comment_row(r) and r.get("name")]
         name_counts = {}
         for r in bundled_list:
@@ -203,6 +208,24 @@ def merge_bundled_seeds(log_fn=print) -> dict:
     Returns {"ats": N, "career": N} = rows added + rows repaired.
     """
     ensure_user_seeds()
+    merge_marker = SEEDS_DIR / ".seed_merged_revision"
+    def _seed_stamp() -> str:
+        parts = [SEED_REVISION]
+        for p in (bundled_ats_path(), bundled_career_path(), user_ats_path(), user_career_path()):
+            st = p.stat()
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+        return "|".join(parts)
+
+    try:
+        if (
+            merge_marker.exists()
+            and user_ats_path().exists()
+            and user_career_path().exists()
+            and merge_marker.read_text(encoding="utf-8").strip() == _seed_stamp()
+        ):
+            return {"ats": 0, "career": 0}
+    except OSError:
+        pass
     added = {"ats": 0, "career": 0}
     _synced = _sync_to_revision(log_fn=log_fn)
     for _k in added:
@@ -244,6 +267,10 @@ def merge_bundled_seeds(log_fn=print) -> dict:
         added[label] += len(new_rows)
         log_fn(f"Seed update: added {len(new_rows)} new {label} "
                f"companies from bundled seeds")
+    try:
+        merge_marker.write_text(_seed_stamp(), encoding="utf-8")
+    except OSError:
+        pass
     return added
 
 

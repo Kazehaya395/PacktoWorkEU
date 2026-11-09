@@ -43,14 +43,12 @@ def test_hint_and_seed_headers_follow_language():
         set_locale("en")
         tab = _make_tab()
         assert "Manage the source URLs" in tab._hint.text()
-        # The grid shows the FILE's own header: raw column names — they are
-        # the data I/O contract, so no "_"-free translated labels any more.
+        # Localized captions are display-only; CSV keys remain canonical.
         en_headers = _headers(tab.ats_editor)
-        assert "careers_url" in en_headers
+        assert "Careers URL" in en_headers
         assert tab.ats_editor.count_label.text().endswith("companies")
 
-        # Switch to Italian: hint, buttons and tab captions must follow;
-        # the raw headers must NOT change.
+        # Switch captions without changing the underlying CSV column schema.
         set_locale("it")
         tab.retranslate()
         assert tab._hint.text() == LANGUAGES["it"][
@@ -62,7 +60,9 @@ def test_hint_and_seed_headers_follow_language():
         assert tab.ats_editor.save_btn.text() == it["Save to CSV"]
         assert tab.ats_editor.add_btn.text() == it["Add\u2026"]
         assert tab._tabs.tabText(0) == it["ATS portals"]
-        assert _headers(tab.ats_editor) == en_headers
+        assert _headers(tab.ats_editor) != en_headers
+        assert it["Careers URL"] in _headers(tab.ats_editor)
+        assert "careers_url" in tab.ats_editor.columns
 
         # …and back to English restores the hint.
         set_locale("en")

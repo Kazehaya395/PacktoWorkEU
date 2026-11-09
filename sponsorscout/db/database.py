@@ -56,6 +56,12 @@ _user_dir_ready = False
 def get_connection(db_path=DB_PATH):
     global _user_dir_ready
     db_path = Path(db_path).expanduser()
+    from sponsorscout.core.db_tasks import current_database_task
+    task = current_database_task()
+    if task is not None:
+        conn = task.connect(db_path)
+        conn.create_function("REGEXP", 2, _regexp_like)
+        return conn
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # ensure_user_data_dir() is per-process work; running it on EVERY
     # connection open added filesystem syscalls to every query. Tests that
@@ -103,6 +109,13 @@ def _apply_migrations(conn):
         # and the auto/manual provenance flag protecting user corrections.
         ("raw_location", "ALTER TABLE jobs ADD COLUMN raw_location TEXT DEFAULT ''"),
         ("country_source", "ALTER TABLE jobs ADD COLUMN country_source TEXT DEFAULT 'auto'"),
+        ("category", "ALTER TABLE jobs ADD COLUMN category TEXT DEFAULT 'Other'"),
+        ("domain", "ALTER TABLE jobs ADD COLUMN domain TEXT DEFAULT 'Unknown'"),
+        ("posting_key", "ALTER TABLE jobs ADD COLUMN posting_key TEXT DEFAULT ''"),
+        ("insights_dirty", "ALTER TABLE jobs ADD COLUMN insights_dirty INTEGER NOT NULL DEFAULT 1"),
+        ("insights_generation", "ALTER TABLE jobs ADD COLUMN insights_generation INTEGER NOT NULL DEFAULT 0"),
+        ("insights_version", "ALTER TABLE jobs ADD COLUMN insights_version TEXT NOT NULL DEFAULT ''"),
+        ("insights_updated_at", "ALTER TABLE jobs ADD COLUMN insights_updated_at TEXT"),
     ]
     for col, sql in migrations:
         if col not in existing_cols:
@@ -169,6 +182,43 @@ def _apply_migrations(conn):
             message TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_scan_events_run ON scan_events(run_id);
+        CREATE TABLE IF NOT EXISTS job_terms (
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            term TEXT NOT NULL,
+            PRIMARY KEY (job_id, kind, term)
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_terms_kind_term ON job_terms(kind, term);
+        CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category);
+        CREATE INDEX IF NOT EXISTS idx_jobs_domain ON jobs(domain);
+        CREATE INDEX IF NOT EXISTS idx_jobs_posting_key ON jobs(posting_key);
+        CREATE INDEX IF NOT EXISTS idx_jobs_insights_pending ON jobs(insights_dirty, insights_version, id);
+        CREATE TRIGGER IF NOT EXISTS jobs_insights_input_changed
+        AFTER UPDATE OF title, location, experience_level, description, industry,
+                        support_evidence, company ON jobs
+        WHEN OLD.title IS NOT NEW.title OR OLD.location IS NOT NEW.location
+          OR OLD.experience_level IS NOT NEW.experience_level
+          OR OLD.description IS NOT NEW.description OR OLD.industry IS NOT NEW.industry
+          OR OLD.support_evidence IS NOT NEW.support_evidence OR OLD.company IS NOT NEW.company
+        BEGIN
+            UPDATE jobs SET insights_dirty=1, insights_generation=insights_generation+1
+            WHERE id=NEW.id;
+        END;
+        CREATE TABLE IF NOT EXISTS blocked_portals (
+            url_key TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            seed_name TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            run_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            pages INTEGER NOT NULL DEFAULT 0,
+            jobs INTEGER NOT NULL DEFAULT 0,
+            result TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_blocked_portals_status ON blocked_portals(status, last_seen_at);
     """)
 
     # ── Legacy tables removed with the Tkinter→PySide6 restart ──────────────
@@ -189,6 +239,23 @@ def _apply_migrations(conn):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_remote ON jobs(remote_type)")
         except Exception as exc:
             logger.exception("Failed to create idx_jobs_remote: %s", exc)
+
+    # Aggregate indexes for the Insights panels, added on every launch (IF NOT
+    # EXISTS) so an existing database gets them without a versioned migration.
+    for _stmt, _guard in (
+        ("""CREATE INDEX IF NOT EXISTS idx_jobs_active_insights ON
+                jobs(domain, category, country, source_subtype, run_id,
+                     visa_sponsorship, relocation_support, sponsorship_score)
+                WHERE verified_active = 1 AND is_expired = 0""", "category"),
+        ("""CREATE INDEX IF NOT EXISTS idx_job_terms_term_kind_job ON
+                job_terms(term, kind, job_id)""", None),
+    ):
+        if _guard is not None and _guard not in existing_cols:
+            continue
+        try:
+            conn.execute(_stmt)
+        except Exception as exc:
+            logger.debug("Insights index unavailable (%s): %s", _stmt.split()[5], exc)
 
     if "experience_level" in existing_cols:
         try:
@@ -226,6 +293,20 @@ def _repair_sponsorship_scores(conn):
     conn.execute("UPDATE jobs SET sponsorship_score = 0 "
                  "WHERE source_type = 'verified' AND visa_sponsorship = 'N' "
                  "AND sponsorship_score <> 0")
+    for table,column,definition in (
+        ('scan_runs','targets_partial','INTEGER NOT NULL DEFAULT 0'),
+        ('scan_runs','jobs_merged','INTEGER NOT NULL DEFAULT 0'),
+        ('scan_log','jobs_retained','INTEGER NOT NULL DEFAULT 0'),
+        ('scan_log','jobs_merged','INTEGER NOT NULL DEFAULT 0'),
+        ('scan_log','attempts','INTEGER NOT NULL DEFAULT 1'),
+        ('blocked_portals','source_subtype',"TEXT NOT NULL DEFAULT 'direct'"),
+        ('blocked_portals','access_scope',"TEXT NOT NULL DEFAULT 'listing'"),
+    ):
+        try:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        except sqlite3.OperationalError as exc:
+            if 'duplicate column name' not in str(exc):
+                raise
     conn.commit()
 
 
@@ -297,6 +378,10 @@ def list_run_ids(db_path):
     finally:
         if conn:
             conn.close()
+
+
+# One Yes verdict, defined once for every query that filters or displays it.
+_VERDICT_YES_SQL = "LOWER(TRIM(COALESCE({0}, ''))) IN ('y', 'yes', 'true', '1')"
 
 
 def search_jobs(db_path, title="", company="", location="", country="All", source_type="All",
@@ -379,13 +464,10 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
         _add_text_filter("company", company)
         _add_text_filter("location", location)
         if country and country != "All":
-            # Match jobs whose country matches the filter, or remote roles
-            # that are explicitly EU/EMEA remote and therefore relevant to the
-            # selected country.
-            query += (
-                " AND (country = ? "
-                "OR (country = '' AND remote_type IN ('remote_eu','remote_emea')) )"
-            )
+            # Country means the posting's observed country. Unknown EU/EMEA
+            # eligibility is not a match for Brazil (or ANY implicit country).
+            # Work arrangement is independently selectable with Remote.
+            query += " AND country = ?"
             params.append(country)
         if source_type and source_type != "All":
             query += " AND source_type = ?"
@@ -395,8 +477,12 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
         if active_only:
             query += " AND is_expired = 0"
         if sponsorship_only:
-            # Same definition as the dashboard: a Yes verdict, not a score cut-off.
-            query += " AND visa_sponsorship = 'Y'"
+            # Same definition as the dashboard AND the same accepted spellings as
+            # the cell in the table (search._verdict_cell): a Yes verdict, not a
+            # score cut-off. `= 'Y'` alone hid a row whose detector wrote 'yes'
+            # while its cell displayed "Sponsor = Y", so the checkbox and the
+            # column disagreed about the same job.
+            query += (" AND " + _VERDICT_YES_SQL.format("visa_sponsorship"))
         if remote_filter and remote_filter != "All":
             if remote_filter == "Remote EU":
                 query += " AND remote_type = 'remote_eu'"
@@ -822,7 +908,7 @@ def finish_scan_run(db_path, run_id: str, targets_ok: int = 0,
                     targets_empty: int = 0, targets_error: int = 0,
                     jobs_found: int = 0, jobs_quarantined: int = 0,
                     jobs_duplicates: int = 0, status: str = "completed",
-                    error: str = ""):
+                    error: str = "", targets_partial: int = 0,jobs_merged: int = 0):
     conn = None
     try:
         conn = get_connection(db_path)
@@ -830,11 +916,12 @@ def finish_scan_run(db_path, run_id: str, targets_ok: int = 0,
             """UPDATE scan_runs SET
                  targets_ok=?, targets_empty=?, targets_error=?,
                  jobs_found=?, jobs_quarantined=?, jobs_duplicates=?,
+                 targets_partial=?,jobs_merged=?,
                  finished_at=CURRENT_TIMESTAMP, status=?, error=?
                WHERE run_id=?""",
             (int(targets_ok), int(targets_empty), int(targets_error),
              int(jobs_found), int(jobs_quarantined), int(jobs_duplicates),
-             status, error, run_id),
+             int(targets_partial),int(jobs_merged),status, error, run_id),
         )
         conn.commit()
     finally:
@@ -853,8 +940,9 @@ def record_scan_log_rows(db_path, run_id: str, scanner: str, rows):
             """INSERT INTO scan_log
                (run_id, scanner, seed_name, company, source_type, target_country,
                 status, provider, jobs_found, quarantined, duplicates,
-                rejected_scope, error, diagnostics, duration_sec, seed_url)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rejected_scope, error, diagnostics, duration_sec, seed_url,
+                jobs_retained,jobs_merged,attempts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     run_id, scanner,
@@ -872,6 +960,9 @@ def record_scan_log_rows(db_path, run_id: str, scanner: str, rows):
                     (r.get("diagnostics") or r.get("Diagnostics") or "")[:8000],
                     float(r.get("duration_sec", r.get("Duration Sec", 0)) or 0),
                     (r.get("seed_url") or r.get("Seed URL") or ""),
+                    int(r.get('jobs_retained',r.get('Jobs Retained',r.get('Jobs Found',0))) or 0),
+                    int(r.get('jobs_merged',r.get('Jobs Merged',0)) or 0),
+                    int(r.get('attempts',r.get('Attempts',1)) or 1),
                 )
                 for r in rows
             ],
@@ -943,8 +1034,8 @@ def list_scan_runs(db_path, limit: int = 25):
         conn = get_connection(db_path)
         rows = conn.execute(
             """SELECT run_id, method, started_at, finished_at, status, error,
-                      targets_ok, targets_empty, targets_error,
-                      jobs_found, jobs_quarantined, jobs_duplicates,
+                      targets_ok, targets_empty, targets_error,targets_partial,
+                      jobs_found, jobs_quarantined, jobs_duplicates,jobs_merged,
                       ats_companies, career_companies
                FROM scan_runs ORDER BY started_at DESC LIMIT ?""",
             (int(limit),),
@@ -963,7 +1054,8 @@ def get_scan_log(db_path, run_id: str):
         rows = conn.execute(
             """SELECT seed_name, company, source_type, target_country, status,
                       provider, jobs_found, quarantined, duplicates,
-                      rejected_scope, error, diagnostics, duration_sec, seed_url
+                      rejected_scope, error, diagnostics, duration_sec, seed_url,
+                      jobs_retained,jobs_merged,attempts
                FROM scan_log WHERE run_id=? ORDER BY id ASC""",
             (run_id,),
         ).fetchall()
@@ -980,8 +1072,8 @@ def get_scan_run(db_path, run_id: str):
         conn = get_connection(db_path)
         return conn.execute(
             """SELECT run_id, method, started_at, finished_at, status, error,
-                      targets_ok, targets_empty, targets_error,
-                      jobs_found, jobs_quarantined, jobs_duplicates,
+                      targets_ok, targets_empty, targets_error,targets_partial,
+                      jobs_found, jobs_quarantined, jobs_duplicates,jobs_merged,
                       ats_companies, career_companies
                FROM scan_runs WHERE run_id=?""",
             (run_id,),
@@ -1040,7 +1132,7 @@ def mark_scan_resumed(db_path, parent_run_id: str, child_run_id: str) -> bool:
     """Promote a stopped parent run to ``resumed`` once fully covered.
 
     Called when a resume child finishes: if the parent + child scan_log
-    rows jointly cover every current seed company (i.e. the parent has no
+    rows jointly cover every originally selected target (i.e. the parent has no
     remaining work left), the parent's ``cancelled`` status becomes
     ``resumed`` ("stopped, later completed via resume") and records which
     child completed it.  Returns True when the parent was promoted.
@@ -1059,28 +1151,17 @@ def mark_scan_resumed(db_path, parent_run_id: str, child_run_id: str) -> bool:
     finally:
         if conn:
             conn.close()
-    # Union of parent + child completions covers everything?
-    try:
-        parent_done = get_completed_scan_companies(db_path, parent_run_id)
-        child_done = get_completed_scan_companies(db_path, child_run_id)
-    except Exception:
-        return False
-    covered = set(parent_done.get("ats", set())) | set(
-        child_done.get("ats", set())) | set(
-        parent_done.get("career", set())) | set(
-        child_done.get("career", set()))
-    try:
-        from sponsorscout.application import seed_manager
-        names = set()
-        for path in (seed_manager.user_ats_path(),
-                     seed_manager.user_career_path()):
-            for r in seed_manager.read_seed_rows(path)["rows"]:
-                name = (r.get("name") or "").strip().lower()
-                if name:
-                    names.add(name)
-    except Exception:
-        return False
-    if names - covered:
+    # Coverage is against the parent's immutable scope, split by phase/route.
+    from sponsorscout.application.scan_scope import load_plan, remaining_targets
+    plan = load_plan(db_path, parent_run_id)
+    if plan is None:
+        return False  # A legacy subset cannot safely be reconstructed from today's seeds.
+    remaining = remaining_targets(db_path, child_run_id, plan)
+    parent_remaining = remaining_targets(db_path, parent_run_id, plan)
+    from sponsorscout.application.scan_scope import target_key
+    if any({target_key(r) for r in remaining[phase]} &
+           {target_key(r) for r in parent_remaining[phase]}
+           for phase in ('ats', 'career')):
         return False
     conn = None
     try:
@@ -1112,90 +1193,23 @@ def parse_resumed_by(error_text: str | None) -> str:
 
 
 def get_resumable_scan(db_path) -> dict | None:
-    """Find the newest stopped scan that still has unscanned companies.
+    """Newest unfinished immutable scope; never add current seeds or unselected phases.
 
-    Returns ``None`` when there is nothing to resume, else a checkpoint::
-
-        {"run_id": ..., "method": ...,
-         "remaining_ats": [names...], "remaining_career": [names...],
-         "done_ats": n, "done_career": n, "total_ats": n, "total_career": n,
-         "added_since_stop": n}
-
-    Name matching is by lower-cased company name against the *current* user
-    seeds, so seed edits between stop and resume are handled: newly added
-    companies join ``remaining`` (counted in ``added_since_stop``), removed
-    ones simply drop out.
+    Old runs have no saved subset/URLs. Fail closed rather than guess them.
+    A partial outcome is not itself unfinished company work.
     """
-    from sponsorscout.application import seed_manager
-
-    # Newest stopped run wins: a resume child stopped mid-way supersedes
-    # its parent (the parent's remainder is a subset of the child's view
-    # once the child's own completions are counted).  ``started_at`` has
-    # only 1s resolution and ties are possible in tests, so break them by
-    # rowid (insertion order) — later started = larger rowid.
-    conn = None
+    from sponsorscout.application.scan_scope import load_plan, checkpoint
+    conn = get_connection(db_path)
     try:
-        conn = get_connection(db_path)
-        runs = conn.execute(
-            """SELECT run_id, method, status, ats_companies, career_companies
-               FROM scan_runs
-               WHERE status IN ('cancelled', 'partial', 'error')
-               ORDER BY rowid DESC LIMIT 10"""
-        ).fetchall()
+        runs = conn.execute("SELECT run_id FROM scan_runs WHERE status IN ('cancelled','partial','error','running') ORDER BY rowid DESC LIMIT 25").fetchall()
     finally:
-        if conn:
-            conn.close()
-    if not runs:
-        return None
-    for run in runs:
-        run_id = run[0]
-        try:
-            done = get_completed_scan_companies(db_path, run_id)
-        except Exception:
-            continue
-        try:
-            ats_rows = seed_manager.read_seed_rows(
-                seed_manager.user_ats_path())["rows"]
-            career_rows = seed_manager.read_seed_rows(
-                seed_manager.user_career_path())["rows"]
-        except Exception:
-            continue
-        remaining_ats = [
-            (r.get("name") or "").strip()
-            for r in ats_rows
-            if (r.get("name") or "").strip()
-            and (r.get("name") or "").strip().lower() not in done["ats"]
-        ]
-        remaining_career = [
-            (r.get("name") or "").strip()
-            for r in career_rows
-            if (r.get("name") or "").strip()
-            and (r.get("name") or "").strip().lower() not in done["career"]
-        ]
-        if not remaining_ats and not remaining_career:
-            continue  # fully covered — nothing left to resume
-        total_ats = len([r for r in ats_rows if (r.get("name") or "").strip()])
-        total_career = len([r for r in career_rows
-                            if (r.get("name") or "").strip()])
-        done_ats = total_ats - len(remaining_ats)
-        done_career = total_career - len(remaining_career)
-        # Companies added to the seeds after the run stopped.
-        try:
-            planned = int(run[3] or 0) + int(run[4] or 0)
-            added = max(0, (total_ats + total_career) - planned)
-        except (TypeError, ValueError):
-            added = 0
-        return {
-            "run_id": run_id,
-            "method": run[1] or "full",
-            "remaining_ats": remaining_ats,
-            "remaining_career": remaining_career,
-            "done_ats": max(0, done_ats),
-            "done_career": max(0, done_career),
-            "total_ats": total_ats,
-            "total_career": total_career,
-            "added_since_stop": added,
-        }
+        conn.close()
+    for row in runs:
+        plan = load_plan(db_path, row[0])
+        if plan is not None:
+            result = checkpoint(db_path, row[0], plan)
+            if result:
+                return result
     return None
 
 
@@ -1293,10 +1307,12 @@ def export_scan_run_csv(db_path, run_id: str) -> str:
         ("Status", run["status"] or ""),
         ("Jobs Found", run["jobs_found"] or 0),
         ("Duplicates", run["jobs_duplicates"] or 0),
+        ("Source/Alias Rows Merged",run['jobs_merged'] or 0),
         ("Quarantined", run["jobs_quarantined"] or 0),
         ("Targets OK", run["targets_ok"] or 0),
         ("Targets Empty", run["targets_empty"] or 0),
         ("Targets Error", run["targets_error"] or 0),
+        ("Targets Partial",run['targets_partial'] or 0),
         ("Run Error", run["error"] or ""),
     ]
     for key, val in summary_fields:
@@ -1308,12 +1324,13 @@ def export_scan_run_csv(db_path, run_id: str) -> str:
         "Seed Name", "Company", "Source Type", "Target Country", "Status",
         "Provider", "Jobs Found", "Quarantined", "Duplicates",
         "Rejected Scope", "Error", "Diagnostics", "Duration Sec",
-        "Seed URL",
+        "Seed URL","Jobs Retained","Jobs Merged","Attempts",
     ]
     col_index = [
         "seed_name", "company", "source_type", "target_country", "status",
         "provider", "jobs_found", "quarantined", "duplicates",
         "rejected_scope", "error", "diagnostics", "duration_sec", "seed_url",
+        "jobs_retained","jobs_merged","attempts",
     ]
     writer.writerow(PER_COMPANY_COLS)
     for row in get_scan_log(db_path, run_id):
@@ -1490,9 +1507,73 @@ def get_job_for_tailoring(db_path, job_url: str):
             "SELECT title, company, url, COALESCE(description, '') "
             "FROM jobs WHERE url=?", (job_url,)).fetchone()
         if not row:
+            from sponsorscout.core.job_identity import posting_identity
+            row = conn.execute("SELECT title,company,url,COALESCE(description,'') FROM jobs WHERE posting_key=? ORDER BY id LIMIT 1",
+                               (posting_identity(job_url),)).fetchone()
+        if not row:
             return None
         return {"title": row[0] or "", "company": row[1] or "",
                 "url": row[2] or "", "description": row[3] or ""}
     finally:
         if conn:
             conn.close()
+
+
+# Actual blocked-run queue. No static portal examples, probes or auto-launch.
+def enqueue_blocked_portals(db_path, portals, run_id: str = "") -> int:
+    from sponsorscout.core.job_identity import portal_queue_key, merge_sources
+    conn = get_connection(db_path)
+    count = 0
+    try:
+        with conn:
+            for portal in portals or []:
+                url = str(portal.get('url') or '').strip()
+                key = portal_queue_key(url)
+                if not key:
+                    continue
+                old = conn.execute('SELECT seed_name,phase,source_subtype FROM blocked_portals WHERE url_key=?', (key,)).fetchone()
+                name = merge_sources(old['seed_name'] if old else '', portal.get('seed_name'))
+                phase = merge_sources(old['phase'] if old else '', portal.get('phase'))
+                subtype = portal.get('source_subtype') or (old['source_subtype'] if old else 'direct')
+                subtype = 'recruiter' if subtype=='recruiter' else 'direct'
+                conn.execute(
+                    """INSERT INTO blocked_portals(url_key,url,seed_name,phase,reason,run_id,source_subtype,access_scope)
+                       VALUES (?,?,?,?,?,?,?,?)
+                       ON CONFLICT(url_key) DO UPDATE SET
+                         seed_name=excluded.seed_name, phase=excluded.phase,
+                         reason=excluded.reason, run_id=excluded.run_id,source_subtype=excluded.source_subtype,access_scope=excluded.access_scope,
+                         status=CASE WHEN blocked_portals.status='running' THEN 'running' ELSE 'pending' END,
+                         last_seen_at=CURRENT_TIMESTAMP""",
+                    (key,url,name,phase,str(portal.get('reason') or '')[:4000],str(run_id or portal.get('run_id') or ''),subtype,'details' if portal.get('access_scope')=='details' else 'listing'))
+                count += 1
+        return count
+    finally:
+        conn.close()
+
+
+def list_blocked_portals(db_path, include_resolved: bool = False):
+    conn = get_connection(db_path)
+    try:
+        where = '' if include_resolved else " WHERE status NOT IN ('resolved', 'dismissed')"
+        return conn.execute('SELECT * FROM blocked_portals' + where +
+                            ' ORDER BY last_seen_at DESC, seed_name, url_key').fetchall()
+    finally:
+        conn.close()
+
+
+def update_blocked_portal(db_path, url: str, *, status: str, pages=None, jobs=None, result=None):
+    from sponsorscout.core.job_identity import portal_queue_key
+    if status not in {'pending','running','partial','resolved','failed','dismissed'}:
+        raise ValueError('Invalid assisted portal status')
+    assignments, values = ['status=?'], [status]
+    for field, value in (('pages',pages),('jobs',jobs),('result',result)):
+        if value is not None:
+            assignments.append(field + '=?')
+            values.append(str(value)[:4000] if field=='result' else max(0,int(value)))
+    values.append(portal_queue_key(url))
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute('UPDATE blocked_portals SET ' + ', '.join(assignments) + ' WHERE url_key=?', values)
+    finally:
+        conn.close()

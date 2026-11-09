@@ -18,7 +18,7 @@ import argparse
 import sys
 
 from sponsorscout.db.database import DB_PATH, get_connection, initialize
-from sponsorscout.core.dedup import dedup_companies_in_db, dedup_jobs_in_db
+from sponsorscout.core.maintenance import cleanup_database
 from sponsorscout.scanning import pipeline
 
 
@@ -29,11 +29,16 @@ def main() -> None:
     parser.add_argument("--full", action="store_true",
                         help="Deprecated alias — full is now the default")
     parser.add_argument("--dedup", action="store_true",
-                        help="Run dedup after scanning")
+                        help="Explicitly merge trusted aliases after scanning; save backup and audit first")
     parser.add_argument("--company", type=str, default=None,
                         help="Only scan one company by name")
     args = parser.parse_args()
 
+    from sponsorscout.services.data_ownership import register_runtime
+    register_runtime()
+    from sponsorscout.services.browser_policy import read_selection
+    if read_selection() is None:
+        parser.error('Browser setup required. Open the desktop app: Tools > Advanced maintenance and diagnostics > Browser setup. No browser was downloaded.')
     initialize(DB_PATH)
     method = "quick" if args.quick else "full"
 
@@ -63,15 +68,9 @@ def main() -> None:
           f"duplicates={summary.get('duplicates', 0)}, "
           f"quarantined={summary.get('quarantined', 0)}")
 
-    if args.dedup:
-        conn = get_connection(DB_PATH)
-        try:
-            job_dupes = dedup_jobs_in_db(conn)
-            co_dupes = dedup_companies_in_db(conn)
-        finally:
-            conn.close()
-        print(f"Dedup: removed {job_dupes} duplicate jobs, "
-              f"{co_dupes} duplicate companies.")
+    if args.dedup:  # explicit CLI opt-in; never part of ordinary scanning
+        result = cleanup_database(DB_PATH,confirm=True)
+        print(f"Merged {result['merged']} trusted alias rows; backup={result['backup']}; audit={result['audit']}")
 
 
 if __name__ == "__main__":

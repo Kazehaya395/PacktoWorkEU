@@ -383,12 +383,12 @@ def test_recommended_workers_respects_an_explicit_small_machine(monkeypatch):
 
 # ── The blocking auto-install that hung the test suite ────────────────────────
 
-def test_browser_auto_install_is_opt_in(monkeypatch):
+def test_legacy_auto_install_environment_is_not_download_consent(monkeypatch):
     from sponsorscout.services import browser_fetcher as bf
     monkeypatch.delenv(bf._AUTO_INSTALL_ENV, raising=False)
     assert bf._browser_auto_install_enabled() is False
     monkeypatch.setenv(bf._AUTO_INSTALL_ENV, "1")
-    assert bf._browser_auto_install_enabled() is True
+    assert bf._browser_auto_install_enabled() is False
 
 
 def test_missing_browser_does_not_spawn_a_download(monkeypatch):

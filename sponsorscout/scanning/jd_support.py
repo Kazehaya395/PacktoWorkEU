@@ -16,6 +16,13 @@ import re
 VERDICT_YES, VERDICT_NO, VERDICT_UNKNOWN = "Yes", "No", "Unknown"
 
 
+_OCCUPATIONAL_PERMIT_RE = re.compile(
+    r"\b(?:hazardous(?:[- ]work)?|hot[- ]work|confined[- ]space|"
+    r"excavation|electrical|maintenance)\s+(?:work\s+)?permits?\b|"
+    r"\bwork\s+permits?\s+(?:for|covering)\s+(?:hazardous|hot|"
+    r"confined[- ]space|excavation|electrical|maintenance)\s+(?:work|operations?)\b",
+    re.I)
+
 # FIX W-1: one place that folds every apostrophe variant to ASCII "'".
 _APOSTROPHE_RE = re.compile("[\u2019\u2018\u02bc\u02b9\u00b4`\u055a]")
 
@@ -235,7 +242,7 @@ class JDSupportDetector:
         r"\b(visa|visas|work permit|work permits|work authorization|work authorisation|"
         r"authorized to work|authorised to work|legally authorized to work|legally authorised to work|"
         r"immigration|h-?1b|h1b|tier\s*2|blue card|blue-card|blaue karte|carta blu|"
-        r"highly skilled migrant|skilled worker|aufenthaltstitel|permesso di soggiorno|"
+        r"highly skilled migrant|skilled worker(?:[\s-]+(?:visa|sponsorship|route|permit|scheme|stream))|aufenthaltstitel|permesso di soggiorno|"
         r"sponsorship"
         # ── Added: the most common way a European ad states the requirement ──
         # "right to work" / "eligible to work" are the standard UK and IE
@@ -257,7 +264,7 @@ class JDSupportDetector:
         r"|right to work|eligible to work|eligibility to work"
         r"|residence permit|settlement visa"
         r"|aufenthaltserlaubnis|anmeldung|anmeldebescheinigung"
-        r"|verblijfsvergunning|wwft|wetten\s+overplichting"
+        r"|verblijfsvergunning|wetten\s+overplichting"
         r"|carte\s+de\s+s[ée]jour|titre\s+de\s+s[ée]jour|permis\s+de\s+s[ée]jour"
         r"|permiso\s+de\s+residencia"
         r"|visum\w*|arbeitserlaubnis|blauen karte|blaue karte"          # DE
@@ -273,7 +280,7 @@ class JDSupportDetector:
         r"|kennismigrant\w*|hooggekwalificeerde\s+migrant\w*"
         r"|tewerkstellingsvergunning|gecombineerde\s+vergunning|\bgvva\b"
         r"|visum\w*|werkvergunning|arbeidsvergunning|blauwe kaart|sponsoring"  # NL
-        r"|visa\w*|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
+        r"|visas?|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
         r"sponsorisent|parrainons|parraine"  # FR
         r"|visad\w*|permiso de trabajo|tarjeta azul|patrocin\w*|inmigración"  # ES
         # FIX P0-59: "sponsorship" (the noun) was a concept but "sponsor"
@@ -330,7 +337,7 @@ class JDSupportDetector:
         r"reimbursed|arrange|arranges|arranged|handle|handles|handled|sponsor|sponsors|"
         r"sponsored|sponsoring|include|includes|included|including|available|is offered|"
         r"is provided|will be provided|is included|granted|we will|receive|receives|"
-        r"received|get|gets|enjoy|enjoys)\b",
+        r"received|get|gets|enjoy|enjoys|consider|considers|considered|considering)\b",
         re.I,
     )
     # FIX W-1 (2026-10-04): the cue list carried the long forms of *be* and
@@ -380,7 +387,7 @@ class JDSupportDetector:
         r"\b(case[- ]by[- ]case|subject to|may be|might be|could be|depending on|"
         r"at (our|the|company's|their) discretion|negotiable|on request|if applicable|"
         r"not guaranteed|can be discussed|at discretion|on a case|reviewed on|"
-        r"limited to|restricted to|only for)\b",
+        r"limited to|restricted to|only for|consider|considers|considered|considering)\b",
         re.I,
     )
     SCOPE = re.compile(
@@ -494,7 +501,7 @@ class JDSupportDetector:
                               r"|\b(verhuis\w*|verhuiz\w*)\b.{0,30}\b(verplicht|vereist|noodzakelijk)\b", re.I),
             "reqverb": re.compile(r"\b(vereist|vereisen|noodzakelijk|verplicht)\b", re.I),
             "cond": re.compile(r"\b(op aanvraag|in overleg|afhankelijk van|eventueel|"
-                               r"kan worden besproken|niet gegarandeerd|per geval)\b", re.I),
+                               r"kan worden besproken|niet gegarandeerd|per geval|indien|mits)\b", re.I),
         },
         "fr": {
             # "sponsoriser"/"parrainer" are the French verbs for sponsorship.
@@ -563,6 +570,131 @@ class JDSupportDetector:
         r"necesita|necesitas|requiere|tiene|puede)\b",
         re.I)
 
+    # A bare field label (with optional empty punctuation) is not a benefit.
+    # Keep this anchored: real assistance/packages or independent offers must
+    # still reach the existing multilingual rules and field precedence.
+    _EMPTY_RELOCATION_LABEL_RE = re.compile(
+        r"^[\s\u2022\u00b7*|\-\u2013\u2014]*"
+        r"(?:relocation|re-location)"
+        r"[\s:.;\-\u2013\u2014]*$", re.I)
+
+    _VISA_STATUS_DEFINITION_RE = re.compile(
+        r"\(\s*legally\s+authori[sz]ed\s*(?:=|means\b)[^()]{1,240}\)", re.I)
+    _VISA_DUTY_LEAD_RE = re.compile(
+        r"^[\s\u2022\u00b7*|\-\u2013\u2014]*"
+        r"(?:(?:responsibilities|duties|tasks)\s*:\s*)?"
+        r"(?:you\s+(?:(?:will|would|shall)\s+|are\s+responsible\s+for\s+))?"
+        r"(?:manag(?:e|es|ing)|coordinat(?:e|es|ing)|arrang(?:e|es|ing)|"
+        r"handl(?:e|es|ing)|process(?:es|ing)?|forecast|plan|responsible\s+for)\b", re.I)
+    _VISA_ADMIN_TASK_RE = re.compile(
+        r"\b(?:visas?|work\s+permits?|employment\s+passes?|employment\s+pass|"
+        r"dependent\s+passes?|dependent\s+pass|immigration)\b"
+        r"[^.;]{0,65}\b(?:applications?|process(?:es)?|paperwork|documentation)\b", re.I)
+    # Split only recognizable independent actors/offer clauses. Do not split
+    # arbitrary duty lists at each comma, which would turn the duty tail back
+    # into a free-standing 'including visa applications' positive.
+    _VISA_INDEPENDENT_CLAUSE_RE = re.compile(
+        r"(?:,\s*|\s+(?:and|but|while|whereas|because|with)\s+)"
+        r"(?=(?:we\b|our\s+(?:company|team)\b|the\s+(?:company|employer)\b|"
+        r"you\s+(?:will|would|shall|are\s+(?:eligible|entitled)\s+for\s+visa\s+sponsorship)\b|"
+        r"receive\s+(?:full\s+)?visa\s+(?:sponsorship|support)\b|"
+        r"(?:with\s+)?(?:full\s+)?visa\s+sponsorship\s+"
+        r"(?:is|will|may|can|provided|available|offered)\b))", re.I)
+
+    _MOBILITY_EXPERIENCE_RE = re.compile(
+        r"^[\s\u2022\u00b7*|\-\u2013\u2014]*"
+        r"(?:[\w &/\-]{1,70}:\s*)?"
+        r"(?:(?:you\s+(?:have|bring|possess|(?:must|should)\s+have)|we\s+(?:require|seek))\s+)?"
+        r"(?:(?:profound|proven|solid|strong|demonstrated|prior|extensive|relevant|required)\s+)?"
+        r"(?:experience|expertise|knowledge)\b[^.;]{0,240}"
+        r"\b(?:HR\s+lifecycle|global\s+mobility|immigration\s+cases|relocation\s+(?:and\s+immigration\s+)?cases)\b", re.I)
+
+    @classmethod
+    def _mobility_experience(cls, clause):
+        return bool(cls._MOBILITY_EXPERIENCE_RE.search(clause))
+
+    @classmethod
+    def _visa_evidence_fragments(cls, sentence):
+        """Exclude non-offer clauses, never an entire mixed-offer document.
+
+        Return observed text slices so the evidence cannot quote a removed
+        responsibility/status definition as the reason for a positive verdict.
+        Existing structured fields are still evaluated on the original text.
+        """
+        def is_definition(match):
+            text = match.group(0)
+            return (re.search(r"\b(?:citizenship|visa|work\s+permit)\b", text, re.I)
+                    and not re.search(r"\b(?:we|offer\w*|sponsor\w*|support\w*|provide\w*|pay)\b", text, re.I))
+
+        # Slicing rather than concatenating prevents words either side of a
+        # removed parenthesis from manufacturing a new positive relationship.
+        pieces = []
+        start = 0
+        for match in cls._VISA_STATUS_DEFINITION_RE.finditer(sentence):
+            if is_definition(match):
+                pieces.append(sentence[start:match.start()])
+                start = match.end()
+        pieces.append(sentence[start:])
+        for piece in pieces:
+            clauses = cls._VISA_INDEPENDENT_CLAUSE_RE.split(piece)
+            duty = [bool(cls._mobility_experience(clause) or
+                         (cls._VISA_DUTY_LEAD_RE.search(clause.strip())
+                         and cls._VISA_ADMIN_TASK_RE.search(clause)))
+                    for clause in clauses]
+            if not any(duty):
+                # Keep ordinary offer/refusal scoring byte-for-byte unchanged;
+                # this is not a general-purpose sentence-splitting redesign.
+                if piece.strip():
+                    yield piece.strip()
+                continue
+            for clause, is_duty in zip(clauses, duty):
+                if clause.strip() and not is_duty:
+                    yield clause.strip()
+
+    _OBJECT_RELOCATION = re.compile(
+        r"\b(equipment|machinery|hardware|servers?|furniture)\b"
+        r"([^.;]{0,100}?)\brelocat\w*\b", re.I)
+    _RELOCATION_CLAUSE = re.compile(
+        r";\s*|(?:,\s*|\s+(?:and|but|while|whereas)\s+)"
+        r"(?=(?:we\b|you\b|our\s+(?:company|team)\b|"
+        r"(?:(?:support|manage|coordinate|perform|oversee)\s+)?(?:equipment|machinery|hardware|servers?|furniture|laboratory|office)\b|"
+        r"relocation\s+(?:assistance|support|package)\s+(?:is|will|provided|available)\b))", re.I)
+
+    @classmethod
+    def _object_relocation_duty(cls, sentence):
+        for m in cls._OBJECT_RELOCATION.finditer(sentence):
+            bridge=m[2]
+            if re.search(r"\b(?:employees?|staff|candidates?|families|engineers?|technicians?|operators?|team|department|your|personal)\b",bridge,re.I):
+                continue
+            if (not bridge.strip(' ,/-') or re.search(
+                    r"\b(?:install\w*|qualifications?|maintenance|commission\w*|decommission\w*|"
+                    r"storage|deployment|upgrades?|transport\w*|acquisition)\b",bridge,re.I)):
+                return True
+        return False
+
+    @classmethod
+    def _relocation_evidence_fragments(cls, sentence):
+        """Discard object-movement duties locally, retaining independent benefits."""
+        if cls._mobility_experience(sentence):
+            for clause in cls._VISA_INDEPENDENT_CLAUSE_RE.split(sentence):
+                if clause.strip() and not cls._mobility_experience(clause):
+                    yield clause.strip()
+            return
+        # A named services team operating a campus is not an employee benefit.
+        # Split only at independent employer-offer clauses, retaining those.
+        if (re.search(r'(?i)\brelocation\s+services\s+teams?\b',sentence) and not
+                re.search(r'(?i)\brelocation\s+(?:assistance|support|packages?|bonus)\b|\bUmzugskosten',sentence)):
+            clauses=re.split(r'(?i);\s*|(?=\b(?:we (?:offer|provide)|wir (?:bieten|unterst[üu]tzen))\b)',sentence)
+            for clause in clauses:
+                if clause.strip() and not re.search(r'(?i)\brelocation\s+services\s+teams?\b',clause):yield clause.strip()
+            return
+        if not cls._object_relocation_duty(sentence):
+            yield sentence
+            return
+        for clause in cls._RELOCATION_CLAUSE.split(sentence):
+            if clause.strip() and not cls._object_relocation_duty(clause):
+                yield clause.strip()
+
     def sentence_verdict(self, sentence, concept_re):
         # FIX W-1: fold typographic apostrophes to ASCII before ANY cue
         # matching. Only the matching copy is folded; the evidence string the
@@ -570,6 +702,10 @@ class JDSupportDetector:
         sentence = _norm_apostrophes(sentence)
         concept_match = concept_re.search(sentence)
         if not concept_match:
+            return None
+        if (concept_re is self.RELOCATION_CONCEPTS
+                and self._EMPTY_RELOCATION_LABEL_RE.fullmatch(sentence)):
+            # No decisive evidence, not a refusal. Other sentences still vote.
             return None
         # FIX P26b: questions ask, they do not promise or refuse.
         if sentence.rstrip().endswith("?") and self.INTERROGATIVE.match(sentence):
@@ -579,7 +715,8 @@ class JDSupportDetector:
         if concept_re is self.RELOCATION_CONCEPTS and re.search(
             r"\b(relocat(?:e|ing|ion)?\s+(?:vehicles?|cars?|equipment|machines?|systems?|"
             r"offices?|data centers?|assets?)|(?:install|upgrade|fleet|vehicle)\b.{0,35}"
-            r"\brelocat|relocation\s+(?:engineer|specialist|coordinator|project))\b",
+            r"\brelocat|relocation\s+(?:engineer|specialist|coordinator|project|officer|manager|lead))\b|"
+            r"\b(?:ambulance|aircraft|facility|tenant|service|office|building|plant|farm)\s+relocation\b",
             sentence, re.I,
         ):
             return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]
@@ -603,6 +740,16 @@ class JDSupportDetector:
             sentence, re.I,
         ):
             return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]
+        # Safety permits authorize an operation, not a candidate's immigration.
+        # Remove only the occupational phrase from the matching copy. A separate
+        # genuine visa/work-permit offer in THIS sentence must still be counted.
+        if concept_re is self.VISA_CONCEPTS:
+            has_occupational=bool(_OCCUPATIONAL_PERMIT_RE.search(sentence))
+            sentence = _OCCUPATIONAL_PERMIT_RE.sub('operational safety authorization', sentence)
+            remaining=re.sub(r'^\s*(?:visa|immigration)\s+(?:support|sponsorship|assistance)\s*:\s*',
+                             '', sentence, flags=re.I) if has_occupational else sentence
+            if not concept_re.search(remaining):
+                return VERDICT_UNKNOWN, 0.0, ["occupational-permit-not-immigration"]
         if concept_re is self.VISA_CONCEPTS and re.search(
             # (a) requirement stated BEFORE the authorisation noun:
             #     "Applicants must have the right to work in the UK"
@@ -641,7 +788,18 @@ class JDSupportDetector:
             return VERDICT_YES, 0.9, ["visa-exemption-offered"]
         # Qualifiers must be near the concept; unrelated verbs/negations elsewhere
         # in a long sentence or bullet must not leak polarity.
-        left = max(0, concept_match.start() - 90)
+        # A coordinated independent offer clause owns its qualifiers. A "no"
+        # about another benefit must not negate this offer. Do not split shared
+        # denials such as "no relocation and visa sponsorship" or "we cannot
+        # provide relocation and visa assistance". This is grammar, not a site rule.
+        clause_start=0
+        for boundary in re.finditer(
+                r";\s*|\b(?:and|en|und|et|y|e)\s+(?="
+                r"we\s+(?:offer|provide)|wij\s+bieden|wir\s+bieten|"
+                r"nous\s+offrons|mogelijkheden\s+om|opportunities\s+to)",
+                sentence[:concept_match.start()],re.I):
+            clause_start=boundary.end()
+        left = max(clause_start, concept_match.start() - 90)
         right = min(len(sentence), concept_match.end() + 90)
         window = sentence[left:right]
         has_positive = bool(self.POSITIVE_VERBS.search(window))
@@ -671,6 +829,11 @@ class JDSupportDetector:
         if m_scope:
             flags.append("scope:" + m_scope.group(0).strip()[:30])
 
+        if (concept_re is self.RELOCATION_CONCEPTS and has_requirement
+                and not has_negation and not has_positive
+                and re.search(r"\b(?:open|willing|prepared|ready)\s+to\s+relocat\w*\b", window, re.I)
+                and not re.search(r"\b(?:must|required|mandatory|need|needs|expected)\b", window, re.I)):
+            return VERDICT_UNKNOWN, 0.2, ["candidate-mobility-not-support"]
         if has_requirement and not has_negation:
             return VERDICT_NO, 0.8, flags + ["requirement-not-support"]
         has_requires_verb = bool(self.REQUIRES_VERB.search(window)) or any(
@@ -691,6 +854,14 @@ class JDSupportDetector:
             return VERDICT_UNKNOWN, 0.5, flags + ["hedged-negation"]
         if has_negation:
             return VERDICT_NO, 0.9, flags + ["negated"]
+        # Eligibility for a statutory tax facility is not, by itself, an
+        # employer commitment to arrange candidate relocation. Preserve explicit
+        # employer offers under the existing conditional-offer policy.
+        if (concept_re is self.RELOCATION_CONCEPTS and has_conditional
+                and re.search(r"\b30\s*%?\s*[-–]?\s*(?:ruling|regeling|tax\s+ruling)\b",window,re.I)
+                and not re.search(r"\b(?:we\s+(?:offer|provide|arrange|apply)|wij\s+(?:bieden|regelen|verzorgen)|"
+                    r"assistance|support|ondersteun\w*|helpen|helpt)\b",window,re.I)):
+            return VERDICT_UNKNOWN,0.4,flags+['tax-facility-eligibility-not-employer-commitment']
         if has_positive:
             if has_conditional:
                 # FIX P65 (A2): "While Etsy supports visa sponsorship,
@@ -749,7 +920,14 @@ class JDSupportDetector:
         scores = {VERDICT_YES: 0.0, VERDICT_NO: 0.0, VERDICT_UNKNOWN: 0.0}
         evidence = []
         required = False
-        for sent in self.split_sentences(text):
+        sentences = self.split_sentences(text)
+        if concept_re is self.VISA_CONCEPTS:
+            sentences = [fragment for sentence in sentences
+                         for fragment in self._visa_evidence_fragments(sentence)]
+        elif concept_re is self.RELOCATION_CONCEPTS:
+            sentences = [fragment for sentence in sentences
+                         for fragment in self._relocation_evidence_fragments(sentence)]
+        for sent in sentences:
             res = self.sentence_verdict(sent, concept_re)
             if not res:
                 continue
@@ -900,8 +1078,8 @@ def drop_other_company_sentences(text, other_companies):
     return " ".join(kept) if kept else ""
 
 
-def detect_blue_card(detector, text, other_companies=()):
-    """A single, consistent EU Blue Card classifier used by BOTH scanners.
+def detect_blue_card_result(detector, text, other_companies=()):
+    """Return (verdict, decisive observed sentence) for BOTH scanners.
 
     Reconciles a divergence found during the migration:
 
@@ -912,8 +1090,8 @@ def detect_blue_card(detector, text, other_companies=()):
 
     This function is the shared, authoritative classifier (the v5 approach):
     explicit EU Blue Card keywords in a sentence, with negation guarding the
-    verdict.  Returns ``VERDICT_YES`` / ``VERDICT_NO`` / ``VERDICT_UNKNOWN``,
-    i.e. the strings "Yes" / "No" / "Unknown".
+    verdict. Returns a verdict string (Yes/No/Unknown) and its bounded source
+    sentence, empty when no decisive sentence exists.
 
     FIX P0-57: the docstring used to claim it returned "Y"/"N"/"Unknown",
     which is NOT what the code does and is exactly the confusion that left
@@ -930,16 +1108,21 @@ def detect_blue_card(detector, text, other_companies=()):
       the hyphenated "EU-Blue Card", or the common "Blue Card EU" ordering.
     """
     if not text:
-        return VERDICT_UNKNOWN
+        return (VERDICT_UNKNOWN, '')
     text = drop_other_company_sentences(text, other_companies)
     if not text:
-        return VERDICT_UNKNOWN
+        return (VERDICT_UNKNOWN, '')
     for sent in detector.split_sentences(text):
         if _BLUE_CARD_RE.search(sent):
             if detector.NEGATION.search(sent):
-                return VERDICT_NO
+                return (VERDICT_NO, sent[:600])
             if (detector.POSITIVE_VERBS.search(sent)
                     or _BLUE_CARD_POSITIVE_RE.search(sent)):
-                return VERDICT_YES
-    return VERDICT_UNKNOWN
+                return (VERDICT_YES, sent[:600])
+    return (VERDICT_UNKNOWN, '')
 
+
+
+def detect_blue_card(detector, text, other_companies=()):
+    """Compatibility verdict API; evidence is available from the same pass."""
+    return detect_blue_card_result(detector, text, other_companies)[0]

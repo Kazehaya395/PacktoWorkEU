@@ -155,9 +155,26 @@ def _bare_career():
     obj = cs.CareerPortalScanner.__new__(cs.CareerPortalScanner)
     obj.config = cs.ProductionScannerConfig
     obj.cancel_event = None
+    obj.pause_event = None
+    # Mirror current admission state too: __new__ skips its constructor.
+    from sponsorscout.scanning.career.http_schedule import HttpSchedule
+    obj._http_schedule = HttpSchedule(1, 1)
     obj._jd_browser_sem = _t.Semaphore(1)
     obj._jd_browser_lock = _t.Lock()
     obj._jd_browser_used = 0
+    # __new__ bypasses the constructor; mirror its new run-local detail state.
+    from sponsorscout.scanning.detail_state import DetailRequestState
+    obj._detail_state = DetailRequestState()
+    obj._detail_host_lock = _t.Lock()
+    obj._detail_host_failures = {}
+    obj._detail_security_failures = {}
+    obj._detail_transport_circuits = {}
+    obj._detail_http_probe_counts = {}
+    obj._detail_browser_failures = {}
+    obj._detail_browser_failed_hosts = set()
+    obj._detail_blocked_hosts = set()
+    obj._detail_blocked_urls = set()
+    obj._tls = _t.local()
     return obj
 
 

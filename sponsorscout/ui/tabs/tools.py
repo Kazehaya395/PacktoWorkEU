@@ -6,23 +6,29 @@ per-run scan history view backed by the scan_runs / scan_log tables.
 """
 
 import threading
+import logging
 
-from PySide6.QtCore import QStandardPaths, Qt, QUrl, Signal
+from PySide6.QtCore import QStandardPaths, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QMenu, QPlainTextEdit, QPushButton,
-    QProgressBar, QSpinBox,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QProgressBar, QScrollArea, QSizePolicy, QLayout, QSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QToolButton,
 )
 
 from sponsorscout import paths
 from sponsorscout.application import seed_manager
 from sponsorscout.application.scan_coordinator import ScanCoordinator
-from sponsorscout.core.dedup import dedup_companies_in_db, dedup_jobs_in_db
+from sponsorscout.core.maintenance import preview_cleanup,cleanup_database
 from sponsorscout.db import database as db
-from sponsorscout.i18n import _
+from sponsorscout.ui.async_load import AsyncLoader
+from sponsorscout.i18n import _, set_table_header_labels
+
+from sponsorscout.ui.refresh_options import (REFRESH_LABEL, REFRESH_HELP, SUMMARY_HELP, confirm_refresh, refresh_summary)
+
+logger = logging.getLogger(__name__)
 
 # Canonical column order (defines the indexes); only the visible labels are
 # translated — see _header_labels().
@@ -68,16 +74,27 @@ STOP_BTN_TOOLTIP = (
     "the companies that were not finished, even after an app restart.")
 
 
+def _scan_status_text(status):
+    """Translate display only; persisted status codes/exports stay canonical."""
+    labels = {"completed": _("Finished."), "partial": _("Partial"),
+              "cancelled": _("Stopped."), "error": _("Error"),
+              "failed": _("Failed"), "resumed": _("resumed"),
+              "running": _("Running…"), "ok": _("Finished."),
+              "success": _("Finished."), "empty": _("Empty"),
+              "pending": _("Pending"), "blocked": _("Website access unavailable")}
+    return labels.get(str(status), _(str(status or "")))
+
+
 class ScanLogDialog(QDialog):
     """Per-company outcomes of one scan run (from the scan_log table)."""
 
     def __init__(self, db_path: str, run_id: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Scan log — {run_id}")
+        self.setWindowTitle(_("Scan log — {run_id}").format(run_id=run_id))
         self.resize(1280, 620)
         lay = QVBoxLayout(self)
         table = QTableWidget(0, len(HEADERS_LOG))
-        table.setHorizontalHeaderLabels(HEADERS_LOG)
+        set_table_header_labels(table, [_(key) for key in HEADERS_LOG])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setAlternatingRowColors(True)
@@ -89,7 +106,7 @@ class ScanLogDialog(QDialog):
             r = table.rowCount()
             table.insertRow(r)
             for col, val in enumerate(row):
-                text = str(val or "")
+                text = _scan_status_text(val) if col == 4 else str(val or "")
                 item = QTableWidgetItem(text)
                 if col in tooltip_cols and text:
                     item.setToolTip(text)
@@ -135,7 +152,7 @@ class QuarantineDialog(QDialog):
         top.addWidget(load_btn)
         lay.addLayout(top)
         self.table = QTableWidget(0, len(self.HEADERS))
-        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        set_table_header_labels(self.table, [_(key) for key in self.HEADERS])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -618,6 +635,8 @@ class ToolsTab(QWidget):
 
     scan_started = Signal()       # emitted at the beginning of start_scan
     scan_finished = Signal(dict)
+    blocked_portals_changed = Signal()
+    assisted_tab_requested = Signal()
     data_changed = Signal()        # jobs/companies data may have changed
     status_message = Signal(str)
     _freshness_done = Signal(str)  # marshals worker results to the UI thread
@@ -636,9 +655,17 @@ class ToolsTab(QWidget):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._review_busy = False
+        self._queue_writer = AsyncLoader(self, read_only=False, name='blocked queue persistence')
+        self._blocked_notice_runs = set()
+        self._blocked_notice_pending = set()
         self.coordinator = ScanCoordinator(db_path=db_path)
         self.coordinator.progress.connect(self._on_scan_progress)
         self.coordinator.progress_tick.connect(self._on_scan_progress_tick)
+        self.coordinator.work_progress.connect(self._on_work_progress)
+        self._work_snapshot = None
+        self._work_finished = False
+        self._work_control = 'idle'
         self.coordinator.finished.connect(self._on_scan_finished)
         self.coordinator.state_changed.connect(self._on_coordinator_state)
         self._freshness_done.connect(self._on_freshness_done)
@@ -653,18 +680,51 @@ class ToolsTab(QWidget):
         # Same idea for the run-history read (see refresh()).
         self._refresh_seq = 0
 
-        root = QVBoxLayout(self)
+        # Preserve usable control/editor heights instead of compressing all
+        # four sections into the current tab height (especially at 125% DPI).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.tools_scroll = QScrollArea(self)
+        self.tools_scroll.setWidgetResizable(True)
+        self.tools_scroll.setFrameShape(QFrame.NoFrame)
+        self.tools_content = QWidget()
+        root = QVBoxLayout(self.tools_content)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setSpacing(14)
+        root.setSizeConstraint(QLayout.SetMinimumSize)
+        self.tools_scroll.setWidget(self.tools_content)
+        outer.addWidget(self.tools_scroll)
 
         # ── Scanner group ────────────────────────────────────────────────────
         root.addWidget(self._build_scanner_group())
         # ── Scan history group ───────────────────────────────────────────────
-        root.addWidget(self._build_history_group(), stretch=1)
-        # ── Data quality group ───────────────────────────────────────────────
-        root.addWidget(self._build_quality_group())
-        # ── Freshness check group ────────────────────────────────────────────
-        root.addWidget(self._build_freshness_group())
+        root.addWidget(self._build_history_group())
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText(_("Advanced maintenance and diagnostics"))
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        root.addWidget(self.advanced_toggle)
+        self.advanced_panel = QWidget()
+        advanced_layout = QVBoxLayout(self.advanced_panel)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        self.browser_setup_btn = QPushButton(_("Browser setup"))
+        self.browser_setup_btn.clicked.connect(self._open_browser_setup)
+        advanced_layout.addWidget(self.browser_setup_btn)
+        self.refresh_jd_cb = QCheckBox(_(REFRESH_LABEL))
+        self.refresh_jd_cb.setToolTip(_(REFRESH_HELP))
+        advanced_layout.addWidget(self.refresh_jd_cb)
+        self.refresh_jd_help = QLabel(_(REFRESH_HELP))
+        self.refresh_jd_help.setWordWrap(True)
+        advanced_layout.addWidget(self.refresh_jd_help)
+        # Moving the existing checkbox preserves its policy, state and signal.
+        self.turbo_cb.parentWidget().layout().removeWidget(self.turbo_cb)
+        advanced_layout.addWidget(self.turbo_cb)
+        advanced_layout.addWidget(self._build_quality_group())
+        advanced_layout.addWidget(self._build_freshness_group())
+        self.advanced_panel.hide()
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        root.addWidget(self.advanced_panel)
         root.addStretch(1)
         # Resume availability depends on stopped runs in the DB — refresh
         # the button once the tab exists (safe if the DB is unreachable).
@@ -674,6 +734,17 @@ class ToolsTab(QWidget):
             pass
 
 # ── Group builders ───────────────────────────────────────────────────────
+    def _open_browser_setup(self):
+        if self.coordinator.is_running() or getattr(self, '_assisted_busy', False) or getattr(self, '_review_busy', False):
+            QMessageBox.information(self, _("Browser setup"), _("Finish or stop the active operation before changing browsers."))
+            return
+        from sponsorscout.ui.browser_setup import BrowserSetupDialog
+        BrowserSetupDialog(self).exec()
+
+    def _toggle_advanced(self, expanded):
+        self.advanced_panel.setVisible(expanded)
+        self.advanced_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+
     @staticmethod
     def _add_section_help(box: QGroupBox, text: str) -> None:
         """Add a small grey description label under a group-box title, and
@@ -692,6 +763,8 @@ class ToolsTab(QWidget):
         scanner = QGroupBox(_("Scanner"))
         self._scanner_box = scanner
         lay = QVBoxLayout(scanner)
+        lay.setSpacing(8)
+        scanner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._add_section_help(scanner, _("Scanner description"))
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -722,12 +795,36 @@ class ToolsTab(QWidget):
         self.scan_status = QLabel(_("Idle"))
         for w in (self.scan_btn, self.custom_btn, self.resume_btn,
                   self.pause_btn, self.stop_btn, self.scan_status):
+            if isinstance(w, QPushButton):
+                w.setMinimumHeight(32)
             row.addWidget(w)
         row.addStretch(1)
         lay.addLayout(row)
-        # ── Visual scan progress (cheap: one setValue per company tick) ──
-        prow = QHBoxLayout()
-        prow.setSpacing(8)
+        self.turbo_cb = QCheckBox(_("High-Performance Mode"))
+        self.turbo_cb.setToolTip(_(
+            "Leverage additional CPU cores and RAM on capable PCs (>4 cores, >8 GB RAM) to run more parallel "
+            "background browsers and scan threads while keeping desktop headroom lag-free."
+        ))
+        self.turbo_cb.setStyleSheet("""
+            QCheckBox {
+                color: #1F2937;
+                font-weight: 600;
+                font-size: 12px;
+                spacing: 6px;
+            }
+        """)
+        try:
+            from sponsorscout.scanning import common as _scan_common
+            if _scan_common.is_strict_low_spec():
+                self.turbo_cb.setToolTip(_(
+                    "Conservative CPU/RAM protection is active on <=4-core / <=8 GB hardware so your PC stays responsive."
+                ))
+            self.turbo_cb.toggled.connect(_scan_common.set_high_performance)
+        except Exception:
+            pass
+        lay.addWidget(self.turbo_cb)
+        # Each operation owns a full-width label/bar. Status never steals
+        # width from one bar while leaving the other at a different width.
         self.scan_bar = QProgressBar()
         self.scan_bar.setRange(0, 1000)
         self.scan_bar.setValue(0)
@@ -738,13 +835,49 @@ class ToolsTab(QWidget):
         # ticks, so the bar froze at 100 % under a flat "Running...". While a
         # re-crawl is live the bar goes busy and the phase names it.
         self._retry_busy = False
-        self.scan_phase.setMinimumWidth(220)
-        prow.addWidget(self.scan_bar, stretch=1)
-        prow.addWidget(self.scan_phase)
-        lay.addLayout(prow)
+        self.scan_phase.setWordWrap(True)
+        lay.addWidget(self.scan_phase)
+        self.portal_progress_label = QLabel(_("Portal tasks — waiting to start"))
+        self.portal_progress_label.setWordWrap(True)
+        lay.addWidget(self.portal_progress_label)
+        self.scan_bar.setMinimumHeight(22)
+        self.scan_bar.setMaximumHeight(28)
+        lay.addWidget(self.scan_bar)
+        self.jd_progress_label = QLabel(_("JD checks — waiting for discovered candidates"))
+        self.jd_progress_label.setWordWrap(True)
+        lay.addWidget(self.jd_progress_label)
+        self.jd_bar = QProgressBar()
+        self.jd_bar.setRange(0, 100)
+        self.jd_bar.setValue(0)
+        self.jd_bar.setMinimumHeight(22)
+        self.jd_bar.setMaximumHeight(28)
+        lay.addWidget(self.jd_bar)
+        self.jd_outcomes = QLabel(_("Checked does not mean readable. Totals grow as portals discover candidates."))
+        self.jd_outcomes.setWordWrap(True)
+        lay.addWidget(self.jd_outcomes)
+        self.active_work_heading = QLabel(_("Active portal workers"))
+        self.active_work_heading.setObjectName("SectionTitle")
+        lay.addWidget(self.active_work_heading)
+        self.active_scan_work = QPlainTextEdit()
+        self.active_scan_work.setReadOnly(True)
+        self.active_scan_work.setMinimumHeight(72)
+        self.active_scan_work.setMaximumHeight(88)
+        self.active_scan_work.setPlaceholderText(_("Active portal workers appear here."))
+        lay.addWidget(self.active_scan_work)
+        self.repeat_summary = QLabel()
+        self.repeat_summary.setWordWrap(True)
+        self.repeat_summary.setTextFormat(Qt.PlainText)
+        self.repeat_summary.setToolTip(_(SUMMARY_HELP))
+        self.repeat_summary.hide()
+        self._last_repeat_summary = None
+        lay.addWidget(self.repeat_summary)
+        self.scan_output_heading = QLabel(_("Live scan output"))
+        self.scan_output_heading.setObjectName("SectionTitle")
+        lay.addWidget(self.scan_output_heading)
         self.scan_log = QPlainTextEdit()
         self.scan_log.setReadOnly(True)
-        self.scan_log.setMaximumHeight(180)
+        self.scan_log.setMinimumHeight(150)
+        self.scan_log.setMaximumHeight(160)
         # Bound the widget's memory: a full scan emits many thousands of lines
         # and an unbounded QPlainTextEdit keeps every one of them.
         self.scan_log.setMaximumBlockCount(4000)
@@ -758,7 +891,8 @@ class ToolsTab(QWidget):
         lay = QVBoxLayout(box)
         self._add_section_help(box, _("Scan History description"))
         self.runs_table = QTableWidget(0, len(HEADERS_RUNS))
-        self.runs_table.setHorizontalHeaderLabels(_runs_header_labels())
+        self.runs_table.setMinimumHeight(150)
+        set_table_header_labels(self.runs_table, _runs_header_labels())
         self.runs_table.verticalHeader().setVisible(False)
         self.runs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.runs_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -781,9 +915,9 @@ class ToolsTab(QWidget):
     def _build_quality_group(self):
         box = QGroupBox(_("Data Quality"))
         self._quality_box = box
-        lay = QHBoxLayout(box)
+        lay = QVBoxLayout(box)
         self._add_section_help(box, _("Data Quality description"))
-        self.dedup_btn = QPushButton(_("Run Dedup"))
+        self.dedup_btn = QPushButton(_("Review alias merges"))
         self.dedup_btn.clicked.connect(self._run_dedup)
         self.stale_btn = QPushButton(_("Clear Stale Data"))
         self.stale_btn.clicked.connect(self._clear_stale_data)
@@ -791,50 +925,78 @@ class ToolsTab(QWidget):
         self.clear_scan_btn.clicked.connect(self._clear_scan_data)
         self.quarantine_btn = QPushButton(_("Review Quarantine"))
         self.quarantine_btn.clicked.connect(self._review_quarantine)
-        lay.addWidget(self.dedup_btn)
-        lay.addWidget(self.stale_btn)
-        lay.addWidget(self.clear_scan_btn)
-        lay.addWidget(self.quarantine_btn)
-        lay.addStretch(1)
+        self.data_review_btn = QPushButton(_("Review data quality"))
+        self.data_review_btn.clicked.connect(self._review_data_quality)
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(10)
+        actions.setVerticalSpacing(8)
+        for index, button in enumerate((self.dedup_btn, self.stale_btn,
+                self.clear_scan_btn, self.quarantine_btn, self.data_review_btn)):
+            button.setMinimumHeight(32)
+            actions.addWidget(button, index // 2, index % 2)
+        actions.setColumnStretch(2, 1)
+        lay.addLayout(actions)
         return box
 
     def _build_freshness_group(self):
-        box = QGroupBox(_("Freshness Check"))
+        box = QGroupBox(_("Job availability"))
         self._freshness_box = box
-        lay = QHBoxLayout(box)
+        lay = QVBoxLayout(box)
         self._add_section_help(box, _("Freshness Check description"))
-        lay.setSpacing(8)
-        lay.addWidget(QLabel(_("Check up to")))
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+        controls.addWidget(QLabel(_("Check up to")))
         self.verify_n = QSpinBox()
         self.verify_n.setRange(5, 200)
         self.verify_n.setValue(25)
         self.verify_n.setToolTip(
             _("Maximum number of active jobs to re-verify per run."))
-        lay.addWidget(self.verify_n)
-        lay.addWidget(QLabel(_("jobs")))
+        controls.addWidget(self.verify_n)
+        controls.addWidget(QLabel(_("jobs")))
         self.fresh_btn = QPushButton(_("Run"))
         self.fresh_btn.clicked.connect(self._run_freshness)
-        lay.addWidget(self.fresh_btn)
+        controls.addWidget(self.fresh_btn)
         self.fresh_status = QLabel(_("Idle"))
-        lay.addWidget(self.fresh_status)
-        lay.addStretch(1)
+        controls.addWidget(self.fresh_status)
+        self.fresh_btn.setMinimumHeight(32)
+        controls.addStretch(1)
+        lay.addLayout(controls)
         return box
 
     def _set_scan_running_ui(self, phase_text: str):
         """Shared button/label setup when a scan campaign starts or resumes."""
+        self.repeat_summary.hide()
+        self._last_repeat_summary = None
+        self.refresh_jd_cb.setEnabled(False)
+        self.scan_started.emit()
         self.scan_btn.setEnabled(False)
         self.custom_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
+        if hasattr(self, "turbo_cb"):
+            self.turbo_cb.setEnabled(False)
         self.pause_btn.setEnabled(True)
         self.pause_btn.setText(_("Pause"))
         self.pause_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
         self.stop_btn.setEnabled(True)
         self.scan_status.setText(_("Running…"))
+        self._work_snapshot = None
+        self._work_finished = False
+        self._work_control = 'running'
+        self.scan_bar.setRange(0, 1000)
         self.scan_bar.setValue(0)
+        self.jd_bar.show()
+        self.jd_bar.setRange(0, 0)
+        self.jd_progress_label.setText(_("JD checks — waiting for discovered candidates"))
+        self.jd_outcomes.setText(_("Checked does not mean readable. Totals grow as portals discover candidates."))
+        self.portal_progress_label.setText(_("Portal tasks — waiting to start"))
+        self.active_scan_work.clear()
         self.scan_phase.setText(phase_text)
 
     def _on_coordinator_state(self, state: str):
         """Mirror coordinator pause/stop transitions without polling."""
+        if state != 'idle':
+            self._work_control = state
+            self._render_work_progress()
         if state == "paused":
             self.pause_btn.setEnabled(True)
             self.pause_btn.setText(_("Resume"))
@@ -894,23 +1056,41 @@ class ToolsTab(QWidget):
 
 # ── Scanner control ──────────────────────────────────────────────────────
     def start_scan(self):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
             return
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
+            return
         # Single scan mode (see SCAN_METHOD): no method choice is offered —
         # the app always runs the campaign that extracts the most accurate
         # data for every job.
+        refresh = confirm_refresh(self, self.refresh_jd_cb.isChecked())
+        if refresh is None:
+            return
         self.scan_log.clear()
+        self.repeat_summary.hide()
+        self._last_repeat_summary = None
         self._set_scan_running_ui(_("Starting scan…"))
         self.status_message.emit(_("Scan started"))
-        self.coordinator.start(SCAN_METHOD)
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
+        self.coordinator.start(SCAN_METHOD, **(dict(refresh_descriptions=True) if refresh else {}))
+        self.refresh_jd_cb.setChecked(False)
 
     def start_custom_scan(self):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         """Open the picker dialog and start a scoped scan with it."""
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
+            return
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
             return
         try:
             dlg = CustomScanDialog(self)
@@ -929,10 +1109,18 @@ class ToolsTab(QWidget):
             QMessageBox.information(self, _("SponsorScout"),
                                     _("Select at least one company."))
             return
+        refresh = confirm_refresh(self, self.refresh_jd_cb.isChecked())
+        if refresh is None:
+            return
         self.scan_log.clear()
+        self.repeat_summary.hide()
+        self._last_repeat_summary = None
         self._set_scan_running_ui(_("Starting custom scan…"))
         self.status_message.emit(_("Custom scan started"))
-        self.coordinator.start(SCAN_METHOD, scan_scope=scope)
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
+        self.coordinator.start(SCAN_METHOD, scan_scope=scope, **(dict(refresh_descriptions=True) if refresh else {}))
+        self.refresh_jd_cb.setChecked(False)
 
     def resume_scan(self):
         """Continue the newest stopped run (Stop-as-checkpoint).
@@ -941,6 +1129,8 @@ class ToolsTab(QWidget):
         scan starts when the result arrives — Resume never blocks the UI,
         even while a previous scan still holds the database.
         """
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
@@ -955,7 +1145,7 @@ class ToolsTab(QWidget):
         applies the result as a silent probe.  Safe to call from __init__,
         tab entry (showEvent) and the moment a scan finishes.
         """
-        if self.coordinator.is_running():
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
             return
         self._start_resume_lookup(arm_dialog=False)
 
@@ -968,9 +1158,13 @@ class ToolsTab(QWidget):
         """
         self._resume_lookup_seq += 1
         seq = self._resume_lookup_seq
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         self._resume_dialog_armed = arm_dialog
         if arm_dialog:
             self.resume_btn.setEnabled(False)
+            if hasattr(self, "turbo_cb"):
+                self.turbo_cb.setEnabled(False)
             self.scan_phase.setText(_("Looking up the last stopped scan…"))
 
         def worker():
@@ -990,8 +1184,8 @@ class ToolsTab(QWidget):
             seq, kind, data = payload
         except (TypeError, ValueError):  # pragma: no cover - defensive
             return
-        if seq != self._resume_lookup_seq:
-            return  # a newer lookup already replaced this one
+        if seq != self._resume_lookup_seq or getattr(self,'_assisted_busy',False):
+            return  # superseded lookup or explicit assisted worker owns controls
         arm_dialog = self._resume_dialog_armed
         self._resume_dialog_armed = False
         if not arm_dialog:
@@ -1008,15 +1202,14 @@ class ToolsTab(QWidget):
         if not data:
             QMessageBox.information(
                 self, _("SponsorScout"),
-                _("Nothing to resume — no stopped scan with unfinished "
-                  "companies."))
+                _("Nothing safe to resume. Runs without a saved target scope cannot be reconstructed safely; start an explicitly selected custom scan instead."))
             self._refresh_resume_button()
             return
         self._begin_checkpoint_resume(data)
 
     def _apply_resume_probe(self, checkpoint):
         """Silent probe result: only enable/disable Resume + its tooltip."""
-        if self.coordinator.is_running():
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
             return
         self.resume_btn.setEnabled(bool(checkpoint))
         if checkpoint:
@@ -1032,7 +1225,12 @@ class ToolsTab(QWidget):
             self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
 
     def _begin_checkpoint_resume(self, checkpoint: dict):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         """Start a checkpoint continuation from an already-fetched lookup."""
+        from sponsorscout.ui.browser_setup import ensure_browser_ready
+        if not ensure_browser_ready(self):
+            return
         remaining = (len(checkpoint["remaining_ats"])
                      + len(checkpoint["remaining_career"]))
         total = checkpoint["total_ats"] + checkpoint["total_career"]
@@ -1043,11 +1241,6 @@ class ToolsTab(QWidget):
               "{remaining} remaining.").format(
                 run=checkpoint["run_id"], done=done, total=total,
                 remaining=remaining))
-        if checkpoint.get("added_since_stop"):
-            self.scan_log.appendPlainText(
-                _("(+{n} companies added to seeds since the stop — "
-                  "they are included.)").format(
-                    n=checkpoint["added_since_stop"]))
         self._set_scan_running_ui(
             _("Resuming — {done}/{total} done.").format(done=done,
                                                         total=total))
@@ -1056,18 +1249,100 @@ class ToolsTab(QWidget):
         except Exception:
             self.scan_bar.setValue(0)
         self.status_message.emit(_("Resuming scan"))
-        self.coordinator.start(SCAN_METHOD,
-                               resume_from=checkpoint["run_id"])
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
+        self.coordinator.start(checkpoint.get("method") or SCAN_METHOD,
+                               resume_from=checkpoint["run_id"],
+                               scan_scope={"run_ats": bool(checkpoint["remaining_ats"]),
+                                           "run_career": bool(checkpoint["remaining_career"]),
+                                           "ats": checkpoint["remaining_ats"],
+                                           "career": checkpoint["remaining_career"]})
+
+    def _on_work_progress(self, snapshot: dict):
+        self._work_snapshot = snapshot
+        self._render_work_progress()
+
+    def _render_work_progress(self):
+        data = getattr(self, '_work_snapshot', None)
+        if data is None:
+            if self._work_finished:
+                key = {'completed':'Finished.', 'partial':'Finished — partial results retained.',
+                       'cancelled':'Stopped.', 'error':'Error'}.get(self._work_control,'Finished.')
+                self.scan_phase.setText(_(key))
+                self.jd_bar.hide()
+                self.jd_progress_label.setText(_("Description results are unavailable for this run. No description workers are running."))
+                self.jd_outcomes.clear()
+                self.active_scan_work.clear()
+            return
+        total, settled = data['total'], data['settled']
+        finished = self._work_finished
+        completed = self._work_control in ('completed', 'partial')
+        self.scan_bar.setRange(0, 100)
+        # Use integer 0..99 while running; Qt's %p% can never round to 100.
+        percent = data['percent']
+        if finished and completed and total > 0 and settled == total:
+            percent = 100
+        self.scan_bar.setValue(percent)
+        self.scan_bar.setFormat(_("Portal tasks finished (includes partial/errors): %p%") if finished else _("Portal tasks: %p%"))
+        self.jd_bar.setVisible(not finished)
+        self.jd_bar.setFormat(_("JD classifications: %p%"))
+        self.portal_progress_label.setText(_("Portals settled: {done}/{total} · pending retries: {retry}").format(
+            done=settled, total=total, retry=data['queued_retries']))
+        control_keys = {'paused': 'Paused', 'stopping': 'Stopping…', 'cancelled': 'Stopped.',
+                        'completed': 'Finished.', 'partial': 'Finished — partial results retained.', 'error': 'Error'}
+        if self._work_control in control_keys:
+            self.scan_phase.setText(_(control_keys[self._work_control]))
+        elif data['lifecycle'] == 'finalizing':
+            self.scan_phase.setText(_("Finalizing scan results..."))
+        else:
+            self.scan_phase.setText(_("Listing/provider workers: {listing} · JD workers: {jd}").format(
+                listing=data['listing_active'], jd=data['jd_active']))
+        cov = data['coverage']
+        observed, checked = cov['observed'], data['checked']
+        if finished:
+            if observed:
+                self.jd_progress_label.setText(_("Final description results: {readable}/{observed} readable ({readable_percent}%); {unresolved} unresolved. No description workers are running.").format(
+                    readable=cov['readable'],observed=observed,
+                    readable_percent=f"{100*cov['readable']/observed:.1f}",
+                    unresolved=max(0,observed-cov['readable'])))
+            else:
+                self.jd_progress_label.setText(_("No job descriptions were observed in this run. No description workers are running."))
+        else:
+            self.jd_progress_label.setText(_("JD candidates classified: {checked}/{observed} currently observed").format(
+                checked=checked, observed=observed))
+        if observed or finished or data['lifecycle'] == 'finalizing' or self._work_control in ('paused', 'stopping'):
+            self.jd_bar.setRange(0, 100)
+            self.jd_bar.setValue(int(checked*100/observed) if observed else 0)
+        else:
+            self.jd_bar.setRange(0, 0)
+        self.jd_outcomes.setText(_("Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · blocked: {blocked} · unattempted: {unattempted}").format(**cov))
+        self.jd_outcomes.setToolTip(
+            _("Classification includes readable, thin, empty, failed and blocked outcomes. It is not the percentage of readable descriptions. Unattempted is not proof of blocked access. Saved jobs are retained.") if finished
+            else _("Checked does not mean readable. Totals grow as portals discover candidates."))
+        rows = []
+        if not finished and data['lifecycle'] != 'finalizing':
+            for task in data['active']:
+                stage = _("Reading JDs") if task['stage'] == 'details' else _("Listing/provider collection (may include JD reads)")
+                n = task.get('observed', 0)
+                c = sum(task.get(k, 0) for k in ('readable', 'thin', 'empty', 'failed', 'blocked'))
+                rows.append(_("{company} — {stage} · JD candidates: {checked}/{total}").format(
+                    company=task['name'], stage=stage, checked=min(n, c), total=n))
+        self.active_scan_work.setPlainText('\n'.join(rows))
+        self.active_scan_work.setPlaceholderText(_("Active portal workers appear here."))
 
     def _on_scan_progress(self, chunk: str):
         from sponsorscout.application.scan_coordinator import PROGRESS_PREFIX
         visible = [ln for ln in str(chunk).splitlines()
-                   if not ln.strip().startswith(PROGRESS_PREFIX)]
+                   if not ln.strip().startswith((PROGRESS_PREFIX, 'SCAN_EVENT:'))]
         if visible:
             self.scan_log.appendPlainText("\n".join(visible))
+        if self._work_snapshot is not None:
+            return  # Structured lifecycle owns both bars, including retries.
         # FIX UI-7: name the DNS re-crawl phase and put the bar in busy mode
         # until the next tick or the run finishing restores it.
         low = str(chunk).lower()
+        if '[count snapshot]' in low or 'finalizing scan results' in low:
+            self.scan_phase.setText(_("Finalizing scan results..."))
         if "[dns retry]" in low and "re-crawl" in low:
             import re as _re
             _m = _re.search(r"(\d+)\s+host", str(chunk))
@@ -1079,6 +1354,8 @@ class ToolsTab(QWidget):
 
     def _on_scan_progress_tick(self, done: int, total: int,
                                phase: str, label: str):
+        if self._work_snapshot is not None:
+            return  # Never let a legacy saturated tick override structured work.
         # Visual only: one integer setValue + one short label per company.
         # Guards keep stale/edge ticks (subset scans, zero totals) sane.
         try:
@@ -1088,7 +1365,7 @@ class ToolsTab(QWidget):
                 self._retry_busy = False
                 self.scan_bar.setRange(0, 1000)
             done = max(0, min(int(done), int(total)))
-            self.scan_bar.setValue(int(done * 1000 / total))
+            self.scan_bar.setValue(min(990, int(done * 1000 / total)))
             # The tick label already carries phase name + phase-local count
             # ("ATS 1/46" / "Career 4/162"); prepending the overall count too
             # produced the duplicated "ATS 1/208 — ATS 1/46" text.  The bar
@@ -1107,6 +1384,9 @@ class ToolsTab(QWidget):
     def _on_scan_finished(self, summary: dict):
         self.scan_btn.setEnabled(True)
         self.custom_btn.setEnabled(True)
+        if hasattr(self, "turbo_cb"):
+            self.turbo_cb.setEnabled(True)
+        self.refresh_jd_cb.setEnabled(not getattr(self,'_assisted_busy',False))
         self.pause_btn.setEnabled(False)
         self.pause_btn.setText(_("Pause"))
         self.stop_btn.setEnabled(False)
@@ -1117,13 +1397,21 @@ class ToolsTab(QWidget):
         # Show the translated "Stopped." instead of the raw pipeline status
         # ("cancelled") — the label sits next to the buttons the user just
         # pressed, and app.py already reports "Scan stopped." in the status bar.
-        self.scan_status.setText(_("Stopped.") if stopped else status)
+        self._last_repeat_summary = summary.get('repeat_scan')
+        self.repeat_summary.setText(refresh_summary(self._last_repeat_summary))
+        self.repeat_summary.setVisible(isinstance(self._last_repeat_summary, dict))
+        if self._last_repeat_summary:
+            self.scan_log.appendPlainText(refresh_summary(self._last_repeat_summary))
+        self._last_completion_status = status
+        self.scan_status.setText(_scan_status_text(status))
         for err in summary.get("errors") or []:
-            self.scan_log.appendPlainText(f"ERROR: {err}")
+            self.scan_log.appendPlainText(f"{_('Error')}: {err}")
         self.scan_log.appendPlainText(
-            f"--- {status}: ingested={summary.get('ingested', 0)}, "
-            f"duplicates={summary.get('duplicates', 0)}, "
-            f"quarantined={summary.get('quarantined', 0)} ---")
+            _("Scan result: {status}; saved={saved}, duplicates={duplicates}, quarantined={quarantined}").format(
+                status=_scan_status_text(status), saved=summary.get('ingested', 0),
+                duplicates=summary.get('duplicates', 0), quarantined=summary.get('quarantined', 0)))
+        self.scan_log.appendPlainText(_("Partial targets: {partial}; source/alias rows merged: {merged}").format(
+            partial=summary.get('targets_partial',0),merged=summary.get('merged',0)))
         try:
             self._retry_busy = False
             self.scan_bar.setRange(0, 1000)
@@ -1132,38 +1420,69 @@ class ToolsTab(QWidget):
                     _("Cancelled — partial progress shown."))
             elif status in ("completed", "partial"):
                 self.scan_bar.setValue(self.scan_bar.maximum())
-                self.scan_phase.setText(_("Finished."))
+                self.scan_phase.setText(_("Finished — partial results retained.") if status=='partial' else _("Finished."))
         except Exception:
             pass
+        self._work_finished = True
+        self._work_control = status
+        self._render_work_progress()
         self.refresh()
         self._refresh_resume_button()
-        self.data_changed.emit()
+        # One completion signal: data_changed would synchronously invoke the
+        # main-window refresh a second time before the notice.
         self.scan_finished.emit(summary)
-        self._offer_blocked_portals(summary)
         self.status_message.emit(_("Scan finished: ") + status)
+        self._offer_blocked_portals(summary)
 
     def _offer_blocked_portals(self, summary: dict):
-        """After a finished run, offer to open bot-blocked portals in the browser.
-
-        The scanner does not get past bot protection. The user decides whether
-        to search those portals by hand in their own default browser.
-        """
-        from sponsorscout.core.blocked_portals import (
-            blocked_portals_from_summary, open_in_default_browser)
-        blocked = blocked_portals_from_summary(summary)
+        """One truthful finish notice; all persistence belongs to workers."""
+        from sponsorscout.core.blocked_portals import blocked_portals_from_summary
+        blocked = blocked_portals_from_summary(summary, include_detail_issues=True)
         if not blocked:
             return
-        names = "\n".join(f"- {b['seed_name'] or b['url']}" for b in blocked)
-        answer = QMessageBox.question(
-            self, _("Blocked portals"),
-            _("These portals block automated access, so the scan could not read them:")
-            + "\n\n" + names + "\n\n"
-            + _("Open them in your default browser to search manually?"),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if answer != QMessageBox.Yes:
+        key = str(summary.get('run_id') or tuple(sorted(row['url'] for row in blocked)))
+        if key in self._blocked_notice_runs or key in self._blocked_notice_pending:
             return
-        for b in blocked:
-            open_in_default_browser(b["url"])
+        if summary.get('queue_persisted') is True:
+            self._show_blocked_notice(key, blocked, '')
+            return
+        self._blocked_notice_pending.add(key)
+        path, run_id = self.db_path, str(summary.get('run_id') or '')
+        def save():
+            db.enqueue_blocked_portals(path, blocked, run_id=run_id)
+        self._queue_writer.request(save,
+            lambda _value: self._show_blocked_notice(key, blocked, ''),
+            lambda exc: self._show_blocked_notice(key, blocked, str(exc)))
+
+    def _show_blocked_notice(self, key, blocked, queue_error):
+        self._blocked_notice_pending.discard(key)
+        if key in self._blocked_notice_runs:
+            return
+        self._blocked_notice_runs.add(key)
+        self.blocked_portals_changed.emit()  # queue tab refresh is asynchronous
+        names = "\n".join('- ' + (row.get('seed_name') or row['url']) for row in blocked)
+        box = QMessageBox(self)
+        box.setWindowTitle(_("Listing and JD access issues"))
+        notice = (_("These access issues could not be saved to the queue: {error}. Add the URLs from this run's artifacts manually in Assisted Ingestion.").format(error=queue_error)
+                  if queue_error else _("Listing or job-detail access issues have been added to Assisted Ingestion. Saved jobs are retained. Some descriptions may be unattempted after host protection paused reads. Collect / continue reuses saved work; only verified listings skip listing collection."))
+        box.setText(notice+"\n\n"+names)
+        box.setStandardButtons(QMessageBox.Ok)
+        view = box.addButton(_("View Assisted Ingestion"),QMessageBox.ActionRole)
+        box.setDefaultButton(QMessageBox.Ok)
+        box.exec()  # nested Qt loop stays responsive; no SQL/full refresh before it
+        if box.clickedButton() == view:
+            self.assisted_tab_requested.emit()
+
+    def set_assisted_running(self, running: bool):
+        self._assisted_busy = bool(running)
+        scanning = self.coordinator.is_running()
+        self.refresh_jd_cb.setEnabled(not running and not scanning)
+        for button in (self.scan_btn,self.custom_btn):
+            button.setEnabled(not running and not scanning)
+        if running:
+            self.resume_btn.setEnabled(False)
+        else:
+            self._refresh_resume_button()
 
     def _view_run_log(self):
         row = self.runs_table.currentRow()
@@ -1258,10 +1577,12 @@ class ToolsTab(QWidget):
 
     def _populate_runs_table(self, rows):
         """Fill the run table (GUI thread only; rows come from the worker)."""
+        self._runs_rows = list(rows)
         self.runs_table.setRowCount(0)
-        for r in rows:
-            (run_id, method, started, _fin, status, _err, _ok, _empty,
-             n_err, jobs, quarantined, dups, _ats, _career) = r[:14]
+        for r in self._runs_rows:
+            run_id,method,started,status,_err,n_err,jobs,quarantined,dups = (
+                r[key] for key in ('run_id','method','started_at','status','error',
+                                  'targets_error','jobs_found','jobs_quarantined','jobs_duplicates'))
             row_idx = self.runs_table.rowCount()
             self.runs_table.insertRow(row_idx)
             # Resume chain: child rows carry "resumed_from:<parent>" and
@@ -1276,11 +1597,11 @@ class ToolsTab(QWidget):
                         f"{_('resumed')} ↩ {_child}")
                 elif _parent:
                     status_text = (
-                        f"{status} ↩ {_('resumed from')} {_parent}")
+                        f"{_scan_status_text(status)} ↩ {_('resumed from')} {_parent}")
                 else:
-                    status_text = str(status)
+                    status_text = _scan_status_text(status)
             except Exception:
-                status_text = str(status)
+                status_text = _scan_status_text(status)
             values = (run_id, method, (started or "")[:19], status_text,
                       jobs, dups, quarantined, n_err)
             for col, val in enumerate(values):
@@ -1288,25 +1609,52 @@ class ToolsTab(QWidget):
                     row_idx, col, QTableWidgetItem(str(val if val is not None else "")))
 
     # ── Data-quality actions (ported from the original Tools tab) ───────────
+    def _review_data_quality(self):
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False) or self._review_busy:
+            QMessageBox.information(self,_("Review data quality"),_("Finish ingestion before reviewing existing data."))
+            return
+        from sponsorscout.ui.data_review import DataReviewDialog
+        dialog=DataReviewDialog(self.db_path,self)
+        def busy(value):
+            self._review_busy=value
+            self.scan_btn.setEnabled(not value)
+            self.custom_btn.setEnabled(not value)
+            self.resume_btn.setEnabled(not value)
+        dialog.busy_changed.connect(busy)
+        dialog.changed.connect(self.data_changed.emit)
+        dialog.exec()
+        dialog.deleteLater()
+        self._refresh_resume_button()
+
+
     def _review_quarantine(self):
         QuarantineDialog(self.db_path, self).exec()
         self.data_changed.emit()
 
     def _run_dedup(self):
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
+            QMessageBox.information(self,_("Existing-data cleanup"),_("Finish ingestion before reviewing existing-data merges."))
+            return
         try:
-            conn = db.get_connection(self.db_path)
-            try:
-                jd = dedup_jobs_in_db(conn)
-                cd = dedup_companies_in_db(conn)
-            finally:
-                conn.close()
-            QMessageBox.information(
-                self, _("Dedup complete"),
-                _("Removed {jobs} duplicate job(s) and {companies} duplicate "
-                  "company entry(ies).").format(jobs=jd, companies=cd))
+            preview = preview_cleanup(self.db_path)
+            if not preview['merge_rows']:
+                QMessageBox.information(self,_("Existing-data cleanup"),
+                    _("No safe alias merges found. Conflicting manual-country groups: {count}.").format(count=len(preview['conflicts'])))
+                return
+            question = _("Merge {rows} duplicate alias rows in {groups} trusted posting groups? A full SQLite backup and audit are saved first. Manual-country conflicts are skipped; applications are unchanged.").format(
+                rows=preview['merge_rows'],groups=len(preview['groups']))
+            if QMessageBox.question(self,_("Existing-data cleanup"),question,
+                                    QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:
+                return
+            result = cleanup_database(self.db_path,confirm=True)
+            message = _("Merged {count} alias rows.\nBackup: {backup}\nAudit: {audit}").format(
+                count=result['merged'],backup=result['backup'],audit=result['audit'])
+            if result.get('audit_warning'):
+                message += '\n'+str(result['audit_warning'])
+            QMessageBox.information(self,_("Existing-data cleanup"),message)
             self.data_changed.emit()
         except Exception as exc:
-            QMessageBox.critical(self, _("Error"), str(exc))
+            QMessageBox.critical(self,_("Error"),str(exc))
 
     def _clear_scan_data(self):
         """Wipe ALL scanned data (jobs, scan history, scan logs) from the DB.
@@ -1447,10 +1795,26 @@ class ToolsTab(QWidget):
 
     # ── i18n ──────────────────────────────────────────────────────────────
     def retranslate(self):
+        self.browser_setup_btn.setText(_("Browser setup"))
+        self.refresh_jd_cb.setText(_(REFRESH_LABEL))
+        self.refresh_jd_cb.setToolTip(_(REFRESH_HELP))
+        self.refresh_jd_help.setText(_(REFRESH_HELP))
+        self.repeat_summary.setToolTip(_(SUMMARY_HELP))
+        self.repeat_summary.setText(refresh_summary(self._last_repeat_summary))
+        self.advanced_toggle.setText(_("Advanced maintenance and diagnostics"))
+        self.active_work_heading.setText(_("Active portal workers"))
+        self.scan_output_heading.setText(_("Live scan output"))
+        self.turbo_cb.setText(_("High-Performance Mode"))
+        self._render_work_progress()
+        if self._work_snapshot is None and not self._work_finished:
+            self.portal_progress_label.setText(_("Portal tasks — waiting to start"))
+            self.jd_progress_label.setText(_("JD checks — waiting for discovered candidates"))
+            self.jd_outcomes.setText(_("Checked does not mean readable. Totals grow as portals discover candidates."))
+            self.active_scan_work.setPlaceholderText(_("Active portal workers appear here."))
         self._scanner_box.setTitle(_("Scanner"))
         self._history_box.setTitle(_("Scan History"))
         self._quality_box.setTitle(_("Data Quality"))
-        self._freshness_box.setTitle(_("Freshness Check"))
+        self._freshness_box.setTitle(_("Job availability"))
         for box in (self._scanner_box, self._history_box,
                     self._quality_box, self._freshness_box):
             help_lbl = box.findChild(QLabel, "SectionHelp")
@@ -1494,6 +1858,7 @@ class ToolsTab(QWidget):
             else:
                 self.scan_status.setText(
                     _("Running…") if self.coordinator.is_running()
+                    else _scan_status_text(self._last_completion_status) if hasattr(self, "_last_completion_status")
                     else _("Idle"))
         # The checkpoint-aware tooltip needs a DB read (scan_runs + seed CSVs,
         # ~25 ms idle and up to busy_timeout during a scan). A language switch
@@ -1505,12 +1870,15 @@ class ToolsTab(QWidget):
         self.scan_log.setPlaceholderText(_("Scan output appears here…"))
         self.view_log_btn.setText(_("View Per-Company Log"))
         self.download_log_btn.setText(_("Download Scan Log"))
-        self.dedup_btn.setText(_("Run Dedup"))
+        self.dedup_btn.setText(_("Review alias merges"))
         self.stale_btn.setText(_("Clear Stale Data"))
         self.clear_scan_btn.setText(_("Clear Scan Data"))
         self.quarantine_btn.setText(_("Review Quarantine"))
+        self.data_review_btn.setText(_("Review data quality"))
         self.fresh_btn.setText(_("Run"))
-        self.runs_table.setHorizontalHeaderLabels(_runs_header_labels())
+        set_table_header_labels(self.runs_table, _runs_header_labels())
+        if hasattr(self, "_runs_rows"):
+            self._populate_runs_table(self._runs_rows)
 
     def showEvent(self, event):
         """Refresh locale-dependent state when the tab is actually shown.

@@ -7,7 +7,8 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.db import database as db
-from sponsorscout.i18n import _
+from sponsorscout.ui.async_load import AsyncLoader
+from sponsorscout.i18n import _, set_table_header_labels
 
 
 def _stat_card(title_key: str):
@@ -30,7 +31,7 @@ def _stat_card(title_key: str):
 
 def _make_table(headers: list[str]) -> QTableWidget:
     table = QTableWidget(0, len(headers))
-    table.setHorizontalHeaderLabels(headers)
+    set_table_header_labels(table, headers)
     table.verticalHeader().setVisible(False)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -53,13 +54,14 @@ class DashboardTab(QWidget):
     # FIX UI-3 (P9): a company that returned nothing was invisible here --
     # 97 of 208 in run 20261003T233023, 58 minutes of scanning with nothing
     # to show for it. It now has a card and a table of its own.
-    CARD_KEYS = ("Total Companies", "Verified Jobs", "Sponsored Jobs",
+    CARD_KEYS = ("Total Companies", "Saved Jobs", "Sponsored Jobs",
                  "Remote Jobs", "EU Blue Card", "Applications",
                  "No Jobs (last run)")
 
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._loader = AsyncLoader(self, name="dashboard")
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -87,6 +89,7 @@ class DashboardTab(QWidget):
             card, value = _stat_card(key)
             self._value_labels[key] = value
             cards_row.addWidget(card, stretch=1)
+        self._set_card_tooltips()
         root.addLayout(cards_row)
 
         # Two tables side by side
@@ -94,11 +97,11 @@ class DashboardTab(QWidget):
         tables_row.setSpacing(10)
 
         companies_col = QVBoxLayout()
-        self.companies_title = QLabel(_("Top Employers by Sponsorship"))
+        self.companies_title = QLabel(_("Top Employers by Sponsor Score"))
         self.companies_title.setObjectName("SectionHeader")
         companies_col.addWidget(self.companies_title)
         self.companies_table = _make_table(
-            [_("Company"), _("Country"), _("Jobs"), _("Top Sponsor")])
+            [_("Company"), _("Country"), _("Jobs"), _("Max Sponsor Score")])
         companies_col.addWidget(self.companies_table)
 
         country_col = QVBoxLayout()
@@ -128,12 +131,22 @@ class DashboardTab(QWidget):
 
     # ── Data ─────────────────────────────────────────────────────────────────
     def refresh(self):
-        # Suspended updates: both table rebuilds repaint once at the end
-        # instead of once per inserted row (this runs on every scan tick).
+        path = self.db_path
+        def load():
+            conn = db.get_connection(path)
+            try:
+                return (db.get_dashboard_stats(path, _conn=conn),
+                        [tuple(r) for r in db.get_dashboard_top_companies(path, limit=10, _conn=conn)],
+                        [tuple(r) for r in db.get_dashboard_country_counts(path, _conn=conn)],
+                        [tuple(r) for r in db.get_dashboard_empty_companies(path, limit=50, _conn=conn)])
+            finally:
+                conn.close()
+        self._loader.request(load, self._apply_snapshot)
+
+    def _apply_snapshot(self, snapshot):
+        stats, top_companies, country_counts, empty_rows = snapshot
         self.setUpdatesEnabled(False)
-        conn = db.get_connection(self.db_path)
         try:
-            stats = db.get_dashboard_stats(self.db_path, _conn=conn)
             # FIX UI-2 (P9): one number hid two different things. Hybrid is
             # not remote, and a job with no stated work mode is not on-site.
             # The card now reads "112 + 183 hybrid" and the tooltip says how
@@ -146,7 +159,7 @@ class DashboardTab(QWidget):
                            if _hybrid else str(_remote))
             mapping = {
                 "Total Companies": stats.get("companies", 0),
-                "Verified Jobs": stats.get("verified_jobs", 0),
+                "Saved Jobs": stats.get("verified_jobs", 0),
                 "Sponsored Jobs": stats.get("sponsored_jobs", 0),
                 "Remote Jobs": remote_text,
                 "EU Blue Card": stats.get("eu_blue_card_jobs", 0),
@@ -169,8 +182,7 @@ class DashboardTab(QWidget):
                     total=stats.get("scanned_companies", 0),
                     errors=stats.get("error_companies", 0)))
 
-            rows = db.get_dashboard_top_companies(self.db_path, limit=10,
-                                                  _conn=conn)
+            rows = top_companies
             self.companies_table.setRowCount(0)
             for company, country, job_count, max_sponsor, _max_match in rows:
                 r = self.companies_table.rowCount()
@@ -183,7 +195,7 @@ class DashboardTab(QWidget):
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     self.companies_table.setItem(r, col, item)
 
-            rows = db.get_dashboard_country_counts(self.db_path, _conn=conn)
+            rows = country_counts
             self.country_table.setRowCount(0)
             for country, count in rows:
                 r = self.country_table.rowCount()
@@ -194,11 +206,7 @@ class DashboardTab(QWidget):
                 self.country_table.setItem(r, 1, item)
 
             # Companies that produced nothing in the most recent run.
-            try:
-                rows = db.get_dashboard_empty_companies(
-                    self.db_path, limit=50, _conn=conn)
-            except Exception:
-                rows = []
+            rows = empty_rows
             self.empty_table.setRowCount(0)
             for company, provider, status, why in rows:
                 r = self.empty_table.rowCount()
@@ -212,22 +220,33 @@ class DashboardTab(QWidget):
                     item.setToolTip(str(val))
                     self.empty_table.setItem(r, col, item)
         finally:
-            conn.close()
             self.setUpdatesEnabled(True)
 
     # ── i18n ─────────────────────────────────────────────────────────────────
+    def _set_card_tooltips(self):
+        self._value_labels["Saved Jobs"].setToolTip(_(
+            "Saved active job records, not verified full descriptions or sponsorship. "
+            "See the Scanner JD outcomes for readable, blocked and unattempted descriptions."))
+        self._value_labels["Sponsored Jobs"].setToolTip(_(
+            "Counts jobs with an explicit Yes visa-sponsorship verdict. "
+            "Unknown is not No; unread JDs stay Unknown."))
+        self._value_labels["EU Blue Card"].setToolTip(_(
+            "Counts jobs with an explicit Yes EU Blue Card verdict. "
+            "Unknown is not No; unread JDs stay Unknown."))
+
     def retranslate(self):
         self.title.setText(_("Dashboard"))
         self.rescan_btn.setText(_("Rescan Companies"))
         self.refresh_btn.setText(_("Refresh"))
-        self.companies_title.setText(_("Top Employers by Sponsorship"))
+        self.companies_title.setText(_("Top Employers by Sponsor Score"))
         self.country_title.setText(_("Jobs by Country"))
         self.empty_title.setText(_("No Jobs Found (last run)"))
         for key in self.CARD_KEYS:
             card = self._value_labels[key].parentWidget()
             card.findChild(QLabel, "CardTitle").setText(_(key))
-        self.companies_table.setHorizontalHeaderLabels(
-            [_("Company"), _("Country"), _("Jobs"), _("Top Sponsor")])
-        self.country_table.setHorizontalHeaderLabels([_("Country"), _("Jobs")])
-        self.empty_table.setHorizontalHeaderLabels(
+        set_table_header_labels(self.companies_table, 
+            [_("Company"), _("Country"), _("Jobs"), _("Max Sponsor Score")])
+        self._set_card_tooltips()
+        set_table_header_labels(self.country_table, [_("Country"), _("Jobs")])
+        set_table_header_labels(self.empty_table, 
             [_("Company"), _("Provider"), _("Why")])

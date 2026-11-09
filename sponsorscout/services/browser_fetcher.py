@@ -6,6 +6,7 @@ browser snapshot via Playwright for JavaScript-heavy pages.
 """
 from __future__ import annotations
 
+from sponsorscout.services.browser_policy import launch_chromium
 import json
 import logging
 import os
@@ -108,161 +109,31 @@ def _playwright_available() -> bool:
     return _playwright_import_error() is None
 
 
-#: Set this environment variable to a truthy value to let the app download the
-#: Chromium binary itself when it is missing.  Off by default — see
-#: :func:`_ensure_playwright_browsers`.
+# Kept only for compatibility/diagnostics; this flag no longer grants consent.
 _AUTO_INSTALL_ENV = "SPONSORSCOUT_AUTO_INSTALL_BROWSERS"
-
-#: Hard ceiling for the optional `playwright install chromium` download.
-_INSTALL_TIMEOUT = 300
-
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def _browser_auto_install_enabled() -> bool:
-    """Whether a missing Chromium binary may be downloaded automatically.
-
-    Defaults to **off**.  A ~130 MB download that blocks the caller for minutes
-    is never an acceptable surprise for a desktop app (and it made the test
-    suite hang); the user opts in explicitly instead.
-    """
-    # 2026-10-19: on by default for source runs (python main.py / terminal),
-    # because the missing-Chromium case zeroed 153 of 276 career companies
-    # on the user's machine. Off for frozen builds (cannot succeed there; the
-    # bundle must ship) and under pytest (no 130 MB download in tests).
-    # Set SPONSORSCOUT_AUTO_INSTALL_BROWSERS=0 to opt out.
-    raw = os.environ.get(_AUTO_INSTALL_ENV, "").strip().lower()
-    if raw:
-        return raw in _TRUTHY
-    if getattr(sys, "frozen", False) or os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    return True
+    """Legacy environment switches are not consent for a browser download."""
+    return False
 
 
 def _ensure_playwright_browsers() -> bool:
-    """
-    Verify browser binaries are present.  Called once per process; the result
-    is cached on the function itself.
-
-    The error seen in production:
-      BrowserType.launch: Executable doesn't exist at
-      ~/.cache/ms-playwright/chromium_headless_shell-XXXX/chrome-headless-shell
-
-    This happens when `pip install playwright` was run but
-    `playwright install chromium` was never run — the Python package
-    exists but no browser binary was downloaded.
-
-    Recovery is **opt-in** (see :func:`_browser_auto_install_enabled`).  It was
-    previously automatic, which meant a missing browser made the first career
-    scan of every session block for up to ``_INSTALL_TIMEOUT`` seconds inside a
-    ``subprocess.run`` — Pause/Stop could not interrupt it (no ``check_control``
-    gate is reachable), and in a console-less PyInstaller build the child
-    inherited an invalid stdio handle.  It also made the whole pytest suite
-    hang: ``pipeline.run_scan``'s career pre-flight calls this function, and a
-    dev machine without a warm Chromium cache triggered a real ~130 MB
-    download from inside the tests.
-
-    Returns True if browsers are ready, False if install failed/unavailable.
-    """
+    """Check the selected browser, never install a browser from a scan worker."""
     if _ensure_playwright_browsers._done:
         return _ensure_playwright_browsers._ok
-
     _ensure_playwright_browsers._done = True
-
-    if not _playwright_available():
-        _ensure_playwright_browsers._ok = False
-        return False
-
-    # Try a minimal launch to verify the binary actually exists
     try:
-        from playwright.sync_api import sync_playwright as _sp
-        with _sp() as p:
-            b = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            b.close()
-        logger.debug("Playwright browser check passed — chromium is ready.")
+        from sponsorscout.services.browser_policy import managed_playwright as sync_playwright
+        with sync_playwright() as pw:
+            browser = launch_chromium(pw.chromium, headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"])
+            browser.close()
         _ensure_playwright_browsers._ok = True
-        return True
     except Exception as exc:
-        exc_str = str(exc).lower()
-        browser_missing = (
-            "executable doesn't exist" in exc_str
-            or "executable not found" in exc_str
-            or "browsertype.launch" in exc_str
-        )
-        if not browser_missing:
-            # Some other error (permissions, sandbox) — don't auto-install
-            logger.warning("Playwright launch check failed (non-install error): %s", exc)
-            _ensure_playwright_browsers._ok = False
-            return False
-
-    # Binary missing — attempt recovery. In a frozen (packaged) build there is
-    # no usable `python -m playwright` (sys.executable is SponsorScout.exe /
-    # the SponsorScout ELF binary), so auto-install can never succeed there;
-    # instead the browsers must ship inside the bundle's `_playwright`
-    # directory (see build_exe.ps1 / build_deb.sh / build_rpm.sh and sponsorscout/paths.py).
-    if getattr(sys, "frozen", False):
-        logger.error(
-            "Playwright Chromium browser is missing from the installed app "
-            "(no `_playwright` browser bundle next to the executable and no "
-            "downloaded browser cache). SPA / JS-rendered career portals "
-            "cannot be crawled. Fix: reinstall SponsorScout from a full "
-            "installer package (the installer ships `_playwright`), or run "
-            "`playwright install chromium` on this machine and restart the app."
-        )
+        logger.warning("Selected browser unavailable: %s", exc)
         _ensure_playwright_browsers._ok = False
-        return False
-
-    if not _browser_auto_install_enabled():
-        logger.warning(
-            "Playwright Chromium browser is missing.  Automatic download is "
-            "disabled, so JS-rendered career pages will return 0 jobs.  Run "
-            "`python -m playwright install chromium` once, then restart the app. "
-            "(Set %s=1 to allow the automatic download.)",
-            _AUTO_INSTALL_ENV,
-        )
-        _ensure_playwright_browsers._ok = False
-        return False
-
-    logger.info(
-        "Playwright browser not installed. Running 'playwright install chromium' now. "
-        "This downloads ~130 MB and takes ~30 seconds on first run."
-    )
-    try:
-        import subprocess
-        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
-        if sys.platform.startswith("linux"):
-            # --with-deps shells out to apt and needs root; never attempt it
-            # implicitly from a desktop app.
-            cmd.append("--with-deps")
-        result = subprocess.run(
-            cmd,
-            timeout=_INSTALL_TIMEOUT,
-            # Never inherit stdio: a console-less (windowed / PyInstaller) build
-            # has no valid handles and the child would crash or block on them.
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        if result.returncode == 0:
-            logger.info("playwright install chromium completed successfully.")
-            _ensure_playwright_browsers._ok = True
-            return True
-        else:
-            logger.warning(
-                "playwright install chromium failed (exit code %d). "
-                "Run 'playwright install chromium' manually in your terminal.",
-                result.returncode,
-            )
-            _ensure_playwright_browsers._ok = False
-            return False
-    except Exception as exc:
-        logger.warning(
-            "Auto-install of Playwright browsers failed: %s. "
-            "Run 'playwright install chromium' manually in your terminal.",
-            exc,
-        )
-        _ensure_playwright_browsers._ok = False
-        return False
+    return _ensure_playwright_browsers._ok
 
 
 _ensure_playwright_browsers._done = False
@@ -797,19 +668,19 @@ def _scroll_and_expand(page, max_rounds: int = 5) -> str:
 
 def _render_with_playwright(url: str, wait_ms: int = 6000, timeout: int = 30) -> dict[str, Any] | None:
     """Return a rendered snapshot using Playwright, or None if unavailable."""
-    # Ensure the browser binary exists — auto-installs on first run if missing.
+    # Ensure the browser binary exists — never installs automatically.
     # This is the fix for:
     #   BrowserType.launch: Executable doesn't exist at
     #   ~/.cache/ms-playwright/chromium_headless_shell-XXXX/chrome-headless-shell
     if not _ensure_playwright_browsers():
         logger.warning(
             "Playwright browser not available — SPA / JS-rendered career "
-            "pages will return 0 jobs. Run: playwright install chromium"
+            "pages will return 0 jobs. Use Tools > Advanced maintenance and diagnostics > Browser setup"
         )
         return None
 
     try:
-        from playwright.sync_api import sync_playwright  # type: ignore[import-untyped]
+        from sponsorscout.services.browser_policy import managed_playwright as sync_playwright
     except Exception as exc:
         logger.warning(
             "Playwright is not available (%s); SPA / JS-rendered career "
@@ -834,7 +705,7 @@ def _render_with_playwright(url: str, wait_ms: int = 6000, timeout: int = 30) ->
             if sys.platform.startswith("linux"):
                 launch_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
 
-            browser = p.chromium.launch(
+            browser = launch_chromium(p.chromium,
                 headless=True,
                 args=launch_args,
             )

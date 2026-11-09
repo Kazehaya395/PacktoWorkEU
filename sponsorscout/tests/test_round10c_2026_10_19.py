@@ -89,7 +89,9 @@ def test_loop_photographer_is_a_valid_title(title, url):
     assert _career().is_valid_job_title(title, "LOOP", url)
 
 
-def test_loop_proactive_application_stays_rejected():
+def test_loop_proactive_application_is_rejected_as_generic_application():
+    # Reversed 2026-11-09 by user decision: generic-application postings
+    # are noise, not vacancies (LOOP run 20261109T204021 evidence).
     assert not _career().is_valid_job_title(
         "Proactive Application", "LOOP",
         "https://www.agentur-loop.com/careers/proactive-application")

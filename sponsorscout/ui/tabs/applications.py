@@ -13,7 +13,7 @@ log above the edit form records each status change made this session.
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.db import database as db
-from sponsorscout.i18n import _
+from sponsorscout.ui.async_load import AsyncLoader
+from sponsorscout.i18n import _, set_table_header_labels
 
 APP_STATUSES = ["saved", "applied", "interview", "offer", "rejected"]
 
@@ -57,6 +58,8 @@ class ApplicationsTab(QWidget):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._loader = AsyncLoader(self, name="applications")
+        self._render_generation = 0
         self._editing_url = None
         self._fitting = False            # True while we set widths ourselves
         self._user_resized = False       # becomes True once the user drags a border
@@ -78,7 +81,7 @@ class ApplicationsTab(QWidget):
 
         # ── Applications table ───────────────────────────────────────────────
         self.table = QTableWidget(0, len(HEADERS))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -89,6 +92,7 @@ class ApplicationsTab(QWidget):
         header.setSectionResizeMode(QHeaderView.Interactive)   # manual resize on every column
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(60)
+        header.setResizeContentsPrecision(200)
         header.sectionResized.connect(self._on_section_resized)
         self.table.itemSelectionChanged.connect(self._on_select)
         root.addWidget(self.table, 1)
@@ -108,7 +112,8 @@ class ApplicationsTab(QWidget):
         form_lay = QHBoxLayout(self.form)
         form_lay.addWidget(QLabel(_("Status:")))
         self.status_combo = QComboBox()
-        self.status_combo.addItems(APP_STATUSES)
+        for status in APP_STATUSES:
+            self.status_combo.addItem(_(status), status)
         form_lay.addWidget(self.status_combo)
         form_lay.addSpacing(12)
         form_lay.addWidget(QLabel(_("Notes:")))
@@ -146,21 +151,40 @@ class ApplicationsTab(QWidget):
     # ── Data loading ─────────────────────────────────────────────────────────
 
     def load_applications(self):
-        rows = db.list_applications(self.db_path)
+        path = self.db_path
+        self._loader.request(lambda: [tuple(r) for r in db.list_applications(path)], self._apply_applications)
+
+    def _apply_applications(self, rows):
+        selected = self._selected_row_values()
+        selected_url = selected[COL_URL] if selected else None
+        self._render_generation += 1
+        generation = self._render_generation
         self.table.setRowCount(0)
-        for r in rows:
-            company, title, status, applied_at, _f, notes, job_url = r[:7]
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            saved_on = (applied_at or "")[:10]
-            values = (company, title, status, saved_on, job_url, notes)
-            for col, val in enumerate(values):
-                item = QTableWidgetItem(str(val or ""))
-                if col == COL_STATUS:
-                    self._style_status(item, status)
-                self.table.setItem(row, col, item)
-        if not self._user_resized:
-            self._fit_columns()
+        def append(start=0):
+            if generation != self._render_generation:
+                return
+            self.table.blockSignals(True)
+            try:
+                for r in rows[start:start+100]:
+                    company, title, status, applied_at, _f, notes, job_url = r[:7]
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    for col, value in enumerate((company, title, status, (applied_at or '')[:10], job_url, notes)):
+                        item = QTableWidgetItem(str(value or ''))
+                        if col == COL_STATUS:
+                            item.setData(Qt.UserRole, status)
+                            item.setText(_(str(status or "")))
+                            self._style_status(item, status)
+                        self.table.setItem(row, col, item)
+                    if job_url == selected_url:
+                        self.table.selectRow(row)
+            finally:
+                self.table.blockSignals(False)
+            if start+100 < len(rows):
+                QTimer.singleShot(0, lambda: append(start+100))
+            elif not self._user_resized:
+                self._fit_columns()
+        append()
 
     @staticmethod
     def _style_status(item: QTableWidgetItem, status):
@@ -176,8 +200,12 @@ class ApplicationsTab(QWidget):
         row = self.table.currentRow()
         if row < 0:
             return None
-        return [self.table.item(row, c).text() if self.table.item(row, c)
-                else "" for c in range(self.table.columnCount())]
+        values = [self.table.item(row, c).text() if self.table.item(row, c)
+                  else "" for c in range(self.table.columnCount())]
+        status_item = self.table.item(row, COL_STATUS)
+        if status_item is not None:
+            values[COL_STATUS] = status_item.data(Qt.UserRole) or values[COL_STATUS]
+        return values
 
     def _on_select(self):
         v = self._selected_row_values()
@@ -185,7 +213,7 @@ class ApplicationsTab(QWidget):
             return
         self._editing_url = v[COL_URL]
         status = v[COL_STATUS] if v[COL_STATUS] in APP_STATUSES else "saved"
-        self.status_combo.setCurrentText(status)
+        self.status_combo.setCurrentIndex(self.status_combo.findData(status))
         self.notes_edit.clear()
         self.form.show()
 
@@ -201,7 +229,7 @@ class ApplicationsTab(QWidget):
         if not v:
             return
         old_status = v[COL_STATUS]
-        new_status = self.status_combo.currentText()
+        new_status = self.status_combo.currentData()
         notes = self.notes_edit.text().strip()
         db.upsert_application(
             self.db_path,
@@ -220,9 +248,9 @@ class ApplicationsTab(QWidget):
     def _log_change(self, company, title, old_status, new_status, notes):
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         if old_status == new_status:
-            change = _("status {s} (unchanged)").format(s=new_status)
+            change = _("status {s} (unchanged)").format(s=_(new_status))
         else:
-            change = _("{old} → {new}").format(old=old_status, new=new_status)
+            change = _("{old} → {new}").format(old=_(old_status), new=_(new_status))
         line = f"[{stamp}]  {company} — {title}: {change}"
         if notes:
             line += f"  ·  {notes}"
@@ -253,4 +281,10 @@ class ApplicationsTab(QWidget):
         self.form.setTitle(_(" Edit selected "))
         self.save_btn.setText(_("Save"))
         self.cancel_btn.setText(_("Cancel"))
-        self.table.setHorizontalHeaderLabels(_header_labels())
+        set_table_header_labels(self.table, _header_labels())
+        for index in range(self.status_combo.count()):
+            self.status_combo.setItemText(index, _(self.status_combo.itemData(index)))
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, COL_STATUS)
+            if item is not None:
+                item.setText(_(item.data(Qt.UserRole) or item.text()))

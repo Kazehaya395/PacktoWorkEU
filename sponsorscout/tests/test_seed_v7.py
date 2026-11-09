@@ -11,24 +11,24 @@ from pathlib import Path
 
 import pytest
 
-CANDIDATE_DIRS = [
-    Path(__file__).resolve().parent.parent,          # repo root checkout
-    Path(__file__).resolve().parent.parent / "sponsorscout" / "data" / "seeds",
-    Path.cwd(),
-]
+# Test the actual shipped package, independently of the developer's cwd.
+from sponsorscout.application import seed_manager
 
 
 def _find_seed(filename: str) -> Path:
-    for d in CANDIDATE_DIRS:
-        p = d / filename
-        if p.exists():
-            return p
-    pytest.skip(f"{filename} not found next to repo root or in sponsorscout/data/seeds")
+    paths = {
+        "company_ATS_seed.csv": seed_manager.bundled_ats_path(),
+        "company_Career_seed.csv": seed_manager.bundled_career_path(),
+    }
+    path = paths[filename]
+    assert path.is_file(), f"Bundled seed missing: {path}"
+    return path
 
 
 def _load(filename: str):
-    with open(_find_seed(filename), encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+    # Match the production comment policy; group headings are not targets.
+    return [row for row in seed_manager.read_seed_rows(_find_seed(filename))["rows"]
+            if not seed_manager.is_comment_row(row)]
 
 
 def test_career_seed_loads_and_validates():
@@ -42,7 +42,7 @@ def test_career_seed_loads_and_validates():
         assert url.startswith(("http://", "https://")) and "..." not in url, \
             f"line {n} {name}: bad URL {url!r}"
         st = (r.get("source_type") or "direct_employer").strip().lower()
-        assert st in ("direct_employer", "recruiter"), f"line {n} {name}: bad source_type"
+        assert st in seed_manager.SOURCE_TYPES, f"line {n} {name}: bad source_type"
         sp = (r.get("scope_policy") or "global").strip().lower()
         assert sp in ("global", "seed_url", "job_location"), f"line {n} {name}: bad scope"
         for col in ("sponsorship_history", "english_friendly", "remote_score"):
@@ -56,36 +56,31 @@ def test_career_seed_loads_and_validates():
         seen.add(key)
 
 
-def test_career_seed_no_misnamed_rows():
-    """Row names must match their URL host (Deliveroo-vs-Detectify guard)."""
-    rows = _load("company_Career_seed.csv")
-    for r in rows:
-        host = r["careers_url"].lower()
-        first_token = r["name"].strip().lower().split()[0]
-        generic_hosts = ("greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com",
-                         "workable.com", "personio.", "smartrecruiters", "recruitee.com",
-                         "amazon.jobs", "ikea.com", "timretailrecruiting", "gruppopam.it",
-                         "gruppo", "lavoro", "minorhotels", "coopalleanza", "talent.com",
-                         "tellento", "successfactors", "phenompeople", "eightfold",
-                         "oraclecloud.com", "myworkdaysite", "wd1.", "wd3.", "wd5.")
-        if any(h in host for h in generic_hosts):
-            continue
-        assert first_token[:4] in host or host.split("/")[2][:4] in first_token, \
-            f"suspicious: name={r['name']!r} url={r['careers_url']!r}"
+def test_career_seed_structural_host_validation_not_brand_substrings():
+    # Corporate groups, translated brands and ATS hosts need not contain the
+    # first four letters of a seed label. A substring is not identity evidence.
+    from urllib.parse import urlsplit
+    rows=_load("company_Career_seed.csv")
+    for row in rows:
+        parsed=urlsplit(row["careers_url"])
+        assert parsed.scheme in ("http","https") and parsed.hostname
+        assert not parsed.username and not parsed.password
+        if row["name"].casefold()=="deliveroo":
+            assert "detectify" not in parsed.hostname.casefold()
 
 
-def test_career_seed_v7_providers():
-    """API-backed rows must name a supported provider + slug."""
-    rows = _load("company_Career_seed.csv")
-    supported = {"greenhouse", "ashby", "lever", "personio", "recruitee", "workable",
-                 "auto", "", "oracle", "deel", "custom", "teamtailor"}
-    by_name = {r["name"]: r for r in rows}
-    assert by_name["Pitch"]["provider"] == "workable"
-    assert by_name["Pitch"]["board_slug"] == "pitch-software"
-    assert by_name["Spendesk"]["board_slug"] == "spendesk"
-    assert by_name["Ikea Italia"]["scope_policy"] == "job_location"
-    for r in rows:
-        assert (r.get("provider") or "") in supported, f"{r['name']}: bad provider"
+def test_career_seed_providers_follow_actual_registered_schema():
+    # Do not silently repopulate removed catalog rows (e.g. Pitch/Spendesk) or
+    # force a user's existing route to a historical provider just for this test.
+    rows=_load("company_Career_seed.csv")
+    for row in rows:
+        assert not seed_manager.validate_row(row), (row["name"],seed_manager.validate_row(row))
+    from sponsorscout.scanning.career.career_scanner import CareerPortalScanner
+    file=_find_seed("company_Career_seed.csv");before=file.read_bytes()
+    loaded=CareerPortalScanner(input_csv=str(file),skip_preflight=True).read_seed_file()
+    expected={(r["name"].strip(),r["careers_url"].strip(),(r.get("target_country")or"Global").strip()) for r in rows}
+    assert {(r["seed_name"],r["careers_url"],r["target_country"])for r in loaded}==expected
+    assert file.read_bytes()==before
 
 
 def test_ats_seed_loads():

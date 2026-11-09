@@ -62,23 +62,19 @@ def _career_seed_rows(path):
         return list(csv.DictReader(fh))
 
 
-def test_elior_italia_seed_filters_to_italy_in_repo_and_focus_seed():
-    checked = 0
-    for path in (
-        REPO / "data" / "seeds" / "company_Career_seed.csv",
-        REPO.parents[1] / "test_seeds" / "test_career_focus.csv",
-    ):
-        if not path.exists():
-            continue
-        checked += 1
-        rows = [r for r in _career_seed_rows(path)
-                if any((v or "").strip() == "Elior Italia" for v in r.values())]
-        assert rows, path
-        for r in rows:
-            url = next(v for v in r.values() if v and "eliorgroup.com" in v)
-            assert "field_country_target_id=402" in url, (path, url)
-            assert "field_country_target_id=All" not in url
-    assert checked >= 1
+def test_elior_user_route_is_preserved_by_production_loader():
+    # Current notes explicitly retain the user's unfiltered URL. Validate
+    # loading without rewriting it; URL text alone is not job-country proof.
+    from sponsorscout.scanning.career.career_scanner import CareerPortalScanner
+    path=REPO / "data" / "seeds" / "company_Career_seed.csv";before=path.read_bytes()
+    original=[r for r in _career_seed_rows(path)if r.get("name")=="Elior Italia"]
+    selected=CareerPortalScanner(input_csv=str(path),skip_preflight=True,
+        only_companies=["Elior Italia"]).read_seed_file()
+    assert len(original)==len(selected)==1
+    assert selected[0]["careers_url"]==original[0]["careers_url"]
+    assert selected[0]["target_country"]==original[0]["target_country"]=="Italy"
+    assert selected[0]["scope_policy"]==original[0]["scope_policy"]
+    assert path.read_bytes()==before
 
 
 def test_seed_revision_r3_marks_elior_change():

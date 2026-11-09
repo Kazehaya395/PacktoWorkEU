@@ -54,3 +54,65 @@ def db_path(data_dir):
         os.remove(path)
     db.initialize(path)
     return path
+
+
+_browser_cache = {}
+
+
+def _test_browser(original_home):
+    """Resolve once without launching a browser; works with the SDK on each OS."""
+    if not _browser_cache:
+        from playwright.sync_api import sync_playwright
+        explicit=os.environ.get('SPONSORSCOUT_TEST_BROWSER_EXECUTABLE')
+        with sync_playwright() as pw:full=Path(explicit or pw.chromium.executable_path)
+        cache=next((p.parent for p in full.parents if p.name.startswith('chromium-')),original_home/'.cache/ms-playwright')
+        _browser_cache.update(path=full,cache=cache)
+    return _browser_cache['path'],_browser_cache['cache']
+
+
+@pytest.fixture(autouse=True)
+def browser_test_profile(tmp_path, monkeypatch):
+    """Explicit TEST-ONLY choice, never a real user's app/browser setup.
+
+    Lean unit runs use a dummy executable at mocked launch sites. Opt-in real
+    browser tests require an explicitly installed full SDK Chromium (no shell),
+    or SPONSORSCOUT_TEST_BROWSER_EXECUTABLE. SDK launches in legacy fixtures are
+    also directed to that full executable, not the separate headless shell.
+    Path.home stays isolated even when data_dir reloads SponsorScout modules.
+    """
+    original_home=Path.home()
+    full,cache=_test_browser(original_home)
+    home=tmp_path/'test-profile';home.mkdir()
+    monkeypatch.setattr(Path,'home',classmethod(lambda cls:home))
+    monkeypatch.setenv('HOME',str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME',str(home/'.config'))
+    monkeypatch.setenv('PLAYWRIGHT_BROWSERS_PATH',str(cache))
+    if not full.is_file():
+        full=home/'unit-only-no-browser';full.write_text('Not a real browser: mocked unit launch sites only.')
+    if os.name=='nt':
+        # No test may delete real HKCU settings, even when testing purge logic.
+        import winreg,ctypes
+        monkeypatch.setattr(winreg,'DeleteKey',lambda *args:None)
+        monkeypatch.setattr(ctypes.windll.shell32,'IsUserAnAdmin',lambda:0)
+        from PySide6.QtCore import QSettings
+        previous_format=QSettings.defaultFormat()
+        QSettings.setDefaultFormat(QSettings.IniFormat)
+        QSettings.setPath(QSettings.IniFormat,QSettings.UserScope,str(home/'.config'))
+        monkeypatch.setenv('APPDATA',str(home/'Roaming'))
+        monkeypatch.setenv('LOCALAPPDATA',str(home/'Local'))
+    from sponsorscout.services import browser_policy as policy
+    chosen=dict(family='Chromium',kind='installed',path=str(full),validated=True,
+                fingerprint=policy.fingerprint(str(full)),versions=['test fixture','test fixture'])
+    policy.save_selection(chosen)
+    from playwright.sync_api import BrowserType
+    launch=BrowserType.launch
+    def full_browser(self,*args,**kwargs):
+        if self.name=='chromium':
+            kwargs.setdefault('channel','chromium')
+            kwargs.setdefault('executable_path',str(full))
+        return launch(self,*args,**kwargs)
+    monkeypatch.setattr(BrowserType,'launch',full_browser)
+    try:yield home
+    finally:
+        policy.remove_private_temp()
+        if os.name=='nt':QSettings.setDefaultFormat(previous_format)
