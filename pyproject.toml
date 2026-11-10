@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sponsorscout"
+name = "packtoworkeu"
 version = "0.3.0"
 description = "Verified sponsorship-focused job discovery for international candidates"
 requires-python = ">=3.10"
@@ -36,24 +36,24 @@ dev = [
     "pyinstaller>=6.0.0",
 ]
 
-# Test suite lives in sponsorscout/tests and runs with pytest:
-#   pip install ".[dev]"  then  python -m pytest sponsorscout/tests
+# Test suite lives in packtoworkeu/tests and runs with pytest:
+#   pip install ".[dev]"  then  python -m pytest packtoworkeu/tests
 
 [project.urls]
-Homepage = "https://sponsorscout.app"
-Repository = "https://github.com/Kazehaya395/SponsorScout"
-Issues = "https://github.com/Kazehaya395/SponsorScout/issues"
+Homepage = "https://packtoworkeu.app"
+Repository = "https://github.com/Kazehaya395/PacktoWorkEU"
+Issues = "https://github.com/Kazehaya395/PacktoWorkEU/issues"
 
 [project.scripts]
-sponsorscout = "sponsorscout.main:main"
-sponsorscout-scan = "sponsorscout.scripts.run_scan:main"
+packtoworkeu = "packtoworkeu.main:main"
+packtoworkeu-scan = "packtoworkeu.scripts.run_scan:main"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sponsorscout*"]
+include = ["packtoworkeu*"]
 
 [tool.setuptools.package-data]
-sponsorscout = ["data/*.json", "data/seeds/*.csv", "data/*.png", "data/*.ico", "data/icons/*.png", "db/*.sql", "insights/*.json", "insights/*.csv"]
+packtoworkeu = ["data/*.json", "data/seeds/*.csv", "data/*.png", "data/*.ico", "data/icons/*.png", "db/*.sql", "insights/*.json", "insights/*.csv"]
