@@ -1,4 +1,4 @@
-# Runtime dependencies actually imported by the shipped sponsorscout package.
+# Runtime dependencies actually imported by the shipped packtoworkeu package.
 # Representational ordered-requests HTTP client with retries/bot handling.
 requests>=2.31.0,<3.0.0
 # Use the OS certificate store (Windows/macOS) for HTTPS, so sites whose

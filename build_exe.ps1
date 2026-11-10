@@ -51,7 +51,7 @@ function Assert-AppClosed([string]$TargetExe) {
         if ($null -eq $proc) { continue }
         $procPath = $proc.ExecutablePath
         if ([string]::IsNullOrWhiteSpace($procPath)) {
-            throw "A running $exeLeaf process has an unreadable ExecutablePath; close SponsorScout and retry."
+            throw "A running $exeLeaf process has an unreadable ExecutablePath; close PacktoWorkEU and retry."
         }
         $procNorm = "$procPath".Replace('/', '\').TrimEnd('\')
         if ([string]::Equals($procNorm, $targetNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -61,7 +61,7 @@ function Assert-AppClosed([string]$TargetExe) {
 }
 
 function Test-Payload([string]$ExeFile) {
-    $logFile = $env:SPONSORSCOUT_SELF_CHECK_LOG
+    $logFile = $env:PACKTOWORKEU_SELF_CHECK_LOG
     if ($logFile -and (Test-Path -LiteralPath $logFile -PathType Leaf)) {
         Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue
     }
@@ -75,7 +75,7 @@ function Test-Payload([string]$ExeFile) {
         $details = if ($logFile -and (Test-Path -LiteralPath $logFile -PathType Leaf)) { "`n" + (Get-Content -Raw -LiteralPath $logFile) } else { '' }
         throw "Packaged GUI self-check failed (exit $($guiCheck.ExitCode)): $ExeFile$details"
     }
-    if ($env:SPONSORSCOUT_VALIDATE_BROWSER -eq '1') {
+    if ($env:PACKTOWORKEU_VALIDATE_BROWSER -eq '1') {
         $browserCheck = Start-Process -FilePath $ExeFile -ArgumentList '--self-check-browser' -Wait -PassThru
         if ($browserCheck.ExitCode -ne 0) {
             $details = if ($logFile -and (Test-Path -LiteralPath $logFile -PathType Leaf)) { "`n" + (Get-Content -Raw -LiteralPath $logFile) } else { '' }
@@ -190,7 +190,7 @@ function Find-Iscc {
     return $null
 }
 
-$AppName         = 'SponsorScout'
+$AppName         = 'PacktoWorkEU'
 $Version         = Get-Version
 $DistDir         = Join-Path $Root 'dist'
 $BuildDir        = Join-Path $DistDir $AppName
@@ -201,10 +201,10 @@ $WorkDir         = Join-Path $WinBuildRoot 'work'
 $FrozenDir       = Join-Path $WinBuildRoot 'frozen'
 $InstallerSrcDir = Join-Path $WinBuildRoot 'installer-src'
 $CompilerOutDir  = Join-Path $WinBuildRoot 'installer-out'
-$InstallerName   = "sponsorscout-$Version-setup.exe"
+$InstallerName   = "packtoworkeu-$Version-setup.exe"
 $FreshInstaller  = Join-Path $CompilerOutDir $InstallerName
 $InstallerOut    = Join-Path $DistDir $InstallerName
-$BuildReportOut  = Join-Path $DistDir "sponsorscout-$Version-build-report.json"
+$BuildReportOut  = Join-Path $DistDir "packtoworkeu-$Version-build-report.json"
 
 $Iscc = Find-Iscc
 if (-not $BundleOnly -and -not $Iscc) {
@@ -279,7 +279,7 @@ $FrozenDeps = $script:NativeOutput -join "`r`n"
 [System.IO.File]::WriteAllText((Join-Path $WinBuildRoot 'build-dependencies.txt'), $FrozenDeps, (New-Object System.Text.UTF8Encoding($false)))
 Invoke-BuildPython -c "from playwright.sync_api import sync_playwright"
 
-Write-Host "[2/4] Building $AppName from SponsorScout.spec..." -ForegroundColor Cyan
+Write-Host "[2/4] Building $AppName from PacktoWorkEU.spec..." -ForegroundColor Cyan
 foreach ($dir in @($WorkDir, $FrozenDir, $InstallerSrcDir, $CompilerOutDir)) {
     if (Test-Path -LiteralPath $dir) {
         Remove-Item -LiteralPath $dir -Recurse -Force
@@ -292,7 +292,7 @@ Invoke-BuildPython -m PyInstaller `
     --noconfirm `
     --workpath $WorkDir `
     --distpath $FrozenDir `
-    (Join-Path $Root 'SponsorScout.spec')
+    (Join-Path $Root 'PacktoWorkEU.spec')
 
 $FrozenAppDir = Join-Path $FrozenDir $AppName
 $FrozenExe = Join-Path $FrozenAppDir "$AppName.exe"
@@ -308,14 +308,14 @@ Copy-Item -Path (Join-Path $FrozenAppDir '*') -Destination $BuildDir -Recurse -F
 
 New-Item -ItemType Directory -Path $InstallerSrcDir -Force | Out-Null
 Copy-Item -Path (Join-Path $BuildDir '*') -Destination $InstallerSrcDir -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $Root 'sponsorscout\data\sponsorscout.ico') -Destination (Join-Path $InstallerSrcDir 'sponsorscout.ico') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'packtoworkeu\data\packtoworkeu.ico') -Destination (Join-Path $InstallerSrcDir 'packtoworkeu.ico') -Force
 
 Write-Host "[3/4] Validating final staged payload (dependencies, 8-tab GUI smoke, payload audit)..." -ForegroundColor Cyan
-$env:SPONSORSCOUT_SELF_CHECK_LOG = Join-Path $WinBuildRoot 'self-check.log'
+$env:PACKTOWORKEU_SELF_CHECK_LOG = Join-Path $WinBuildRoot 'self-check.log'
 try {
     Test-Payload (Join-Path $InstallerSrcDir "$AppName.exe")
 } finally {
-    Remove-Item Env:\SPONSORSCOUT_SELF_CHECK_LOG -ErrorAction SilentlyContinue
+    Remove-Item Env:\PACKTOWORKEU_SELF_CHECK_LOG -ErrorAction SilentlyContinue
 }
 
 if (-not $BundleOnly) {
@@ -324,7 +324,7 @@ if (-not $BundleOnly) {
     $prevErr = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Iscc "/DMyAppVersion=$Version" "/DInstallerSourceDir=$InstallerSrcDir" "/O$CompilerOutDir" "/Fsponsorscout-$Version-setup" (Join-Path $Root 'installer.iss')
+        & $Iscc "/DMyAppVersion=$Version" "/DInstallerSourceDir=$InstallerSrcDir" "/O$CompilerOutDir" "/Fpacktoworkeu-$Version-setup" (Join-Path $Root 'installer.iss')
         $CompilerCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevErr

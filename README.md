@@ -1,6 +1,6 @@
-<img src="sponsorscout/data/sponsorscout.png" alt="SponsorScout" width="420">
+<img src="packtoworkeu\data\packtoworkeu.png" alt="SponsorScout" width="420">
 
-# SponsorScout
+# PacktoWorkEU
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
 
@@ -11,7 +11,7 @@ sponsorship evidence. Results and application notes are stored on your computer.
 > [🚀 Quick Start / Avvio Rapido](#-quick-start) ·
 > [🗂 The Eight Tabs / Le Otto Schede](#-the-eight-tabs)
 
-<img src="assets/main_dashboard.png" alt="SponsorScout eight-tab workspace — Dashboard, Search, Applications, Tools, Data Management, AI Prompt Kit, Insights and Assisted Ingestion" width="860">
+<img src="assets/main_dashboard.png" alt="PacktoWorkEU eight-tab workspace — Dashboard, Search, Applications, Tools, Data Management, AI Prompt Kit, Insights and Assisted Ingestion" width="860">
 
 *Screenshots use example data. Your results and available controls depend on
 saved data, window size and whether a scan is running. Scroll inside Tools and
@@ -45,14 +45,14 @@ Insights to reach lower controls and charts.*
 To run from source, follow the Python/venv instructions under
 [Building From Source](#-building-from-source). No binary build is required.
 For a packaged installation, check the
-[GitHub Releases page](https://github.com/Kazehaya395/SponsorScout/releases)
+[GitHub Releases page](https://github.com/Kazehaya395/PacktoWorkEU/releases)
 for available downloads. The supported package formats are:
 
 | Platform | File |
 |----------|------|
-| Windows 10 / 11 | `sponsorscout-<version>-setup.exe` |
-| Linux (Debian / Ubuntu / Mint) | `sponsorscout_<version>_<arch>.deb` |
-| Linux (Fedora / RHEL / openSUSE) | `sponsorscout-<version>-1.<arch>.rpm` |
+| Windows 10 / 11 | `packtoworkeu-<version>-setup.exe` |
+| Linux (Debian / Ubuntu / Mint) | `packtoworkeu_<version>_<arch>.deb` |
+| Linux (Fedora / RHEL / openSUSE) | `packtoworkeu-<version>-1.<arch>.rpm` |
 
 `<arch>` is your machine's architecture (`amd64` on most desktops, `arm64` on
 Raspberry Pi / Graviton). Pick the file for your platform. The app and Playwright
@@ -63,13 +63,13 @@ Installing the Linux packages:
 
 ```bash
 # Debian / Ubuntu / Mint
-sudo apt install ./sponsorscout_<version>_<arch>.deb
+sudo apt install ./packtoworkeu_<version>_<arch>.deb
 
 # Fedora / RHEL / openSUSE
-sudo dnf install ./sponsorscout-<version>-1.<arch>.rpm   # or: sudo zypper install ...
+sudo dnf install ./packtoworkeu-<version>-1.<arch>.rpm   # or: sudo zypper install ...
 ```
 
-Both packages install to `/opt/sponsorscout` and add a launcher plus a desktop
+Both packages install to `/opt/packtoworkeu` and add a launcher plus a desktop
 entry. Before scanning, use **Browser setup** as described below.
 
 ---
@@ -166,9 +166,6 @@ Running from source? See [Building From Source](#-building-from-source).
 
 ### Browser setup
 
-<a href="assets/browser_select.png"><img src="assets/browser_select.png" alt="Selected browser to be used for normal/Custom/Resume scans" width="860"></a>
-
-
 The same selected browser is used for normal/Custom/Resume scans and the visible
 **Assisted Ingestion** window. Open **Tools → Advanced maintenance and diagnostics →
 Browser setup**, then:
@@ -182,7 +179,7 @@ Browser setup**, then:
    The local test also checks that Playwright created a temporary profile.
 3. If no candidate works, install a Chromium-family browser yourself, or click
    **Download app-managed Chromium** and explicitly confirm. This downloads one
-   **full Chromium**, using `--no-shell`, into SponsorScout storage; it does not
+   **full Chromium**, using `--no-shell`, into PacktoWorkEU storage; it does not
    install a separate headless shell or alter your personal browser installation.
    Validation/download work runs off the UI thread; wait for it to finish before closing setup.
 
@@ -196,7 +193,7 @@ enterprise policy or missing Linux libraries may require validation again. Passi
 this local test does **not** prove that a particular job site will grant access.
 
 The app never downloads a browser during a scan, startup, package installation or
-build. `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` no longer enables downloads. Existing
+build. `PACKTOWORKEU_AUTO_INSTALL_BROWSERS=1` no longer enables downloads. Existing
 shared Playwright caches are not automatically selected, changed or deleted.
 
 <img src="assets/browser_setup.png" alt="Browser setup: detect installed browsers, validate both modes, explicitly download Chromium or save the selected browser" width="860">
@@ -364,7 +361,7 @@ Select a queued portal, or enter **Company / Seed Name**, source type and
 Clicking it explicitly starts the app-controlled Chromium workflow. **Stop**
 requests a cooperative stop and keeps committed jobs. **Open website** is
 **view-only** in your ordinary browser; it does not collect jobs or share that
-browser's cookies/session with SponsorScout. A queue selection alone is not a crawl.
+browser's cookies/session with PacktoWorkEU. A queue selection alone is not a crawl.
 
 The queue shows **Company**, **Target URL**, **Reason / Phase**, **Status** and
 **Action**. Use **Refresh queue** after changes; select a row for its full reason
@@ -504,11 +501,11 @@ back up the user-data folder before destructive actions. Alias merging requires
 explicit review; ordinary scans do not automatically clean up your database.
 
 Maintenance backups are stored in `maintenance_backups/` beside the database.
-To restore one, close SponsorScout first, retain your current database separately,
+To restore one, close PacktoWorkEU first, retain your current database separately,
 and restore the selected backup. Never replace an open SQLite database.
 
 For implementation details and data-file formats, see the
-[Codebase Guide](SponsorScout_codebase_guide.md).
+[Codebase Guide](PacktoWorkEU_codebase_guide.md).
 
 ---
 
@@ -516,24 +513,24 @@ For implementation details and data-file formats, see the
 
 | Platform | Location |
 |----------|----------|
-| Windows | `%APPDATA%\SponsorScout` |
-| Linux | `~/.sponsorscout` |
+| Windows | `%APPDATA%\PacktoWorkEU` |
+| Linux | `~/.packtoworkeu` |
 
-Contains `sponsorscout.db` (jobs, companies, applications, scan history),
+Contains `packtoworkeu.db` (jobs, companies, applications, scan history),
 `seeds/` (your editable company lists), `locale.json` (language) and raw scan
 logs under `scan_output/`.
 
 Close the app, then back up the **whole user-data folder**, including seeds,
 documents and scan history. A live SQLite database can also have WAL/SHM sidecars;
 copying only its `.db` while the app runs is not a complete backup.
-Set `SPONSORSCOUT_DATA_DIR` or `SPONSORSCOUT_DB_PATH` **before launching** to
+Set `PACKTOWORKEU_DATA_DIR` or `PACKTOWORKEU_DB_PATH` **before launching** to
 override the paths. A separately located custom database needs its own backup.
 
 Browser selection (`browser.json`), the ownership registry (`owned_paths.jsonl`) and
 the optional full browser (`browser/`) and browser caches/downloads (`runtime/`) stay in the **default per-account folder**
 above, even when you override job-data paths. CV text and saved AI prompt content
 are part of the database. App-scoped Qt settings are also cleaned on uninstall. On Linux, short private
-temporary directories under `/tmp/sponsorscout-<uid>-<account-hash>` avoid browser
+temporary directories under `/tmp/packtoworkeu-<uid>-<account-hash>` avoid browser
 socket-path limits; they are account-owned, permission-checked and removed on uninstall.
 
 ### Uninstalling
@@ -543,7 +540,7 @@ uninstaller. Keep your separate user-data folder unless you deliberately want
 to remove it. The following warnings apply to packaged uninstallers.
 
 
-The Windows uninstaller and Linux `.deb`/`.rpm` removal delete SponsorScout-owned
+The Windows uninstaller and Linux `.deb`/`.rpm` removal delete PacktoWorkEU-owned
 data: database and SQLite sidecars, CV/prompt content, editable seeds and their
 app-created backups, language/settings, scan outputs, maintenance backup/audit
 files and the optional app-managed browser. **Back up what you want to keep first.**
@@ -558,7 +555,7 @@ version, require your own review. Do not use symlink/junction data locations.
 Missing permissions or unsafe records cause an incomplete-cleanup error, not a
 claim of success; package removal stops so you can repair permissions and retry.
 
-Windows packages are now **per-user** under `%LOCALAPPDATA%\Programs\SponsorScout`
+Windows packages are now **per-user** under `%LOCALAPPDATA%\Programs\PacktoWorkEU`
 (`PrivilegesRequired=lowest`): no administrator rights are required, and install
 and uninstall also work on full-access Administrator accounts. Uninstall cleans that
 account; it does not inspect other Windows users. An older machine-wide install
@@ -566,11 +563,11 @@ is detected and the new installer stops: back up its data/custom locations befor
 removing it, then install and restore your data. Do not treat that migration as an
 in-place upgrade. Ordinary updates within the new per-user format preserve data.
 
-On Linux, `apt remove sponsorscout` / `dnf remove sponsorscout` run cleanup before
+On Linux, `apt remove packtoworkeu` / `dnf remove packtoworkeu` run cleanup before
 the trusted executable is removed, separately under each relevant account’s own
 privileges. Upgrades do **not** purge user data. Source/venv deletion alone is not
 an uninstall; for deliberate irreversible account cleanup, after backups, run
-`python -m sponsorscout.main --purge-user-data` as that user, **not with sudo**.
+`python -m packtoworkeu.main --purge-user-data` as that user, **not with sudo**.
 
 ---
 
@@ -584,17 +581,17 @@ log, shows which companies returned nothing.
 maintenance and diagnostics → Browser setup**, detect/select a browser, validate
 both modes and save it. If a browser was moved or updated, validate again. If none
 works, the download button offers the explicitly confirmed full Chromium fallback.
-A bare `playwright install` into a shared cache does not configure SponsorScout.
+A bare `playwright install` into a shared cache does not configure PacktoWorkEU.
 Missing `playwright`/`greenlet` is instead a Python dependency issue: reinstall the
 requirements in your actual venv; browser setup cannot repair missing libraries.
 
 ```bash
-python -m sponsorscout.main --self-check          # imports + driver, no browser required
-python -m sponsorscout.main --self-check-browser  # selected browser, headless AND visible
+python -m packtoworkeu.main --self-check          # imports + driver, no browser required
+python -m packtoworkeu.main --self-check-browser  # selected browser, headless AND visible
 ```
 
-Packaged equivalents use `/opt/sponsorscout/SponsorScout` on Linux or
-`%LOCALAPPDATA%\Programs\SponsorScout\SponsorScout.exe` on Windows. The second
+Packaged equivalents use `/opt/packtoworkeu/PacktoWorkEU` on Linux or
+`%LOCALAPPDATA%\Programs\PacktoWorkEU\PacktoWorkEU.exe` on Windows. The second
 check opens a short-lived window and needs a desktop/display; it is **optional**
 for developers, not an unconditional lean-build requirement. Linux system-library
 errors may need OS packages installed by an administrator; the app does not run
@@ -614,7 +611,7 @@ server error (reported as `error` when observed). See
 Do not assume a verification wall from a failed page or bypass one.
 
 **The scan is slow.** The detail-page pass is the slow part, and it is bounded:
-SponsorScout sizes its browser pool from your CPU/RAM, runs at below-normal
+PacktoWorkEU sizes its browser pool from your CPU/RAM, runs at below-normal
 priority, and blocks images/fonts/media while crawling. The Dashboard stays
 usable. You do not have to wait it out — press **Pause** to suspend the scan
 at cooperative checkpoints (saved work is retained) and click the same button
@@ -637,7 +634,7 @@ produce a visible error rather than a growing regex/retry loop.
 
 **A job shows `?`.** `?` means *unknown*, never *no*. A readable ad may be
 silent about support, or the JD may still be unread/blocked/deferred. Check JD
-coverage before interpreting it; SponsorScout does not invent a refusal.
+coverage before interpreting it; PacktoWorkEU does not invent a refusal.
 Unknown jobs are never removed.
 
 **Can I scan only some companies?** Yes — **Tools → Custom Scan**. Same
@@ -649,7 +646,7 @@ invalid pattern warns and falls back to a normal search.
 
 **Does anything leave my computer?** Scanning and JD loading contact websites;
 those sites and their embedded services receive ordinary request/network data.
-SponsorScout does not automatically upload your stored CV/notes to an AI service.
+PacktoWorkEU does not automatically upload your stored CV/notes to an AI service.
 Clipboard content leaves the app if you paste/share it elsewhere. **Open website**
 uses your external browser and that browser’s ordinary network/session behaviour.
 
@@ -666,7 +663,7 @@ From the extracted folder containing `pyproject.toml`, with Python 3.10+:
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m sponsorscout.main
+.\.venv\Scripts\python.exe -m packtoworkeu.main
 ```
 
 ```bash
@@ -674,7 +671,7 @@ py -3 -m venv .venv
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m sponsorscout.main
+.venv/bin/python -m packtoworkeu.main
 ```
 
 Choose and validate an installed browser in **Browser setup** after launching.
@@ -683,9 +680,9 @@ required terminal step. Native Qt libraries, Chromium system libraries and a
 desktop session are needed on Linux. If necessary, an administrator can explicitly
 run `.venv/bin/python -m playwright install-deps chromium` on supported systems;
 that installs OS dependencies, **not** a second browser, and may need elevated rights.
-For startup diagnostics use `python -m sponsorscout.main --self-check` and
-`python -m sponsorscout.main --self-check-browser` with that same venv interpreter.
-Do **not** use `python -m sponsorscout`: this tree has no `__main__.py`.
+For startup diagnostics use `python -m packtoworkeu.main --self-check` and
+`python -m packtoworkeu.main --self-check-browser` with that same venv interpreter.
+Do **not** use `python -m packtoworkeu`: this tree has no `__main__.py`.
 After moving to a new checkout, reinstall `-e .` in the intended venv so an older
 editable install does not point at the wrong source folder. No source update
 requires deleting your database.
@@ -712,12 +709,12 @@ dependencies/driver only. Builds also run `--self-check-gui`: an isolated, offli
 eight-tab startup/close check, using temporary data and INI settings rather than
 your database or Windows registry. It is not a site-access or physical-desktop
 certification. To explicitly test a previously configured browser in
-both modes, set `SPONSORSCOUT_VALIDATE_BROWSER=1` before building; a display is
+both modes, set `PACKTOWORKEU_VALIDATE_BROWSER=1` before building; a display is
 required. No automatic download occurs in either mode.
 
 **Windows installer:**
 ```powershell
-.\build_exe.ps1               # -> dist\sponsorscout-<version>-setup.exe
+.\build_exe.ps1               # -> dist\packtoworkeu-<version>-setup.exe
 ```
 Run this in PowerShell (standard user or Administrator). The script uses your active
 venv's Python as a bootstrap (or `-PythonExe C:\path\python.exe`), then installs
@@ -729,22 +726,22 @@ Inno Setup 6/7 is required for the default installer build. To deliberately buil
 only the application folder, use `.\build_exe.ps1 -BundleOnly`. Missing Inno or
 missing fresh installer output is an error, not a successful installer build.
 
-- `dist\sponsorscout-<version>-setup.exe` is the **compressed installer** (`PrivilegesRequired=lowest`, installing per-user under `%LOCALAPPDATA%\Programs\SponsorScout` on both standard and full-access Administrator accounts without requiring UAC elevation).
-- `dist\SponsorScout\SponsorScout.exe` opens the application **without installing**;
+- `dist\packtoworkeu-<version>-setup.exe` is the **compressed installer** (`PrivilegesRequired=lowest`, installing per-user under `%LOCALAPPDATA%\Programs\PacktoWorkEU` on both standard and full-access Administrator accounts without requiring UAC elevation).
+- `dist\PacktoWorkEU\PacktoWorkEU.exe` opens the application **without installing**;
   keep the entire folder, including `_internal`. The launcher size is not app size.
 - The script reports application/staged payload **MiB**, compressed installer MiB,
-  SHA256 and `sponsorscout-<version>-build-report.json`. Different measurements and
+  SHA256 and `packtoworkeu-<version>-build-report.json`. Different measurements and
   Windows/Linux payloads need not match. Only freshly built outputs are reported.
 - If the exact build-output app is open, close it and retry. No global force-kill
   is performed. Installer uninstall likewise requires the installed app closed.
 
-All three builders consume `SponsorScout.spec`, filter application tests before
+All three builders consume `PacktoWorkEU.spec`, filter application tests before
 collection, retain runtime metadata/Qt plugins, audit for accidentally bundled
 browsers and check the final payload. No browser is bundled or downloaded.
 
 **Linux package (Debian / Ubuntu):**
 ```bash
-./build_deb.sh                # -> dist/sponsorscout_<version>_<arch>.deb
+./build_deb.sh                # -> dist/packtoworkeu_<version>_<arch>.deb
 ```
 Run it as your normal user: **do not use `sudo`**. The script creates an
 isolated build environment in `.build/deb-venv`, so it never modifies the
@@ -757,11 +754,11 @@ For a much faster build that requires dpkg >= 1.21.18 to install, use
 Building from a Windows drive mounted in WSL (`/mnt/c/...` and friends) is not
 recommended: those filesystems cannot store Unix permissions, so the build
 detects it and stages the package in `/tmp`. For the fastest and most
-reliable build, copy the project to a Linux filesystem such as `~/sponsorscout`.
+reliable build, copy the project to a Linux filesystem such as `~/packtoworkeu`.
 
 **Linux package (Fedora / RHEL / openSUSE — RPM):**
 ```bash
-./build_rpm.sh               # -> dist/sponsorscout-<version>-1.<arch>.rpm
+./build_rpm.sh               # -> dist/packtoworkeu-<version>-1.<arch>.rpm
 ```
 Same rules as the `.deb`: run it as your normal user (**do not use `sudo`**)
 and let it create the isolated `.build/rpm-venv`. Requires `rpmbuild`
@@ -776,7 +773,7 @@ other two scripts it leaves `dist/` alone apart from its own output, so the
 
 **Tests:**
 ```bash
-python -m pytest sponsorscout/tests
+python -m pytest packtoworkeu/tests
 ```
 
 ---
@@ -786,7 +783,7 @@ python -m pytest sponsorscout/tests
 ## More Help
 
 - [Troubleshooting](#-troubleshooting) — current bugs and practical limitations.
-- [Codebase Guide](SponsorScout_codebase_guide.md) — architecture, file formats,
+- [Codebase Guide](PacktoWorkEU_codebase_guide.md) — architecture, file formats,
   development and maintenance details.
 
 ---
@@ -808,7 +805,7 @@ MIT — see [LICENSE](LICENSE).
 
 Location reference data includes information from [GeoNames](https://www.geonames.org/),
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Source and attribution details are included in `sponsorscout/data/location_places.json`.
+Source and attribution details are included in `packtoworkeu/data/location_places.json`.
 
 ---
 
@@ -838,14 +835,14 @@ Source and attribution details are included in `sponsorscout/data/location_place
 Per avviare dai sorgenti, segui le istruzioni Python/venv in
 [Compilare dai Sorgenti](#-compilare-dai-sorgenti): non serve creare un binario.
 Per installare un pacchetto, controlla i download disponibili nella
-[pagina GitHub Releases](https://github.com/Kazehaya395/SponsorScout/releases).
+[pagina GitHub Releases](https://github.com/Kazehaya395/PacktoWorkEU/releases).
 I formati supportati sono:
 
 | Piattaforma | File |
 |-------------|------|
-| Windows 10 / 11 | `sponsorscout-<versione>-setup.exe` |
-| Linux (Debian / Ubuntu / Mint) | `sponsorscout_<versione>_<arch>.deb` |
-| Linux (Fedora / RHEL / openSUSE) | `sponsorscout-<versione>-1.<arch>.rpm` |
+| Windows 10 / 11 | `packtoworkeu-<versione>-setup.exe` |
+| Linux (Debian / Ubuntu / Mint) | `packtoworkeu_<versione>_<arch>.deb` |
+| Linux (Fedora / RHEL / openSUSE) | `packtoworkeu-<versione>-1.<arch>.rpm` |
 
 `<arch>` è l'architettura della tua macchina (`amd64` sulla maggior parte dei
 desktop, `arm64` su Raspberry Pi / Graviton). Scegli il file per la tua
@@ -857,13 +854,13 @@ Installare i pacchetti Linux:
 
 ```bash
 # Debian / Ubuntu / Mint
-sudo apt install ./sponsorscout_<versione>_<arch>.deb
+sudo apt install ./packtoworkeu_<versione>_<arch>.deb
 
 # Fedora / RHEL / openSUSE
-sudo dnf install ./sponsorscout-<versione>-1.<arch>.rpm   # oppure: sudo zypper install ...
+sudo dnf install ./packtoworkeu-<versione>-1.<arch>.rpm   # oppure: sudo zypper install ...
 ```
 
-Entrambi i pacchetti installano in `/opt/sponsorscout` e aggiungono un launcher
+Entrambi i pacchetti installano in `/opt/packtoworkeu` e aggiungono un launcher
 più una voce nel menu applicazioni. Prima della scansione usa
 **Configurazione browser**, come spiegato sotto.
 
@@ -965,8 +962,6 @@ Esegui dai sorgenti? Vedi [Compilare dai Sorgenti](#-compilare-dai-sorgenti).
 
 ### Configurazione browser
 
-<a href="assets/browser_select_it.png"><img src="assets/browser_select_it.png" alt="Selected browser to be used for normal/Custom/Resume scans" width="860"></a>
-
 Il browser scelto viene usato nelle scansioni normali/Personalizzate/Riprendi e
 nella finestra visibile di **Acquisizione Assistita**. Apri **Strumenti →
 Manutenzione e diagnostica avanzate → Configurazione browser**:
@@ -980,7 +975,7 @@ Manutenzione e diagnostica avanzate → Configurazione browser**:
    Il test controlla anche la creazione di un profilo temporaneo Playwright.
 3. Se nessuno funziona, installa tu un browser Chromium oppure premi **Scarica
    Chromium gestito dall’app** e conferma esplicitamente. Viene scaricato un solo
-   **Chromium completo**, con `--no-shell`, nello spazio di SponsorScout: nessuna
+   **Chromium completo**, con `--no-shell`, nello spazio di PacktoWorkEU: nessuna
    shell headless separata e nessuna modifica al browser personale. Verifica e download
    lavorano in background; attendi la fine prima di chiudere la configurazione.
 
@@ -995,7 +990,7 @@ policy aziendali o librerie Linux mancanti possono richiedere una nuova verifica
 Superare il test locale **non** garantisce l’accesso ai siti di lavoro.
 
 Nessun download automatico durante scansione, avvio, installazione del pacchetto o
-build. `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` non abilita più i download. Le cache
+build. `PACKTOWORKEU_AUTO_INSTALL_BROWSERS=1` non abilita più i download. Le cache
 Playwright condivise non vengono selezionate, modificate o eliminate automaticamente.
 
 <img src="assets/browser_setup_it.png" alt="Configurazione browser: rilevamento, verifica delle due modalità, download esplicito e salvataggio" width="860">
@@ -1305,7 +1300,7 @@ Per ripristinarne uno, chiudi prima l'app, conserva separatamente il database
 attuale e ripristina il backup scelto. Non sostituire mai un database SQLite aperto.
 
 Per dettagli di implementazione e formati dei file, vedi la
-[Guida al codice](SponsorScout_codebase_guide.md).
+[Guida al codice](PacktoWorkEU_codebase_guide.md).
 
 ---
 
@@ -1313,22 +1308,22 @@ Per dettagli di implementazione e formati dei file, vedi la
 
 | Piattaforma | Posizione |
 |-------------|-----------|
-| Windows | `%APPDATA%\SponsorScout` |
-| Linux | `~/.sponsorscout` |
+| Windows | `%APPDATA%\PacktoWorkEU` |
+| Linux | `~/.packtoworkeu` |
 
-Contiene `sponsorscout.db` (lavori, aziende, candidature, cronologia scansioni),
+Contiene `packtoworkeu.db` (lavori, aziende, candidature, cronologia scansioni),
 `seeds/` (i tuoi elenchi modificabili), `locale.json` (lingua) e i log grezzi
 in `scan_output/`.
 
 Chiudi l'app e salva **l'intera cartella dati**, inclusi seed, documenti e log.
 Copiare solo un database aperto può perdere dati nei file WAL/SHM. Imposta
-`SPONSORSCOUT_DATA_DIR` o `SPONSORSCOUT_DB_PATH` prima dell'avvio; un database
+`PACKTOWORKEU_DATA_DIR` o `PACKTOWORKEU_DB_PATH` prima dell'avvio; un database
 separato richiede anche un backup della sua posizione.
 
 La scelta del browser (`browser.json`), il registro dei percorsi (`owned_paths.jsonl`)
 e il browser facoltativo (`browser/`) restano nella **cartella predefinita dell’account**,
 anche se sposti i dati di lavoro. Cache e download del browser restano in `runtime/`.
-Su Linux i temporanei privati in `/tmp/sponsorscout-<uid>-<hash-account>` evitano
+Su Linux i temporanei privati in `/tmp/packtoworkeu-<uid>-<hash-account>` evitano
 limiti di lunghezza dei socket; proprietà e permessi vengono controllati e la
 disinstallazione li elimina. CV e prompt salvati sono nel database. La
 disinstallazione rimuove anche le impostazioni Qt specifiche dell’app.
@@ -1341,7 +1336,7 @@ i pacchetti e i relativi programmi di disinstallazione.
 
 
 La disinstallazione Windows e la rimozione dei pacchetti `.deb`/`.rpm` eliminano i
-dati di SponsorScout: database e file SQLite ausiliari, CV/prompt, seed modificabili
+dati di PacktoWorkEU: database e file SQLite ausiliari, CV/prompt, seed modificabili
 e relativi backup creati dall’app, lingua/impostazioni, output, backup/audit di
 manutenzione e browser facoltativo gestito dall’app. **Salva prima ciò che vuoi tenere.**
 I percorsi personalizzati usati da questa versione vengono registrati: non serve
@@ -1355,7 +1350,7 @@ Permessi mancanti o record non sicuri fermano la rimozione con un errore: correg
 il problema e riprova; non viene dichiarata una pulizia completa non riuscita.
 
 L’installer Windows ora è **per utente** in
-`%LOCALAPPDATA%\Programs\SponsorScout` (`PrivilegesRequired=lowest`): non richiede
+`%LOCALAPPDATA%\Programs\PacktoWorkEU` (`PrivilegesRequired=lowest`): non richiede
 privilegi amministrativi e installazione e disinstallazione funzionano anche con
 account Administrator con accesso completo. Pulisce solo quell’account, non altri utenti
 Windows. Se rileva una vecchia installazione per tutta la macchina, si ferma:
@@ -1363,12 +1358,12 @@ salva dati e percorsi personalizzati prima di rimuoverla, poi installa e riprist
 i dati. Non è un aggiornamento diretto. Gli aggiornamenti dello stesso nuovo
 formato per utente conservano i dati.
 
-Su Linux `apt remove sponsorscout` / `dnf remove sponsorscout` puliscono i dati
+Su Linux `apt remove packtoworkeu` / `dnf remove packtoworkeu` puliscono i dati
 prima di rimuovere l’eseguibile, usando i privilegi propri di ciascun account
 interessato, mai interpretando i suoi percorsi come root. Gli aggiornamenti non
 cancellano i dati. Eliminare sorgenti/venv non disinstalla: per una pulizia
 irreversibile volontaria dell’account, dopo il backup, usa
-`python -m sponsorscout.main --purge-user-data` come quell’utente, **senza sudo**.
+`python -m packtoworkeu.main --purge-user-data` come quell’utente, **senza sudo**.
 
 ---
 
@@ -1384,16 +1379,16 @@ Manutenzione e diagnostica avanzate → Configurazione browser**, rileva e selez
 un browser, verifica entrambe le modalità e salva. Ripeti dopo spostamenti o
 aggiornamenti del browser. Se nessuno funziona puoi confermare il download del
 Chromium completo. Un semplice `playwright install` nella cache condivisa non
-configura SponsorScout. Se mancano `playwright`/`greenlet`, reinstalla invece le
+configura PacktoWorkEU. Se mancano `playwright`/`greenlet`, reinstalla invece le
 dipendenze nel venv corretto: la configurazione browser non ripara librerie mancanti.
 
 ```bash
-python -m sponsorscout.main --self-check          # import e driver, nessun browser necessario
-python -m sponsorscout.main --self-check-browser  # browser scelto, senza finestra E visibile
+python -m packtoworkeu.main --self-check          # import e driver, nessun browser necessario
+python -m packtoworkeu.main --self-check-browser  # browser scelto, senza finestra E visibile
 ```
 
-Per i pacchetti usa `/opt/sponsorscout/SponsorScout` su Linux oppure
-`%LOCALAPPDATA%\Programs\SponsorScout\SponsorScout.exe` su Windows. Il secondo
+Per i pacchetti usa `/opt/packtoworkeu/PacktoWorkEU` su Linux oppure
+`%LOCALAPPDATA%\Programs\PacktoWorkEU\PacktoWorkEU.exe` su Windows. Il secondo
 controllo apre una finestra temporanea e richiede un display; è facoltativo per
 sviluppatori, non obbligatorio per compilare un pacchetto leggero. Per librerie
 Linux mancanti può servire l’amministratore: l’app non esegue implicitamente
@@ -1413,7 +1408,7 @@ registrato come `error`). Per i limiti attuali consulta [Risoluzione Problemi](#
 anti-bot da un caricamento fallito e non aggirare eventuali verifiche.
 
 **La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
-SponsorScout dimensiona i browser in base a CPU/RAM, gira con priorità
+PacktoWorkEU dimensiona i browser in base a CPU/RAM, gira con priorità
 inferiore al normale e blocca immagini/font/media. Il Pannello resta
 utilizzabile. Non devi aspettare tutto: premi **Pausa** per sospendere la
 scansione a un punto cooperativo (i dati già salvati restano) e clicca di nuovo
@@ -1464,7 +1459,7 @@ Dalla cartella estratta con `pyproject.toml`, usando Python 3.10 o successivo:
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m sponsorscout.main
+.\.venv\Scripts\python.exe -m packtoworkeu.main
 ```
 
 ```bash
@@ -1472,7 +1467,7 @@ py -3 -m venv .venv
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m sponsorscout.main
+.venv/bin/python -m packtoworkeu.main
 ```
 
 Dopo l’avvio scegli e verifica un browser installato in **Configurazione browser**.
@@ -1482,8 +1477,8 @@ l’amministratore può usare esplicitamente
 `.venv/bin/python -m playwright install-deps chromium` sui sistemi supportati:
 installa dipendenze di sistema, **non** un secondo browser, e può richiedere privilegi.
  Per la diagnostica usa lo stesso interprete venv con
-`-m sponsorscout.main --self-check` o `--self-check-browser`. Non usare
-`python -m sponsorscout`: manca `__main__.py`. Dopo aver spostato i sorgenti,
+`-m packtoworkeu.main --self-check` o `--self-check-browser`. Non usare
+`python -m packtoworkeu`: manca `__main__.py`. Dopo aver spostato i sorgenti,
 ripeti `pip install -e .` nell'ambiente corretto, senza eliminare il database.
 
 ### Pacchetti nativi e test facoltativi
@@ -1503,12 +1498,12 @@ driver. Le build eseguono anche `--self-check-gui`: avvio e chiusura degli otto
 tab con dati temporanei e impostazioni INI, senza usare il database o il registro
 Windows personali, senza scansioni o browser. Non certifica siti o desktop fisici.
 Per provare esplicitamente il browser già configurato in entrambe le
-modalità, imposta `SPONSORSCOUT_VALIDATE_BROWSER=1` prima della build; serve un
+modalità, imposta `PACKTOWORKEU_VALIDATE_BROWSER=1` prima della build; serve un
 display. Nessun download automatico in entrambe le modalità.
 
 **Installer Windows:**
 ```powershell
-.\build_exe.ps1               # -> dist\sponsorscout-<versione>-setup.exe
+.\build_exe.ps1               # -> dist\packtoworkeu-<versione>-setup.exe
 ```
 Usa PowerShell (utente standard o Administrator). Lo script usa il Python del venv
 attivo come punto di partenza (oppure `-PythonExe C:\percorso\python.exe`), ma
@@ -1519,23 +1514,23 @@ Per l’installer predefinito serve Inno Setup 6/7. Per creare deliberatamente s
 la cartella dell’app usa `.\build_exe.ps1 -BundleOnly`. Inno mancante o un nuovo
 installer mancante causano un errore, non un successo apparente.
 
-- `dist\sponsorscout-<versione>-setup.exe` è l’**installer compresso** (`PrivilegesRequired=lowest`, installazione per utente in `%LOCALAPPDATA%\Programs\SponsorScout` sia con account standard sia con account Administrator con accesso completo, senza richiedere elevazione UAC).
-- `dist\SponsorScout\SponsorScout.exe` apre l’app **senza installarla**: conserva
+- `dist\packtoworkeu-<versione>-setup.exe` è l’**installer compresso** (`PrivilegesRequired=lowest`, installazione per utente in `%LOCALAPPDATA%\Programs\PacktoWorkEU` sia con account standard sia con account Administrator con accesso completo, senza richiedere elevazione UAC).
+- `dist\PacktoWorkEU\PacktoWorkEU.exe` apre l’app **senza installarla**: conserva
   tutta la cartella, inclusa `_internal`. La dimensione del solo exe non è quella
   dell’app completa.
 - Il riepilogo separa MiB della cartella/payload e dell’installer compresso,
-  SHA256 e `sponsorscout-<versione>-build-report.json`. Questi valori e i pacchetti
+  SHA256 e `packtoworkeu-<versione>-build-report.json`. Questi valori e i pacchetti
   Windows/Linux non devono coincidere. Gli installer precedenti non sono nuovi output.
 - Chiudi l’app del percorso di build prima di ricompilare e l’app installata prima
   di disinstallare. Non vengono terminati globalmente processi con lo stesso nome.
 
-I tre builder usano `SponsorScout.spec`, escludono i test durante la raccolta,
+I tre builder usano `PacktoWorkEU.spec`, escludono i test durante la raccolta,
 conservano metadati/plugin Qt e controllano il payload finale senza includere o
 scaricare browser.
 
 **Pacchetto Linux (Debian / Ubuntu):**
 ```bash
-./build_deb.sh                # -> dist/sponsorscout_<versione>_<arch>.deb
+./build_deb.sh                # -> dist/packtoworkeu_<versione>_<arch>.deb
 ```
 Esegui lo script come utente normale: **non usare `sudo`**. Lo script crea un
 ambiente di compilazione isolato in `.build/deb-venv`, quindi non modifica mai
@@ -1549,11 +1544,11 @@ l'installazione, usa `DEB_COMPRESSION=zstd ./build_deb.sh`.
 Non e consigliato compilare da un disco Windows montato in WSL (`/mnt/c/...` e
 simili): quei filesystem non possono memorizzare i permessi Unix, quindi la
 build lo rileva e prepara il pacchetto in `/tmp`. Per una build piu rapida e
-affidabile, copia il progetto su un filesystem Linux come `~/sponsorscout`.
+affidabile, copia il progetto su un filesystem Linux come `~/packtoworkeu`.
 
 **Pacchetto Linux (Fedora / RHEL / openSUSE — RPM):**
 ```bash
-./build_rpm.sh               # -> dist/sponsorscout-<versione>-1.<arch>.rpm
+./build_rpm.sh               # -> dist/packtoworkeu-<versione>-1.<arch>.rpm
 ```
 Stesse regole del `.deb`: esegui lo script come utente normale (**non usare
 `sudo`**) e lascia che crei l'ambiente isolato `.build/rpm-venv`. Richiede
@@ -1568,7 +1563,7 @@ con il proprio output, quindi `.exe`, `.deb` e `.rpm` possono convivere.
 
 **Test:**
 ```bash
-python -m pytest sponsorscout/tests
+python -m pytest packtoworkeu/tests
 ```
 
 ---
@@ -1578,7 +1573,7 @@ python -m pytest sponsorscout/tests
 ## Altre informazioni
 
 - [Risoluzione Problemi](#-risoluzione-problemi) — bug attuali e limiti pratici.
-- [Guida al codice](SponsorScout_codebase_guide.md) — architettura, formati,
+- [Guida al codice](PacktoWorkEU_codebase_guide.md) — architettura, formati,
   sviluppo e manutenzione.
 
 ---
@@ -1600,4 +1595,4 @@ MIT — vedi [LICENSE](LICENSE).
 
 I dati di riferimento geografico includono informazioni di [GeoNames](https://www.geonames.org/),
 con licenza [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Fonti e attribuzione sono in `sponsorscout/data/location_places.json`.
+Fonti e attribuzione sono in `packtoworkeu/data/location_places.json`.

@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-APP_NAME="SponsorScout"
-PKG_NAME="sponsorscout"
+APP_NAME="PacktoWorkEU"
+PKG_NAME="packtoworkeu"
 # Derive the package architecture from the host dpkg instead of hard-coding
 # "amd64". The hard-coded value silently produced an amd64 .deb on an arm64
 # machine (Raspberry Pi, Graviton, ...), where dpkg then refuses it with
@@ -35,7 +35,7 @@ need() {
 if [ "$(id -u)" -eq 0 ]; then
   cat >&2 <<'EOF'
 ERROR: do not run build_deb.sh with sudo.
-This script only creates dist/sponsorscout_<version>_<arch>.deb and does not
+This script only creates dist/packtoworkeu_<version>_<arch>.deb and does not
 need root. Run it as your normal user:
 
   ./build_deb.sh
@@ -153,74 +153,74 @@ fi
 rm -rf "$BUILD_DIR" "$WORK_DIR" "$FROZEN_DIR"
 mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
 
-echo "Building $APP_NAME from SponsorScout.spec (safe mode — no binary stripping)..."
+echo "Building $APP_NAME from PacktoWorkEU.spec (safe mode — no binary stripping)..."
 "$PYTHON" -m PyInstaller \
   --clean \
   --noconfirm \
   --workpath "$WORK_DIR" \
   --distpath ".build/deb-frozen" \
-  SponsorScout.spec
+  PacktoWorkEU.spec
 
 mkdir -p "$APP_DIR"
 cp -a ".build/deb-frozen/$APP_NAME/." "$APP_DIR/"
 
 mkdir -p "$BUILD_DIR/usr/bin"
-cat > "$BUILD_DIR/usr/bin/sponsorscout" <<'EOL'
+cat > "$BUILD_DIR/usr/bin/packtoworkeu" <<'EOL'
 #!/bin/sh
-# SponsorScout launcher
-# The binary lives at /opt/sponsorscout/SponsorScout after installing the package.
+# PacktoWorkEU launcher
+# The binary lives at /opt/packtoworkeu/PacktoWorkEU after installing the package.
 
-APP_BIN="/opt/sponsorscout/SponsorScout"
+APP_BIN="/opt/packtoworkeu/PacktoWorkEU"
 
 # Verify the binary exists and is executable.
 if [ ! -f "$APP_BIN" ]; then
-  echo "SponsorScout: ERROR — $APP_BIN not found." >&2
+  echo "PacktoWorkEU: ERROR — $APP_BIN not found." >&2
   echo "  The .deb package may not have installed correctly." >&2
-  echo "  Try reinstalling:  sudo dpkg --purge sponsorscout && sudo dpkg -i sponsorscout_*.deb" >&2
+  echo "  Try reinstalling:  sudo dpkg --purge packtoworkeu && sudo dpkg -i packtoworkeu_*.deb" >&2
   exit 1
 fi
 if [ ! -x "$APP_BIN" ]; then
-  echo "SponsorScout: ERROR — $APP_BIN is not executable." >&2
+  echo "PacktoWorkEU: ERROR — $APP_BIN is not executable." >&2
   echo "  Try:  sudo chmod +x $APP_BIN" >&2
   exit 1
 fi
 
 exec "$APP_BIN" "$@"
 EOL
-chmod 755 "$BUILD_DIR/usr/bin/sponsorscout"
+chmod 755 "$BUILD_DIR/usr/bin/packtoworkeu"
 
 mkdir -p "$BUILD_DIR/usr/share/applications"
-cat > "$BUILD_DIR/usr/share/applications/sponsorscout.desktop" <<EOL
+cat > "$BUILD_DIR/usr/share/applications/packtoworkeu.desktop" <<EOL
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=SponsorScout
+Name=PacktoWorkEU
 GenericName=Job Sponsorship Finder
 Comment=Find visa-sponsoring jobs from official ATS boards
-Exec=/usr/bin/sponsorscout
-Icon=sponsorscout
+Exec=/usr/bin/packtoworkeu
+Icon=packtoworkeu
 Terminal=false
 Categories=Office;Network;
 Keywords=jobs;visa;sponsorship;careers;
-StartupWMClass=SponsorScout
+StartupWMClass=PacktoWorkEU
 EOL
 
 # Install hicolor icon theme entries (16px .. 512px) so the desktop entry's
-# Icon=sponsorscout resolves on the panel / app grid.
-if [ ! -f "sponsorscout/data/icons/sponsorscout_512.png" ]; then
-  echo "ERROR: hicolor source icons not found (sponsorscout_512.png missing) -" >&2
+# Icon=packtoworkeu resolves on the panel / app grid.
+if [ ! -f "packtoworkeu/data/icons/packtoworkeu_512.png" ]; then
+  echo "ERROR: hicolor source icons not found (packtoworkeu_512.png missing) -" >&2
   echo "the app would install with a blank icon. Aborting build." >&2
   exit 1
 fi
 for size in 16 24 32 48 64 96 128 256 512; do
-  src="sponsorscout/data/icons/sponsorscout_${size}.png"
+  src="packtoworkeu/data/icons/packtoworkeu_${size}.png"
   if [ ! -f "$src" ]; then
     echo "WARNING: missing icon source $src - skipping this size." >&2
     continue
   fi
   dst="$BUILD_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
   mkdir -p "$dst"
-  cp "$src" "$dst/sponsorscout.png"
+  cp "$src" "$dst/packtoworkeu.png"
 done
 
 cat > "$DEBIAN_DIR/control" <<EOL
@@ -229,7 +229,7 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Maintainer: SponsorScout <sponsorscout@localhost>
+Maintainer: PacktoWorkEU <packtoworkeu@localhost>
 Depends: util-linux, libc6, libgcc-s1, libstdc++6, libasound2t64, libatk-bridge2.0-0t64, libatk1.0-0t64, libatspi2.0-0t64, libcairo2, libcups2t64, libdbus-1-3, libdrm2, libgbm1, libglib2.0-0t64, libnspr4, libnss3, libpango-1.0-0, libx11-6, libxcb1, libxcomposite1, libxdamage1, libxext6, libxfixes3, libxkbcommon0, libxrandr2, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-util1, libxcb-xkb1, libxkbcommon-x11-0
 Installed-Size: $(du -sk "$BUILD_DIR" | cut -f1)
 Description: Job sponsorship search application
@@ -259,12 +259,12 @@ set -eu
 
 # Require the installed binary to be closed before upgrade/remove; never kill
 # unrelated processes by name.
-command -v readlink >/dev/null 2>&1 || { echo "readlink is required to check running SponsorScout instances" >&2; exit 1; }
+command -v readlink >/dev/null 2>&1 || { echo "readlink is required to check running PacktoWorkEU instances" >&2; exit 1; }
 for entry in /proc/[0-9]*/exe; do
   target="$(readlink "$entry" 2>/dev/null || true)"
   case "$target" in
-    "/opt/sponsorscout/SponsorScout"|"/opt/sponsorscout/SponsorScout (deleted)")
-      echo "Close the installed SponsorScout (/opt/sponsorscout/SponsorScout) before upgrading or removing the package." >&2
+    "/opt/packtoworkeu/PacktoWorkEU"|"/opt/packtoworkeu/PacktoWorkEU (deleted)")
+      echo "Close the installed PacktoWorkEU (/opt/packtoworkeu/PacktoWorkEU) before upgrading or removing the package." >&2
       exit 1
       ;;
   esac
@@ -273,21 +273,21 @@ done
 # Each user's custom paths are handled under that user's own privileges.
 if [ "${1:-}" = "remove" ]; then
   command -v runuser >/dev/null 2>&1 || { echo "runuser is required for safe cleanup" >&2; exit 1; }
-  [ -x /opt/sponsorscout/SponsorScout ] || { echo "Restore the installed executable before removing SponsorScout data" >&2; exit 1; }
+  [ -x /opt/packtoworkeu/PacktoWorkEU ] || { echo "Restore the installed executable before removing PacktoWorkEU data" >&2; exit 1; }
   accounts=$(getent passwd) || { echo "Unable to enumerate accounts for cleanup" >&2; exit 1; }
   while IFS=: read -r name unused uid gid gecos home shell; do
     case "$uid" in ''|*[!0-9]*) continue ;; esac
-    [ "$uid" -eq 0 ] || [ "$uid" -ge 1000 ] || [ -e "$home/.sponsorscout" ] || [ -L "$home/.sponsorscout" ] || continue
+    [ "$uid" -eq 0 ] || [ "$uid" -ge 1000 ] || [ -e "$home/.packtoworkeu" ] || [ -L "$home/.packtoworkeu" ] || continue
     [ -d "$home" ] || continue
     case "$home" in /|/nonexistent|/var/empty) continue ;; esac
     if ! runuser -u "$name" -- env -i HOME="$home" USER="$name" LOGNAME="$name" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-      /opt/sponsorscout/SponsorScout --purge-user-data; then
-      echo "SponsorScout: data cleanup failed for $name; removal stopped. Review permissions and retry." >&2
+      /opt/packtoworkeu/PacktoWorkEU --purge-user-data; then
+      echo "PacktoWorkEU: data cleanup failed for $name; removal stopped. Review permissions and retry." >&2
       exit 1
     fi
-  done <<SPONSORSCOUT_ACCOUNT_LIST
+  done <<PACKTOWORKEU_ACCOUNT_LIST
 $accounts
-SPONSORSCOUT_ACCOUNT_LIST
+PACKTOWORKEU_ACCOUNT_LIST
 fi
 
 exit 0
@@ -324,7 +324,7 @@ if chmod 755 "$DEBIAN_DIR" 2>/dev/null \
   find "$BUILD_DIR" -type d -exec chmod 755 {} + 2>/dev/null || true
   find "$BUILD_DIR" -type f -exec chmod go-w {} + 2>/dev/null || true
   chmod 755 "$BUILD_DIR/DEBIAN/"* 2>/dev/null || true
-  chmod 755 "$BUILD_DIR/usr/bin/sponsorscout" 2>/dev/null || true
+  chmod 755 "$BUILD_DIR/usr/bin/packtoworkeu" 2>/dev/null || true
   chmod 755 "$BUILD_DIR/opt/$PKG_NAME/$APP_NAME" 2>/dev/null || true
 else
   echo "This filesystem does not support Unix permissions (WSL /mnt, NTFS, FAT)." >&2
@@ -334,7 +334,7 @@ else
   chmod -R u=rwX,go=rX "$STAGE_DIR"
   chmod 755 "$STAGE_DIR/DEBIAN"
   chmod 755 "$STAGE_DIR/DEBIAN/"* 2>/dev/null || true
-  chmod 755 "$STAGE_DIR/usr/bin/sponsorscout" 2>/dev/null || true
+  chmod 755 "$STAGE_DIR/usr/bin/packtoworkeu" 2>/dev/null || true
   chmod 755 "$STAGE_DIR/opt/$PKG_NAME/$APP_NAME" 2>/dev/null || true
   BUILD_TREE="$STAGE_DIR"
 fi
@@ -351,7 +351,7 @@ fi
 echo "Smoke-testing finalized staged payload (dependencies, 8-tab GUI, payload audit)..."
 "$APP_DIR/$APP_NAME" --self-check || { echo "Packaged dependency self-check failed" >&2; exit 1; }
 "$APP_DIR/$APP_NAME" --self-check-gui || { echo "Packaged GUI self-check failed" >&2; exit 1; }
-if [ "${SPONSORSCOUT_VALIDATE_BROWSER:-0}" = "1" ]; then
+if [ "${PACKTOWORKEU_VALIDATE_BROWSER:-0}" = "1" ]; then
   "$APP_DIR/$APP_NAME" --self-check-browser || exit 1
 fi
 "$PYTHON" build_hooks/verify_payload.py "$APP_DIR"
@@ -365,10 +365,10 @@ PROBE_ROOT="$(mktemp -d)"
 PROBE_DIR="$PROBE_ROOT/control"
 mkdir -p "$PROBE_DIR/DEBIAN"
 cat > "$PROBE_DIR/DEBIAN/control" <<EOL
-Package: sponsorscout-probe
+Package: packtoworkeu-probe
 Version: 0
 Architecture: $DEB_ARCH
-Maintainer: SponsorScout <sponsorscout@localhost>
+Maintainer: PacktoWorkEU <packtoworkeu@localhost>
 Description: capability probe
 EOL
 

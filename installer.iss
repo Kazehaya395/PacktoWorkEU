@@ -1,29 +1,29 @@
 ;
-; SponsorScout Inno Setup Installer Script
+; PacktoWorkEU Inno Setup Installer Script
 ; https://jrsoftware.org/isinfo.php
 ;
 ; Production-ready per-user installer:
-; - stable AppId under per-user LOCALAPPDATA\Programs\SponsorScout
+; - stable AppId under per-user LOCALAPPDATA\Programs\PacktoWorkEU
 ; - no duplicate uninstall registry entry
 ; - path-scoped running-instance check (never force-kills processes by name)
 ; - safe per-user data cleanup via --purge-user-data on uninstall
 ;
 
-#define MyAppName      "SponsorScout"
+#define MyAppName      "PacktoWorkEU"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.3.0"
 #endif
 #ifndef InstallerSourceDir
   #define InstallerSourceDir ".build\windows\installer-src"
 #endif
-#define MyAppPublisher "SponsorScout"
-#define MyAppURL       "https://github.com/Kazehaya395/SponsorScout"
-#define MyAppExeName   "SponsorScout.exe"
-#define MyAppIcoName   "sponsorscout.ico"
-#define MyAppDataDirName "SponsorScout"
+#define MyAppPublisher "PacktoWorkEU"
+#define MyAppURL       "https://github.com/Kazehaya395/PacktoWorkEU"
+#define MyAppExeName   "PacktoWorkEU.exe"
+#define MyAppIcoName   "packtoworkeu.ico"
+#define MyAppDataDirName "PacktoWorkEU"
 
 [Setup]
-AppId=SponsorScout
+AppId=PacktoWorkEU
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} v{#MyAppVersion}
@@ -36,10 +36,10 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=auto
 LicenseFile=LICENSE
 OutputDir=dist
-OutputBaseFilename=sponsorscout-{#MyAppVersion}-setup
-SetupIconFile=sponsorscout\data\sponsorscout.ico
-WizardImageFile=sponsorscout\data\sponsorscout.png
-WizardSmallImageFile=sponsorscout\data\sponsorscout.png
+OutputBaseFilename=packtoworkeu-{#MyAppVersion}-setup
+SetupIconFile=packtoworkeu\data\packtoworkeu.ico
+WizardImageFile=packtoworkeu\data\packtoworkeu.png
+WizardSmallImageFile=packtoworkeu\data\packtoworkeu.png
 UninstallDisplayIcon={app}\{#MyAppIcoName}
 UninstallDisplayName={#MyAppName}
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -111,10 +111,10 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := False;
-  if RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') or
-     RegKeyExists(HKLM32, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SponsorScout_is1') then
+  if RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\PacktoWorkEU_is1') or
+     RegKeyExists(HKLM32, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\PacktoWorkEU_is1') then
   begin
-    MsgBox('An older machine-wide SponsorScout installation exists. This per-user installer cannot upgrade it safely. Back up your SponsorScout data and custom paths before removing the old version, then install and restore your backup. Installation cancelled; no user data was changed.', mbInformation, MB_OK);
+    MsgBox('An older machine-wide PacktoWorkEU installation exists. This per-user installer cannot upgrade it safely. Back up your PacktoWorkEU data and custom paths before removing the old version, then install and restore your backup. Installation cancelled; no user data was changed.', mbInformation, MB_OK);
     Exit;
   end;
   Result := True;
@@ -124,7 +124,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if InstalledAppRunning() then
-    Result := 'Close the installed SponsorScout application before upgrading or reinstalling, then click Retry.';
+    Result := 'Close the installed PacktoWorkEU application before upgrading or reinstalling, then click Retry.';
 end;
 
 function InitializeUninstall(): Boolean;
@@ -141,9 +141,9 @@ begin
   if CurUninstallStep <> usUninstall then
     Exit;
   if InstalledAppRunning() then
-    RaiseException('Close the installed SponsorScout application before uninstalling, then retry.');
+    RaiseException('Close the installed PacktoWorkEU application before uninstalling, then retry.');
   if not Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--purge-user-data', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException('Could not run SponsorScout data cleanup. Uninstall cancelled. Restore the installed application and retry.');
+    RaiseException('Could not run PacktoWorkEU data cleanup. Uninstall cancelled. Restore the installed application and retry.');
   if ResultCode <> 0 then
-    RaiseException('SponsorScout data cleanup was incomplete. Uninstall cancelled. Close active processes, review data permissions and cleanup-errors.json in the SponsorScout profile folder if present, then retry.');
+    RaiseException('PacktoWorkEU data cleanup was incomplete. Uninstall cancelled. Close active processes, review data permissions and cleanup-errors.json in the PacktoWorkEU profile folder if present, then retry.');
 end;
