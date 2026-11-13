@@ -718,6 +718,37 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
     return ingested, duplicates
 
 
+def _ingest_scan_log_window(db_path, path: Path, run_id: str, scanner: str,
+                            skip_box: list, seen_keys: set) -> int:
+    """Live-tail one phase's scan_log CSV into the DB (F1, 2026-11-13).
+
+    Only rows appended since the previous poll are read (byte offsets via
+    _read_csv_window). ``seen_keys`` holds (seed name, seed URL) pairs
+    already recorded for this phase, so a scanner-side rewrite of the CSV
+    (which restarts the window at byte 0) cannot duplicate rows. The
+    pipeline's final _ingest_scan_log replaces this tailed state with the
+    exact artifact, so retry-sweep second rows still land correctly."""
+    if not path or not path.exists():
+        return 0
+    fieldnames, text, next_offset = _read_csv_window(path, skip_box[0])
+    skip_box[0] = next_offset
+    if not text or not fieldnames:
+        return 0
+    rows = []
+    for row in csv.DictReader(io.StringIO(text), fieldnames=fieldnames):
+        if not row or (row.get("Run ID") or run_id) != run_id:
+            continue
+        key = ((row.get("Seed Name") or "").strip().casefold(),
+               (row.get("Seed URL") or "").strip())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        rows.append(row)
+    if rows:
+        db.record_scan_log_rows(db_path, run_id, scanner, rows)
+    return len(rows)
+
+
 def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[int, dict]:
     """Copy one scanner's per-run scan-log CSV into the scan_log table.
 
@@ -731,6 +762,10 @@ def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[in
         rows = list(csv.DictReader(f))
     status_counts = {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
     if rows:
+        # Replace-style (2026-11-13, F1): the live ingester may already have
+        # tailed these rows into the DB during the phase; the CSV artifact
+        # at finalize is the exact truth, so swap, never accumulate.
+        db.delete_scan_log_rows(db_path, run_id, scanner)
         db.record_scan_log_rows(db_path, run_id, scanner, rows)
         # Elevate per-company failures into the event timeline so hidden errors
         # that reduce job yield are visible in the downloaded scan analysis.
@@ -1010,11 +1045,18 @@ class _LiveIngester(threading.Thread):
                  seen_canonical: set,
                  interval: float = 5.0,
                  progress: ProgressFn | None = None,
-                 jd_lookup=None, refresh_reader=None, jd_proof_lookup=None):
+                 jd_lookup=None, refresh_reader=None, jd_proof_lookup=None,
+                 scan_log_specs: list[tuple[Path, str]] | None = None):
         super().__init__(name="LiveIngester", daemon=True)
         self.db_path = db_path
         self.run_id = run_id
         self.csv_specs = csv_specs
+        # F1 (2026-11-13): per-phase scan_log CSVs tailed alongside the job
+        # CSVs, so a killed app loses at most one poll interval of settled
+        # state instead of the whole phase (Resume-after-kill, G2 follow-up).
+        self.scan_log_specs = scan_log_specs or []
+        self._log_offsets: dict[str, list[int]] = {}
+        self._log_seen: dict[str, set] = {}
         self.seen_canonical = seen_canonical
         self.interval = interval
         self.progress = progress or _noop_progress
@@ -1046,6 +1088,11 @@ class _LiveIngester(threading.Thread):
                         source_subtype=subtype, seen_canonical=self.seen_canonical,
                         skip_box=box, jd_lookup=self.jd_lookup, refresh_reader=self.refresh_reader, jd_proof_lookup=self.jd_proof_lookup)
                     ingested_so_far += ingested
+                for path, scanner in self.scan_log_specs:
+                    box = self._log_offsets.setdefault(str(path), [0])
+                    seen = self._log_seen.setdefault(str(path), set())
+                    _ingest_scan_log_window(
+                        self.db_path, path, self.run_id, scanner, box, seen)
                 # Throttle: the 5s poller used to emit the same count dozens
                 # of times per company (e.g. ~200 identical Hays lines),
                 # flooding the chunk queue, the event-tee DB writes and the
@@ -1269,6 +1316,10 @@ def run_scan(method: str = "full",
         seen_canonical=seen_canonical,
         progress=progress,
         jd_lookup=_lookup_captured_jd, refresh_reader=refresh_reader, jd_proof_lookup=_lookup_capture_proof,
+        scan_log_specs=[
+            (ats_out.with_name(ats_out.stem + "_scan_log.csv"), "ats"),
+            (career_out.with_name(career_out.stem + "_scan_log.csv"), "career"),
+        ],
     )
     live.start()
 

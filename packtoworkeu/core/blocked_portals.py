@@ -893,6 +893,20 @@ def _observed_card_location(scanner, card_text, title, seed_name):
             candidate = scanner._sanitize_job_location(line_s, seed_name)
             if candidate and candidate != "Unknown":
                 return candidate
+    # Store/restaurant chains name the branch only inside the job title
+    # ("Addetto/a Ristorazione - Crew - Roma Appia"); the card has no
+    # location field at all. The regular scanner already mines the title
+    # for exactly this pattern (FIX P40) — do the same here so the
+    # observed place is at least kept for display instead of being
+    # discarded as Unknown when its country cannot be proven.
+    _from_title = getattr(scanner, "_location_from_title_text", None)
+    if callable(_from_title):
+        try:
+            got = _from_title(title)
+        except Exception:
+            got = ""
+        if got and got != "Unknown":
+            return got
     return "Unknown"
 
 
@@ -2769,10 +2783,26 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                     if page.is_closed():
                         stop_reason = 'browser closed after last complete page %d' % last_good_page
 
+                # 2026-11-12: a single-page board with no stated total and
+                # no pager (McDonald's Italia) could never complete: the
+                # harvest recorded `unadvertised_synthetic_replay` end
+                # evidence (both index probes replayed a fully accounted
+                # census, no forward control, no unmet total — see
+                # _unadvertised_probe_replayed) but this gate only knew
+                # the older stop phrases, so every re-run re-crawled the
+                # listing and ended "incomplete". Accept that evidence;
+                # the stated-total guard below (and the reconciliation
+                # demotion further down) still vetoes a real mismatch.
+                _end_evidence = (LAST_INGESTION_REPORT.get(
+                    'pagination_end_evidence') or {})
+                _synthetic_end = bool(
+                    _end_evidence.get('kind') == 'unadvertised_synthetic_replay'
+                    and _end_evidence.get('census_accounted')
+                    and not _end_evidence.get('forward_control'))
                 saved_listing_complete=(bool(resume_batch.get('listing_completed'))if resume_details else
                     bool(ingested_count)and not persistence_errors and not browser_error and
-                    any(token in stop_reason for token in('next-page control disabled','end confirmed by an out-of-range probe','terminal pager and observed total reconciled','native append terminal and observed identities reconciled'))and
-                    LAST_INGESTION_REPORT.get('stated_total',ingested_count)==ingested_count)
+                    (any(token in stop_reason for token in('next-page control disabled','end confirmed by an out-of-range probe','terminal pager and observed total reconciled','native append terminal and observed identities reconciled'))or _synthetic_end)and
+                    LAST_INGESTION_REPORT.get('stated_total',ingested_count)in (None,ingested_count))
                 try:
                     save_batch(conn,url,seed_name,harvest_rows,run_id=run_id,
                         listing_completed=saved_listing_complete,pages=pages_visited,loads=loads,
@@ -2815,7 +2845,7 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                         break
                     if callable(progress_callback):
                         progress_callback(_translate("Reading full job descriptions {done}/{total}; saved vacancies are retained.").format(done=index,total=len(pending_details)))
-                    result=detail_enricher.read(record['url'])
+                    result=detail_enricher.read(record['url'],expected_title=record.get('title',''))
                     if getattr(detail_enricher,'batch_interrupted',False):
                         reason=detail_enricher.batch_interrupt_reason or'assisted browser closed during JD enrichment; resume explicitly'
                         if cancel_event is not None and cancel_event.is_set():reason='cancelled by user'

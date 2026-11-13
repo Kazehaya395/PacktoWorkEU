@@ -1,5 +1,3 @@
-<img src="packtoworkeu\data\packtoworkeu.png" alt="SponsorScout" width="420">
-
 # PacktoWorkEU
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
@@ -408,6 +406,14 @@ To check a company you just edited, select it here instead of scanning every lis
 - **Resume** continues the original saved campaign, including its selected companies,
   source phases and reread policy. It does not add newly edited companies.
 - Start a new Custom Scan when you want a different selection or policy.
+- **If your internet connection drops mid-scan**, the scan now pauses by itself and
+  resumes when the connection returns (bounded waits; Stop always works). Companies
+  that an outage, DNS failure or timeout killed are *not* counted as done: the
+  end-of-scan retry pass and Resume offer them again automatically. Genuine
+  access walls stay settled and are never retried as if they were outages.
+- **Resume also survives the app being closed or killed mid-scan.** Settled
+  companies are recorded continuously, and a killed run's saved scan log is
+  reconciled on Resume, so progress is not lost.
 
 Regular scans and Assisted collection cannot run together. Wait for an active
 operation to finish or stop before starting another.
@@ -455,6 +461,10 @@ stays `Unknown`. Use **Save partial and
 close** or **Stop** if you want to end the session and keep committed work.
 **Open website** is a separate view-only action in your normal browser; it does
 not collect jobs or transfer that browser's session to the app.
+
+Job links that leave through a redirect (common on aggregator boards) are
+followed and read when the landing page provably shows the same job that was
+clicked; a redirect to a different job is still never read as that posting.
 
 ### Continue a saved Assisted batch
 
@@ -570,6 +580,30 @@ an uninstall; for deliberate irreversible account cleanup, after backups, run
 `python -m packtoworkeu.main --purge-user-data` as that user, **not with sudo**.
 
 ---
+
+## ⚠️ Known issues
+
+- **Cloudflare verification loop on certain portals (under development).** On a
+  small number of portals — typically job aggregators whose job links exit through
+  a redirect ("clickout") host — the *listing* loads normally in Assisted
+  Ingestion, but opening an individual job description can land on a Cloudflare
+  "Verify you are human" page that keeps re-appearing even after you tick the box,
+  so that description cannot be read. This is a known issue and a proper solution
+  is under development. It is **not** solved by retrying repeatedly. What to know
+  meanwhile:
+  - The portal's jobs (titles, companies, and locations shown on the listing) are
+    still collected and saved; only the full description text is unreachable.
+  - Affected postings honestly stay `Unknown` for sponsorship/relocation — never
+    a guessed "No" — and remain resumable in Assisted Ingestion.
+  - Solving the check manually in the assisted browser sometimes clears it; if
+    the challenge loops, stop that posting (closing the stuck tab skips just it)
+    and move on. PacktoWorkEU does not bypass CAPTCHAs or verification walls.
+  - Links that redirect to a *readable* job page on another host (a common
+    aggregator pattern) are supported when the landing page provably shows the
+    same job you clicked.
+- **A few bundled career seeds point at overview/landing pages** rather than a
+  searchable job list, so those companies can report zero jobs. Opening the
+  company's real job-list page and using its URL in a Custom Scan works around it.
 
 ## 🧰 Troubleshooting
 
@@ -1202,6 +1236,16 @@ Usala per ricontrollare un'azienda appena modificata senza visitare tutti gli el
 - **Riprendi** continua la campagna salvata, con aziende, fasi e politica originali.
   Non aggiunge aziende appena modificate negli elenchi.
 - Per un ambito o una politica diversi avvia una nuova Scansione Personalizzata.
+- **Se la connessione Internet cade durante la scansione**, la scansione ora si
+  mette in pausa da sola e riprende quando la connessione torna (attese limitate;
+  Ferma funziona sempre). Le aziende interrotte da caduta di rete, errore DNS o
+  timeout *non* risultano completate: il passaggio di recupero a fine scansione e
+  Riprendi le ripropongono automaticamente. I veri blocchi di accesso restano
+  invece conclusi e non vengono ritentati come se fossero interruzioni di rete.
+- **Riprendi sopravvive anche alla chiusura forzata dell'app durante la
+  scansione.** Le aziende completate vengono registrate in modo continuo e il
+  registro salvato di un'esecuzione interrotta viene riconciliato alla ripresa,
+  senza perdere il progresso.
 
 Scansione normale e raccolta assistita non si eseguono insieme: attendi la fine
 o l'arresto dell'operazione attiva prima di avviarne un'altra.
@@ -1250,6 +1294,11 @@ successiva, quelle su altri host continuano a essere lette e l'offerta saltata
 resta `Unknown`. Usa il comando per salvare il parziale e chiudere oppure **Ferma** per
 terminare conservando i dati già salvati. **Apri sito web** è solo consultazione
 nel browser normale: non raccoglie offerte e non trasferisce la sessione all'app.
+
+I link di lavoro che escono tramite un reindirizzamento (comuni sui portali
+aggregatori) vengono seguiti e letti quando la pagina di destinazione mostra in
+modo dimostrabile la stessa offerta selezionata; un reindirizzamento verso
+un'offerta diversa non viene mai letto come se fosse quella selezionata.
 
 ### Continuare un lotto assistito salvato
 
@@ -1366,6 +1415,34 @@ irreversibile volontaria dell’account, dopo il backup, usa
 `python -m packtoworkeu.main --purge-user-data` come quell’utente, **senza sudo**.
 
 ---
+
+## ⚠️ Problemi noti
+
+- **Ciclo di verifica Cloudflare su alcuni portali (in sviluppo).** Su un numero
+  ridotto di portali — in genere aggregatori i cui link di lavoro escono tramite
+  un host di reindirizzamento ("clickout") — l'*elenco* si carica normalmente
+  nella Raccolta Assistita, ma aprendo la singola descrizione si può finire su
+  una pagina Cloudflare "Verify you are human" che continua a ripresentarsi
+  anche dopo aver spuntato la casella, rendendo quella descrizione illeggibile.
+  È un problema noto e una soluzione adeguata è in sviluppo. **Non** si risolve
+  riprovando in continuazione. Nel frattempo:
+  - Le offerte del portale (titoli, aziende e località mostrate nell'elenco)
+    vengono comunque raccolte e salvate; è irraggiungibile solo il testo
+    completo della descrizione.
+  - Le offerte interessate restano onestamente `Unknown` per sponsorizzazione/
+    trasferimento — mai un "No" indovinato — e riprendibili nella Raccolta
+    Assistita.
+  - Risolvere manualmente la verifica nel browser assistito a volte la supera;
+    se il ciclo continua, ferma quell'offerta (chiudendo la scheda bloccata la
+    salti) e prosegui. PacktoWorkEU non aggira CAPTCHA o verifiche di accesso.
+  - I link che reindirizzano verso una pagina di offerta *leggibile* su un
+    altro host (schema comune degli aggregatori) sono supportati quando la
+    pagina di destinazione mostra in modo dimostrabile la stessa offerta
+    selezionata.
+- **Alcune righe degli elenchi carriera inclusi puntano a pagine di
+  presentazione** invece che a un elenco di offerte ricercabile, quindi quelle
+  aziende possono riportare zero offerte. Aprire la vera pagina elenco offerte
+  dell'azienda e usarne l'URL in una Scansione Personalizzata aggira il problema.
 
 ## 🧰 Risoluzione Problemi
 

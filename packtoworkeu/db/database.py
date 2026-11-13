@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import csv
 import logging
 import sqlite3
 from pathlib import Path
-from packtoworkeu.paths import DB_PATH, ensure_user_data_dir
+from packtoworkeu.paths import DB_PATH, SCAN_OUTPUT_DIR, ensure_user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -973,6 +974,64 @@ def record_scan_log_rows(db_path, run_id: str, scanner: str, rows):
             conn.close()
 
 
+def delete_scan_log_rows(db_path, run_id: str, scanner: str) -> int:
+    """Remove one run+phase's scan_log rows (replace-style re-ingest).
+
+    The pipeline's final scan-log ingest replaces what the live ingester
+    tailed in during the phase, so the table always ends as an exact copy
+    of the phase's CSV artifact -- never a double-count of both."""
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        cur = conn.execute(
+            "DELETE FROM scan_log WHERE run_id=? AND scanner=?",
+            (run_id, scanner))
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if conn:
+            conn.close()
+
+
+def reconcile_scan_log_from_artifacts(db_path, run_id: str) -> int:
+    """Rebuild a run's missing scan_log rows from its on-disk CSV artifacts.
+
+    Resume-after-kill (2026-11-13, F2): scan_log rows reach the DB when a
+    phase finalizes, so killing the app mid-phase (run 20261113T131421)
+    left 166 settled companies visible only in
+    ``<run_id>_career_jobs_scan_log.csv`` and Resume reported "0/181 done".
+    The scanners write those CSVs per company as they go, so when the DB
+    holds no rows for a run, its artifacts are the truthful checkpoint.
+    Only fills an empty run -- never merges into existing rows (the
+    pipeline's replace-style final ingest owns those)."""
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM scan_log WHERE run_id=?", (run_id,)).fetchone()
+        if row and row[0]:
+            return 0
+    finally:
+        if conn:
+            conn.close()
+    total = 0
+    for scanner, suffix in (("ats", "_ats_jobs_scan_log.csv"),
+                            ("career", "_career_jobs_scan_log.csv")):
+        path = Path(SCAN_OUTPUT_DIR) / f"{run_id}{suffix}"
+        if not path.is_file():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                rows = [r for r in csv.DictReader(f)
+                        if (r.get("Run ID") or run_id) == run_id]
+        except OSError:
+            continue
+        if rows:
+            record_scan_log_rows(db_path, run_id, scanner, rows)
+            total += len(rows)
+    return total
+
+
 def bump_scan_log_quarantined(db_path, run_id: str, counts) -> int:
     """FIX P76 (run 20261016T140013): add late-known quarantines to scan_log.
 
@@ -1207,6 +1266,10 @@ def get_resumable_scan(db_path) -> dict | None:
     for row in runs:
         plan = load_plan(db_path, row[0])
         if plan is not None:
+            # F2 (2026-11-13): a run killed mid-phase never had its
+            # scan_log CSVs ingested; rebuild the settled set from those
+            # artifacts before judging what remains.
+            reconcile_scan_log_from_artifacts(db_path, row[0])
             result = checkpoint(db_path, row[0], plan)
             if result:
                 return result

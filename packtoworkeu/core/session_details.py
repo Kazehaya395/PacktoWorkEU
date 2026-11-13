@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import Counter,OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
-import json,re,time,hashlib
+import json,re,time,hashlib,unicodedata
 from datetime import datetime,timezone
 from urllib.parse import urljoin,urlsplit
 from packtoworkeu.i18n import _
@@ -214,6 +214,48 @@ def parse_detail(text,url,final_url,scanner,title='',browser_evidence=None):
         result.text=description[:MAX_JD_CHARS]
         result.status='thin'if result.text else'empty';result.reason='no substantial primary JD text'
     return result
+
+
+# ── Aggregator clickout redirects (2026-11-13) ─────────────────────────────
+# Job boards like English Jobs DE never link a posting directly: every card
+# exits through a clickout URL that redirects (often cross-domain, e.g. to
+# Talent.com) before landing on the real JD. The strict identity rule
+# (final URL must equal the requested posting) therefore rejected EVERY
+# such JD as "a different posting", even when the landing page was exactly
+# the clicked job. The escape is narrow and proof-based: the landing page
+# must carry a JobPosting whose title matches the title the user clicked
+# (supplied by the caller from the saved listing row). No expected title,
+# no structured title, or a mismatched title keeps the old rejection --
+# a redirect to a genuinely different job still cannot slip in.
+def _norm_title(value):
+    text=unicodedata.normalize('NFKD',str(value or '').casefold())
+    text=''.join(c for c in text if not unicodedata.combining(c))
+    return ' '.join(''.join(c if c.isalnum() else ' ' for c in text).split())
+
+
+def _titles_match(expected,candidate):
+    e=_norm_title(expected);c=_norm_title(candidate)
+    if not e or not c:return False
+    if e==c or e in c or c in e:return True
+    et=set(e.split());ct=set(c.split())
+    shared=et&ct
+    return len(shared)>=2 and len(shared)/max(1,min(len(et),len(ct)))>=0.6
+
+
+def _jobposting_titles(text):
+    titles=[]
+    raw=[]
+    for payload in re.findall(r'''(?is)<script\b[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>''',text or ''):
+        try:raw.extend(_nodes(json.loads(payload)))
+        except (ValueError,TypeError):pass
+    if (text or '').lstrip().startswith(('{','[')):
+        try:raw.extend(_nodes(json.loads(text)))
+        except (ValueError,TypeError):pass
+    for node in raw:
+        if isinstance(node,dict):
+            title=node.get('title')or node.get('name')or''
+            if isinstance(title,str)and title.strip():titles.append(title)
+    return titles
 
 
 class _AssistedBudget:
@@ -473,7 +515,26 @@ class SessionDetailEnricher:
         finally:
             self._batch_mode=False;self._lookahead_active=prior_lookahead
         return results
-    def read(self,url):
+    def _redirect_result(self,text,url,final,title,expected_title,transport):
+        """Verdict for a detail request that landed on a different URL.
+
+        Aggregator clickouts redirect legitimately; accept the landing JD
+        only when parse_detail finds a substantial primary JD AND a
+        JobPosting title on the landing page matches the clicked posting's
+        title. Everything else keeps the historical rejection, so a
+        redirect to a genuinely different job is still never read as this
+        posting's description."""
+        result=parse_detail(text,url,final,self.scanner,title)
+        if result.status in('readable','truncated')and expected_title and \
+                any(_titles_match(expected_title,t)for t in _jobposting_titles(text)):
+            result.transport=transport;result.requested_url=url;result.final_url=final
+            result.phase='redirect_identity'
+            self._event('redirect_identity_proven',url,final_url=final,title=title)
+            return result
+        return DetailResult(status='empty',reason='detail redirected to a different posting; identity unproven',
+            title=title,transport=transport,requested_url=url,final_url=final,phase='identity_check')
+
+    def read(self,url,expected_title=''):
         state=self.scanner._detail_state;state.register(url,self.scope)
         if self.stopped():return self._finish(url,self._deferred(url,'cancelled'))
         if url in self._prefetched_results:
@@ -512,7 +573,7 @@ class SessionDetailEnricher:
         origin=urlsplit(url).scheme.lower()+'://'+urlsplit(url).netloc.lower()
         if origin in self.preferred_origins:
             self.counts['browser_preferred']+=1
-            result=self._browser(url)
+            result=self._browser(url,expected_title)
         elif not state.reserve(url,self.policy,browser=False):
             result=self._reservation_refusal(url)
         else:
@@ -530,7 +591,8 @@ class SessionDetailEnricher:
                     self.counts['http_failed']+=1
                     result=DetailResult(status='failed',reason=f'HTTP {code} detail unavailable',http_status=code,title=meta['title'],transport=meta['transport'])
                 elif posting_identity(final)!=posting_identity(url):
-                    result=DetailResult(status='empty',reason='detail redirected to a different posting; identity unproven',http_status=code,title=meta['title'],transport=meta['transport'])
+                    result=self._redirect_result(html,url,final,meta['title'],expected_title,meta['transport'])
+                    result.http_status=code
                 else:
                     result=parse_detail(html,url,final,self.scanner,meta['title']);result.http_status=code;result.transport=meta['transport']
                 result.final_url=final;result.phase='http_response'
@@ -547,7 +609,7 @@ class SessionDetailEnricher:
                 self._http_failed_origins.add(origin)
             if result.status not in('readable','truncated')and not self.stopped():
                 self._note(result,url);http=result
-                result=self._browser(url)
+                result=self._browser(url,expected_title)
                 if not result.country:
                     result.country=http.country;result.country_source=http.country_source
                 result.http_reason=http.reason;result.http_title=http.title;result.http_code=http.http_status;result.http_final_url=http.final_url;result.http_phase=http.phase;result.http_error=http.error
@@ -610,7 +672,7 @@ class SessionDetailEnricher:
             reason=text+'; detail tab closed by user during verification; posting skipped',
             http_status=status,title=title,transport='browser (assisted session)',
             requested_url=url,final_url=final,phase='human_clearance')
-    def _browser(self,url):
+    def _browser(self,url,expected_title=''):
         state=self.scanner._detail_state;last=None
         prefetched=self._prefetched.pop(url,None)
         consumed_parallel_page=None
@@ -670,6 +732,15 @@ class SessionDetailEnricher:
                             reason=challenge_reason(html,title=title,status=status,subject='detail')
                         if prompted and not reason and snapshot is not None and not snapshot.get('detail_ready'):
                             reason='Awaiting current visible primary job content after verification; human verification not confirmed'
+                        if reason and snapshot is not None and snapshot.get('detail_ready'):
+                            # Content proof beats challenge suspicion: a
+                            # solved Cloudflare check can leave its iframe
+                            # in the DOM, so a lingering frame/URL signal
+                            # must not burn the whole clearance wait (and
+                            # wall the origin) when the primary JD is
+                            # already visibly readable. (2026-11-13)
+                            if parse_detail(html,url,final,self.scanner,title,browser_evidence=snapshot).status in('readable','truncated'):
+                                reason=''
                         if reason:
                             if not prompted:
                                 prompted=True
@@ -697,7 +768,11 @@ class SessionDetailEnricher:
                         if status>=400 and not (snapshot and snapshot.get('detail_ready') and not snapshot.get('document_error')):
                             return DetailResult(status='failed',reason=f'HTTP {status} browser detail unavailable',http_status=status,title=title,transport='browser (assisted session)',requested_url=url,final_url=final,phase='browser_response',browser_evidence=public_snapshot(snapshot))
                         if posting_identity(final)!=posting_identity(url):
-                            return DetailResult(status='empty',reason='browser reached a different posting; requested identity unproven',http_status=status,title=title,transport='browser (assisted session)',requested_url=url,final_url=final,phase='identity_check')
+                            redirected=self._redirect_result(html,url,final,title,expected_title,'browser (assisted session)')
+                            redirected.http_status=status
+                            if redirected.status in('readable','truncated'):
+                                self._successful_browser_reads+=1
+                            return redirected
                         if prompted:
                             self._event('verification_cleared',url,status=status,title=title,evidence=public_snapshot(snapshot));self._attention(False,url)
                             prompted=False

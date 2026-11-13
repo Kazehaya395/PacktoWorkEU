@@ -256,7 +256,9 @@ def workday_cxs_url(url: str) -> str:
     """Workday job page URL -> its CXS detail API URL, or "" if not a Workday job."""
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    m = re.match(r"^([^.]+)\.wd\d+\.myworkdayjobs\.com$", parsed.netloc, re.I)
+    # Cluster segment optional (e.g. nxp.myworkdayjobs.com) — mirrors
+    # career_scanner.workday_cxs_detail_url.
+    m = re.match(r"^([^.]+)(?:\.wd\d+)?\.myworkdayjobs\.com$", parsed.netloc, re.I)
     segs = [x for x in parsed.path.split("/") if x]
     if not m or "job" not in segs:
         return ""

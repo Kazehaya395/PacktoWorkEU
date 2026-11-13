@@ -13,6 +13,7 @@ from packtoworkeu.services.browser_policy import launch_chromium
 import re
 import csv
 import atexit
+from contextlib import contextmanager
 import threading as _threading_mod
 import time
 import socket
@@ -1983,6 +1984,13 @@ class _DeadEndBoard(Exception):
     """Internal signal: this board renders no job cards at all (FIX W1-2)."""
 class _DetailHttpOnly(Exception):
     """Internal signal: detail enrichment ran over HTTP, no browser needed."""
+class _BrowserBusy(Exception):
+    """Internal signal: no browser worker freed within the queue-wait cap.
+
+    The target is DEFERRED (re-queued for a later sweep), not failed: run
+    20261112T095642 lost 13 of its first 24 targets because each queued
+    company burned its full 1,800s budget waiting behind one giant crawl
+    and then errored, starving the second worker for hours."""
 def _jd_plain(raw, limit=20000):
     """HTML/markup -> plain text for experience extraction.
     Several ATS APIs already return the FULL job description in the same
@@ -3436,6 +3444,35 @@ _OFFLINE_MARKERS = ('ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_CHANGED', 'ERR_INT
                     'ERR_ADDRESS_UNREACHABLE', 'ERR_CONNECTION_TIMED_OUT', 'ERR_NAME_NOT_RESOLVED')
 
 
+def is_no_route_failure(*messages) -> bool:
+    """True when a failure says the scanning machine had no network route.
+
+    Universal network-resilience (2026-11-13, audit G1): the German run
+    20261113T131421 lost its internet route at 14:44 and recorded 80 portal
+    ERRORs for one local outage. `is_dns_failure` in scanning/common covers
+    name-resolution failures only, so `ERR_INTERNET_DISCONNECTED` targets
+    were eligible for neither a pause nor the end-of-run retry sweep. This
+    predicate names the no-route family explicitly; it never matches a
+    portal wall (blocked/challenge markers are a different vocabulary)."""
+    text = " ".join(str(m or "") for m in messages).casefold()
+    return any(marker.casefold() in text for marker in _OFFLINE_MARKERS)
+
+
+def _route_wait_max_sec() -> float:
+    """Bounded wait for the route to return while the offline gate is shut.
+
+    Env-tunable like the browser-queue cap; the wait is sliced so Stop and
+    Pause stay responsive, and expiry never fabricates a verdict -- targets
+    simply proceed and the end-of-run sweep / Resume get their chance."""
+    try:
+        return max(0.0, float(os.environ.get("PACKTOWORKEU_ROUTE_WAIT_SEC", "1800")))
+    except (TypeError, ValueError):
+        return 1800.0
+
+
+_ROUTE_WAIT_POLL_SEC = 10.0
+
+
 def seed_page_failure_text(url, reason="", *, offline=False):
     """Wording for a seed page that never loaded (Issue 005 C2/P3).
 
@@ -4104,7 +4141,12 @@ _SNIFF_PATTERNS = (
 )
 # Workday needs two captures (tenant host + site path), so it is matched apart.
 _SNIFF_WORKDAY = re.compile(
-    r"(?P<host>[A-Za-z0-9-]+\.(?:wd\d+)\.myworkdayjobs\.com)"
+    # The wdN cluster segment is OPTIONAL: some tenants (e.g. NXP) live on
+    # <tenant>.myworkdayjobs.com with no cluster and answer CXS there.
+    # Requiring wd\d+ made such boards invisible to the API path, so they
+    # fell back to a DOM crawl of a client-rendered SPA (mirrors the ATS
+    # adapter fix in scan_workday).
+    r"(?P<host>[A-Za-z0-9-]+(?:\.wd\d+)?\.myworkdayjobs\.com)"
     r"(?:/wday/cxs/(?P<tenant>[A-Za-z0-9_-]+))?"
     r"/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[A-Za-z0-9_-]+)", re.I)
 # Boards we can RECOGNISE but have no API adapter for: naming them in the
@@ -4305,7 +4347,10 @@ def workday_cxs_detail_url(url):
     2026-10-19: same mapping as ui/tabs/tailoring.py:workday_cxs_url."""
     from urllib.parse import urlparse
     parsed = urlparse(url or "")
-    m = re.match(r"^([^.]+)\.wd\d+\.myworkdayjobs\.com$", parsed.netloc, re.I)
+    # Cluster segment optional (nxp.myworkdayjobs.com has none) — see
+    # _SNIFF_WORKDAY. Without this, JD text for cluster-less tenants could
+    # never come from CXS and their postings stayed verdict-Unknown.
+    m = re.match(r"^([^.]+)(?:\.wd\d+)?\.myworkdayjobs\.com$", parsed.netloc, re.I)
     segs = [x for x in parsed.path.split("/") if x]
     if not m or "job" not in segs:
         return ""
@@ -4718,6 +4763,79 @@ class CareerPortalScanner:
             print(f"[preflight] WARNING {len(failures)}/{len(hosts)} probe(s) "
                   "failed but proceeding.")
 
+    # ── Universal network resilience (2026-11-13, audit G1) ──────────────
+    # When the scanning machine loses its route, every further target would
+    # otherwise burn an ERROR row proving the same dead route (80 rows in
+    # run 20261113T131421). The offline gate turns that into a pause: seed
+    # navigation already counts consecutive no-route failures
+    # (`_offline_streak`); once the streak trips the limit the gate shuts
+    # and workers wait here, probing the run's own target hosts, until one
+    # answers or the bounded wait expires. No verdict is ever fabricated:
+    # expiry just lets targets proceed to their normal outcome, and the
+    # end-of-run sweep plus Resume (scan_scope treats transient-transport
+    # errors as unsettled) retry whatever the outage still claimed.
+    def _probe_route_once(self):
+        """True when the machine has a working route again.
+
+        A literal-IP connect comes first: during a pure DNS outage it
+        still proves the route is back (name resolution gets its own
+        retry via the end-of-run sweep), and it costs no DNS traffic.
+        Falls back to this run's target hosts, mirroring preflight."""
+        try:
+            with socket.create_connection(("1.1.1.1", 443), timeout=3):
+                return True
+        except Exception:
+            pass
+        hosts = list(getattr(self, "_probe_hosts", ()) or ())
+        if not hosts:
+            return True  # nothing to probe against: never gate the run
+        for host in hosts[:4]:
+            try:
+                infos = socket.getaddrinfo(host, 443, socket.AF_INET)
+                if not infos:
+                    continue
+                with socket.create_connection((infos[0][4][0], 443), timeout=3):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _wait_for_route(self, label="?"):
+        """Block while the offline gate is shut. True only if cancelled."""
+        gate = getattr(self, "_route_down", None)
+        if gate is None or not gate.is_set():
+            return False
+        budget = _route_wait_max_sec()
+        started = time.monotonic()
+        announced = False
+        while gate.is_set():
+            if check_control(self.cancel_event, self.pause_event):
+                return True
+            if not announced:
+                print(f"[network] no route from this machine; scan paused "
+                      f"before {label} until connectivity returns "
+                      f"(max {budget:.0f}s, Stop still works)", flush=True)
+                announced = True
+            if self._probe_route_once():
+                gate.clear()
+                self._offline_streak = 0
+                print("[network] route restored; scan resuming", flush=True)
+                return False
+            if time.monotonic() - started >= budget:
+                # Bounded wait expired: proceed and let each target reach
+                # its normal outcome. A later no-route failure re-shuts
+                # the gate, so a long outage pauses in bounded chunks
+                # instead of consuming the whole target list.
+                gate.clear()
+                print("[network] route wait expired; continuing -- "
+                      "unreached targets stay retryable via the "
+                      "end-of-run sweep and Resume", flush=True)
+                return False
+            if not sleep_interruptible(_ROUTE_WAIT_POLL_SEC,
+                                       self.cancel_event, self.pause_event):
+                return True
+        return False
+
     def _http_fetch_with_retry(self, url, headers, parse_json=True, post_body=None):
         """GET (or JSON POST when post_body is given) a provider/API URL with
         transient-error retry + exponential backoff.
@@ -4928,6 +5046,89 @@ class CareerPortalScanner:
             return saved_text
         return text
 
+    @contextmanager
+    def _browser_sem_wait(self, label, started=None, required=True,
+                          max_wait_sec=None):
+        """Acquire the shared browser-worker semaphore WITHOUT ever blocking
+        forever (run 20261110T185858: HomeToGo printed nothing for ~1h while
+        queued behind a wedged Hays crawl, because `with self._browser_sem`
+        has no timeout, no cancel check and no log line).
+
+        Polls in 1s slices: honours Stop (ScanCancelled), enforces the
+        per-company deadline counted from ``started``, and prints a waiting
+        diagnostic (first at 20s, then every 120s — an 1,800s queue used to
+        flood the log with ~90 identical lines per company). Yields True
+        when acquired. With ``required=False`` it yields False on deadline
+        instead of raising, so an optional phase (browser detail fallback)
+        can be skipped while keeping the rows already collected.
+
+        ``max_wait_sec`` caps the queue wait: exceeding it raises
+        _BrowserBusy so the caller can DEFER the target to a later sweep
+        instead of letting it burn its whole company budget in the queue
+        and error (run 20261112T095642 lost 13 of 24 targets that way).
+        Always releases on exit.
+        """
+        acquired = False
+        wait_t0 = time.monotonic()
+        last_notice = -100.0
+        try:
+            while True:
+                if self._browser_sem.acquire(timeout=1.0):
+                    acquired = True
+                    break
+                check_cancelled(self.cancel_event)
+                waited = time.monotonic() - wait_t0
+                if max_wait_sec is not None and waited >= max_wait_sec:
+                    raise _BrowserBusy(
+                        f"no free browser worker after {waited:.0f}s "
+                        f"(cap {max_wait_sec:.0f}s); target deferred")
+                if started is not None:
+                    budget = float(getattr(self.config, "MAX_COMPANY_TIME_SEC", 1800) or 1800)
+                    if time.monotonic() - started > budget:
+                        if required:
+                            raise RuntimeError(
+                                f"company deadline reached while waiting {waited:.0f}s "
+                                "for a free browser worker")
+                        yield False
+                        return
+                notice_gap = 20.0 if last_notice < 0 else 120.0
+                if waited - max(last_notice, 0.0) >= notice_gap and waited >= 20.0:
+                    last_notice = waited
+                    print(f"   [phase] {label}: waiting for a free browser worker "
+                          f"({waited:.0f}s; another company's browser session is busy)",
+                          flush=True)
+            yield True
+        finally:
+            if acquired:
+                self._browser_sem.release()
+
+    def _browser_wait_cap(self):
+        """Queue-wait cap for the listing browser gate (seconds).
+
+        Main pass and first deferral sweep cap the wait (env
+        PACKTOWORKEU_BROWSER_WAIT, default 150) so queued companies defer
+        instead of dying; the final sweep (``_sweep_no`` >= 2) waits with
+        no cap so every deferred target settles for real."""
+        if int(getattr(self, "_sweep_no", 0) or 0) >= 2:
+            return None
+        try:
+            return max(30.0, float(os.environ.get("PACKTOWORKEU_BROWSER_WAIT") or 150))
+        except (TypeError, ValueError):
+            return 150.0
+
+    @staticmethod
+    def _apply_page_timeouts(page, timeout_ms):
+        """Bound EVERY page call, not just goto: Playwright's evaluate /
+        content / wait_for_selector otherwise have no effective timeout and
+        one wedged heavy page (hays.de) froze a company — and via the browser
+        semaphore the whole scan — for over an hour (run 20261110T185858).
+        Fails open for stub pages in tests."""
+        for setter in ("set_default_timeout", "set_default_navigation_timeout"):
+            try:
+                getattr(page, setter)(int(timeout_ms))
+            except Exception:
+                pass
+
     def _get_or_launch_worker_browser(self):
         """Return a warm thread-local headless Chromium browser for this worker thread.
 
@@ -5013,7 +5214,18 @@ class CareerPortalScanner:
             for future in futures:
                 future.cancel()
             if futures:
-                cf.wait(futures)
+                # Bounded-slice join with a heartbeat (2026-11-12): same
+                # safety rule as _drain (never abandon writers), but a
+                # slow join must say so instead of looking hung.
+                _join_t0 = time.monotonic()
+                while True:
+                    _done, _pend = cf.wait(futures, timeout=5)
+                    if not _pend:
+                        break
+                    if time.monotonic() - _join_t0 >= 30:
+                        _join_t0 = time.monotonic()
+                        print("   [stop] still joining worker pool...",
+                              flush=True)
             with self._worker_browsers_lock:
                 have_browsers = bool(self._worker_browsers_all)
             if have_browsers:
@@ -6514,6 +6726,48 @@ class CareerPortalScanner:
             return {k: bool(out.get(k)) for k in ("hasNext","hasLoadMore","hasPager")}
         except Exception:
             return {"hasNext": False, "hasLoadMore": False, "hasPager": False}
+    @staticmethod
+    def _direct_listing_census(target):
+        """DOM census for direct listings (2026-11-12, McDonald's Italia).
+
+        The regular crawl extracted 14 rows where the assisted harvest
+        found 146, and a window scroll pass changed nothing. Rather than
+        guess the lazy-load mechanism (inner-container scroll, JS batch
+        render, reveal-on-interaction), one diagnostic run records the
+        evidence: how many job-like anchors exist in the DOM vs visible,
+        and whether a scrollable inner container owns the list.
+        """
+        js = r"""() => {
+            const vis = el => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; }
+                catch(e) { return false; } };
+            const anchors = Array.from(document.querySelectorAll('a[href]'));
+            const jobRe = /(job|vacanc|position|offert|angebot|annonce|emploi|career|posizioni|stellen|vacature|opportun)/i;
+            const jl = anchors.filter(a => jobRe.test(a.href || ''));
+            const scrollers = [];
+            for (const el of document.querySelectorAll('div, section, main, ul')) {
+                try { const s = getComputedStyle(el);
+                    if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                            && el.scrollHeight > el.clientHeight + 200)
+                        scrollers.push({tag: el.tagName, sh: el.scrollHeight, ch: el.clientHeight});
+                } catch(e) {}
+            }
+            scrollers.sort((a, b) => b.sh - a.sh);
+            return {
+                anchors: anchors.length,
+                job_like: jl.length,
+                job_like_distinct: new Set(jl.map(a => (a.href || '').split('#')[0])).size,
+                job_like_visible: jl.filter(vis).length,
+                inner_scrollers: scrollers.slice(0, 3),
+                doc_sh: document.documentElement ? document.documentElement.scrollHeight : 0,
+                win_ih: window.innerHeight || 0,
+            };
+        }"""
+        try:
+            return target.evaluate(js) or {}
+        except Exception:
+            return {}
+
     @staticmethod
     def _direct_listing_anchor_rows(target):
         """Extract repeated same-host job anchors without card-scope rejection.
@@ -8434,6 +8688,8 @@ class CareerPortalScanner:
         _dr_lang = _dr_parts[0] if (_dr_parts and len(_dr_parts[0]) == 2) else "en"
         jobs, seen, page = [], set(), 1
         while page <= 10:  # safety cap: 10 x 100
+            if check_control(self.cancel_event, self.pause_event):
+                break
             url = (f"https://api.digitalrecruiters.com/public/v1/careers-site/job-ads"
                    f"?domainName={slug}&limit=100&page={page}")
             data = json.loads(self._http_fetch_with_retry(
@@ -8477,6 +8733,10 @@ class CareerPortalScanner:
         if cap > 0 and jobs:
             got = 0
             for job in jobs[:cap]:
+                # Serial per-ad GETs (cap up to 2000): Stop must land
+                # between ads, not after the whole board (2026-11-12).
+                if check_control(self.cancel_event, self.pause_event):
+                    break
                 jid = job.pop("_dr_id", "")
                 if not jid:
                     continue
@@ -8738,6 +8998,8 @@ class CareerPortalScanner:
                    "Accept": "application/json"}
         jobs, offset = [], 0
         while offset < 2000:
+            if check_control(self.cancel_event, self.pause_event):
+                break
             api = (f"{p.scheme}://{p.netloc}/hcmRestApi/resources/latest/"
                    f"recruitingCEJobRequisitions?onlyData=true"
                    f"&expand=requisitionList.secondaryLocations"
@@ -8795,6 +9057,8 @@ class CareerPortalScanner:
             budget = 2000
         jobs = []
         for job in openings:
+            if check_control(self.cancel_event, self.pause_event):
+                break
             jid = str(job.get("id") or "").strip()
             if not jid:
                 continue
@@ -8875,6 +9139,9 @@ class CareerPortalScanner:
         api = f"https://{host}/wday/cxs/{tenant}/{site}"
         jobs, seen, offset, total = [], set(), 0, None
         while offset < 2000:
+            # Stop must land between pages, not after all 100 (2026-11-12).
+            if check_control(self.cancel_event, self.pause_event):
+                break
             try:
                 data = json.loads(self._http_fetch_with_retry(
                     api + "/jobs", headers,
@@ -8913,25 +9180,60 @@ class CareerPortalScanner:
             budget = int(os.environ.get("PACKTOWORKEU_WORKDAY_DETAILS", "2000"))
         except ValueError:
             budget = 2000
-        fetched = 0
-        for job in jobs:
-            if fetched >= budget or check_control(self.cancel_event, self.pause_event):
-                break
-            durl = job.pop("_workday_detail", "")
-            if not durl:
-                continue
+        # Detail GETs run in a small pool (mirrors the ATS adapter, FIX
+        # 2026-10-19 there): serially they cost ~0.3-0.8s each, so a
+        # 2,000-posting board spent up to ~25 min here alone. Fetches are
+        # issued in list order in waves of `workers`, and results are
+        # applied in list order, so the JD budget still decides coverage
+        # exactly as the serial loop did.
+        try:
+            workers = max(1, min(8, int(os.environ.get(
+                "PACKTOWORKEU_WORKDAY_WORKERS", "6"))))
+        except ValueError:
+            workers = 6
+
+        def _detail(job):
+            """Fetch one detail payload; never mutates `job` (pool-safe)."""
             try:
-                d = json.loads(self._http_fetch_with_retry(durl, headers))
+                d = json.loads(self._http_fetch_with_retry(
+                    job.get("_workday_detail") or "", headers))
             except Exception:
-                continue
+                return "", ""
             info = (d or {}).get("jobPostingInfo") or {}
-            desc = info.get("jobDescription") or ""
+            return (info.get("jobDescription") or "",
+                    (info.get("location") or "").strip())
+
+        def _apply(job, desc, loc):
+            nonlocal fetched
             if desc:
                 job["jd_text"] = _jd_plain(desc)
                 fetched += 1
-            loc = (info.get("location") or "").strip()
             if loc and not job.get("location_hint"):
                 job["location_hint"] = loc
+
+        fetched = 0
+        pending = [job for job in jobs if job.get("_workday_detail")]
+        if workers <= 1 or len(pending) <= 1:
+            for job in pending:
+                if fetched >= budget or check_control(
+                        self.cancel_event, self.pause_event):
+                    break
+                _apply(job, *_detail(job))
+        else:
+            import concurrent.futures as _cf
+            idx = 0
+            with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+                while idx < len(pending):
+                    if fetched >= budget or check_control(
+                            self.cancel_event, self.pause_event):
+                        break
+                    wave = pending[idx:idx + workers]
+                    idx += len(wave)
+                    # map preserves list order regardless of completion.
+                    for job, (desc, loc) in zip(wave, ex.map(_detail, wave)):
+                        if fetched >= budget:
+                            break
+                        _apply(job, desc, loc)
         for job in jobs:
             job.pop("_workday_detail", None)
         return jobs, f"workday API: {len(jobs)} ({fetched} with JD text)"
@@ -9077,6 +9379,8 @@ class CareerPortalScanner:
         }
         jobs, page, total = [], 1, None
         while len(jobs) < per_company and page <= 60:
+            if check_control(self.cancel_event, self.pause_event):
+                break
             qs = urlencode(params + [("page", str(page))])
             raw = self._http_fetch_with_retry(f"{api}/api/jobs?{qs}",
                                               api_headers)
@@ -9173,6 +9477,8 @@ class CareerPortalScanner:
         pages = 0
         cap = int(os.environ.get("PACKTOWORKEU_AVATURE_PAGES", "40") or 40)
         while url and pages < cap:
+            if check_control(self.cancel_event, self.pause_event):
+                break
             check_cancelled(self.cancel_event)
             pages += 1
             body = self._http_fetch_with_retry(url, headers, parse_json=False) or ""
@@ -9925,6 +10231,9 @@ class CareerPortalScanner:
         unchanged = 0
         last_height = 0
         for i in range(self.config.MAX_INFINITE_SCROLL):
+            # Up to 35 scroll+wait cycles (~1-2 min): Stop must land
+            # between scrolls, not after all of them (2026-11-12).
+            check_cancelled(self.cancel_event)
             try:
                 height = target.evaluate("document.body.scrollHeight")
                 target.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -10097,6 +10406,7 @@ class CareerPortalScanner:
         # FIXED: keep the seed page's filter params (e.g. IKEA orgIds=22908) when
         # following pagination links, so the regional scope isn't lost mid-crawl.
         seed_query_params = seed_query_params or []
+        check_cancelled(self.cancel_event)
         js = r"""
         (targetPage) => {
         } """ + JS_HELPERS + r"""
@@ -10484,6 +10794,7 @@ class CareerPortalScanner:
                     browser = launch_chromium(pw.chromium,headless=True,args=BROWSER_ARGS)
                     try:
                         page = browser.new_page()
+                        self._apply_page_timeouts(page, self.config.ACTION_TIMEOUT_MS)
                         install_page_resource_blocking(page)
                         for rec in unresolved:
                             if check_control(self.cancel_event,self.pause_event):
@@ -11746,6 +12057,8 @@ class CareerPortalScanner:
             targets = targets[:max_fetch]
         print(f"   Detail-page location enrichment: {len(targets)} rows to check...")
         def fetch(r):
+            if check_control(self.cancel_event, self.pause_event):
+                return 0  # queued fetches become no-ops once Stop lands
             res = self._detail_location_from_url(r["Job URL"])
             if res:
                 # FIX P0-49 (S-09): nor did this one. "Operations", "Are",
@@ -12026,7 +12339,9 @@ class CareerPortalScanner:
                 try:
                     context = browser.new_context(viewport={'width':1280,'height':800})
                     install_page_resource_blocking(context)
-                    return read(context.new_page())
+                    _pg = context.new_page()
+                    self._apply_page_timeouts(_pg, self.config.ACTION_TIMEOUT_MS)
+                    return read(_pg)
                 finally:
                     browser.close()
         except ScanCancelled:
@@ -12473,6 +12788,7 @@ class CareerPortalScanner:
                         browser = launch_chromium(pw_context.chromium,headless=True,args=BROWSER_ARGS)
                         browser._pw_ctx = pw_context
                     pg,close_pg = browser.new_page(),True
+                    self._apply_page_timeouts(pg, self.config.ACTION_TIMEOUT_MS)
                     install_page_resource_blocking(pg)
                 except Exception as exc:
                     if browser is None and pw_context is not None:
@@ -13079,6 +13395,21 @@ class CareerPortalScanner:
             print(f"Seed file error ({self.input_csv}): {exc}")
             return
         crawl_start = time.monotonic()
+        self._sweep_no = 0  # browser-queue deferral sweep counter (reset per run)
+        # Universal network resilience (2026-11-13, G1): offline gate +
+        # probe hosts (this run's own target hosts, deduped, max 4 -- the
+        # same set preflight probes, reused for route-restoration checks).
+        self._route_down = threading.Event()
+        self._offline_streak = 0
+        _probe_hosts = []
+        for _t in targets:
+            try:
+                _netloc = (urlparse(_t.get("careers_url") or "").netloc or "").lower()
+            except Exception:
+                _netloc = ""
+            if _netloc and _netloc not in _probe_hosts:
+                _probe_hosts.append(_netloc)
+        self._probe_hosts = _probe_hosts[:4]
         self._last_activity = time.monotonic()
         self._detail_lock = threading.Lock()
         self._detail_count = 0
@@ -13153,6 +13484,11 @@ class CareerPortalScanner:
         _submitted_times={}
         def crawl_target(idx, target_row):
             if check_control(self.cancel_event, self.pause_event):
+                print(f"   CANCELLED: skipping target [{idx}] {target_row.get('name', '?')}")
+                return 0, 0, "cancelled"
+            # G1: if the route died earlier in this run, wait for it here
+            # instead of recording another portal ERROR for a local outage.
+            if self._wait_for_route(target_row.get('name', '?')):
                 print(f"   CANCELLED: skipping target [{idx}] {target_row.get('name', '?')}")
                 return 0, 0, "cancelled"
             name = target_row["name"]
@@ -13691,7 +14027,8 @@ class CareerPortalScanner:
                     _crawl_locale, _crawl_accept_language = self._preferred_browser_locales(target_row, seed_url)
                     diagnostics.append(f"browser locale: {_crawl_locale}; Accept-Language: {_crawl_accept_language}")
                     _sem_t0 = time.monotonic()
-                    with self._browser_sem:
+                    with self._browser_sem_wait(name, started=started,
+                                                max_wait_sec=self._browser_wait_cap()):
                         # 2026-10-19: time queued behind another company's Chromium
                         # session is not this company's LIST work. Credit it back so
                         # Proximus is not cut off at "page 1" after waiting.
@@ -13716,6 +14053,7 @@ class CareerPortalScanner:
                         # images only, and silently lost the rest. Fails open.
                         install_page_resource_blocking(ctx)
                         page = ctx.new_page()
+                        self._apply_page_timeouts(page, self.config.ACTION_TIMEOUT_MS)
                         page._last_nav_status = 0
                         _verification_state = {}
                         loaded = False
@@ -13785,6 +14123,9 @@ class CareerPortalScanner:
                             raise RuntimeError('company deadline reached after seed navigation; no further listing operations attempted')
                         if loaded:
                             self._offline_streak = 0
+                            _gate = getattr(self, '_route_down', None)
+                            if _gate is not None:
+                                _gate.clear()
                         if not loaded:
                             if _static_was_blocked:
                                 raise RuntimeError(
@@ -13797,6 +14138,16 @@ class CareerPortalScanner:
                             # it is instead of leaving it in the bot-wall vocabulary.
                             if _last_net and any(t in _last_nav for t in _OFFLINE_MARKERS):
                                 self._offline_streak = int(getattr(self, '_offline_streak', 0) or 0) + 1
+                                if self._offline_streak >= _OFFLINE_STREAK_LIMIT:
+                                    # G1: shut the offline gate so remaining
+                                    # workers pause for the route instead of
+                                    # each recording the same outage.
+                                    _gate = getattr(self, '_route_down', None)
+                                    if _gate is not None and not _gate.is_set():
+                                        _gate.set()
+                                        print("[network] consecutive no-route "
+                                              "failures: pausing target intake "
+                                              "until connectivity returns", flush=True)
                                 raise RuntimeError(seed_page_failure_text(
                                     seed_url, _last_nav, offline=True))
                             self._offline_streak = 0
@@ -13914,7 +14265,32 @@ class CareerPortalScanner:
                             if _direct_pager.get("hasLoadMore"):
                                 self.click_load_more_repeatedly(page, target)
                             elif not _needs_direct_pagination:
-                                diagnostics.append("direct listing complete: no pagination/load-more control detected")
+                                # Lazy-scroll listings expose no pager or
+                                # load-more control, so the first screen used
+                                # to be all we ever saw (McDonald's Italia
+                                # 2026-11-12: 14 rows in the regular crawl
+                                # vs 146 in the assisted harvest). One
+                                # bounded, cancel-aware scroll pass before
+                                # declaring the listing complete.
+                                _scrolled = self.aggressive_infinite_scroll(
+                                    page, target)
+                                _batch = self.extract_visible_jobs(target)
+                                _added = sum(
+                                    1 for job in _batch if process_job(job))
+                                diagnostics.append(
+                                    f"direct listing: no pagination/load-more "
+                                    f"control detected; scroll pass "
+                                    f"({_scrolled} scrolls) yielded {_added} "
+                                    f"new row(s)")
+                                # Census AFTER the scroll pass: if the DOM
+                                # holds many more job anchors than we
+                                # extracted, the mechanism (inner scroller
+                                # vs JS batch render) is named here for the
+                                # next fix instead of guessed (2026-11-12).
+                                _census = self._direct_listing_census(target)
+                                diagnostics.append(
+                                    f"direct listing census: {_census} "
+                                    f"(rows kept so far: {len(company_jobs)})")
                         else:
                             self.aggressive_infinite_scroll(page, target)
                             self.click_load_more_repeatedly(page, target)
@@ -13954,6 +14330,18 @@ class CareerPortalScanner:
                             target = self.check_iframes(page) or page
                             if not _direct_listing_seed:
                                 self.progressive_scroll_and_wait(page, target)
+                            # Mid-cycle deadline re-check (run 20261110T185858):
+                            # the top-of-loop budget gate only runs between
+                            # pages, so a slow scroll/extract cycle on a heavy
+                            # board could drift far past both budgets before
+                            # being noticed. Rows collected so far are kept.
+                            if time.monotonic() - started > min(
+                                    self.config.MAX_COMPANY_TIME_SEC,
+                                    self.config.LIST_TIME_BUDGET_SEC):
+                                diagnostics.append(
+                                    f"LIST budget reached mid-page {page_num}; "
+                                    f"{len(company_jobs)} rows kept")
+                                break
                             _page_block=self._bot_challenge_reason(page)
                             if _page_block:
                                 diagnostics.append(f'blocked at page {page_num}: {_page_block}')
@@ -14100,20 +14488,26 @@ class CareerPortalScanner:
                                 f"detail: HTTP only (playwright unavailable: {_pw_reason})")
                             raise _DetailHttpOnly()
                         _fallback_t0 = time.monotonic()
-                        with self._browser_sem:
+                        with self._browser_sem_wait(name, started=started, required=False) as _gate_ok:
                             phase_times["browser_fallback_wait"] = time.monotonic() - _fallback_t0
-                            _fallback_t0 = time.monotonic()
-                            browser = self._get_or_launch_worker_browser()
-                            ctx = browser.new_context(viewport={"width": 1280, "height": 800})
-                            install_page_resource_blocking(ctx)
-                            page = ctx.new_page()
-                            self._detail_scan_for_company(page, name, _rem_browser)
-                            try: page.close()
-                            except Exception: pass
-                            try: ctx.close()
-                            except Exception: pass
-                            browser = ctx = page = None
-                            phase_times["browser_fallback"] = time.monotonic() - _fallback_t0
+                            if not _gate_ok:
+                                diagnostics.append(
+                                    "detail: browser fallback skipped: no free browser "
+                                    "worker before the company deadline; HTTP results kept")
+                            else:
+                                _fallback_t0 = time.monotonic()
+                                browser = self._get_or_launch_worker_browser()
+                                ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+                                install_page_resource_blocking(ctx)
+                                page = ctx.new_page()
+                                self._apply_page_timeouts(page, self.config.ACTION_TIMEOUT_MS)
+                                self._detail_scan_for_company(page, name, _rem_browser)
+                                try: page.close()
+                                except Exception: pass
+                                try: ctx.close()
+                                except Exception: pass
+                                browser = ctx = page = None
+                                phase_times["browser_fallback"] = time.monotonic() - _fallback_t0
             except _DeadEndBoard:
                 pass
             except _DetailHttpOnly:
@@ -14123,6 +14517,11 @@ class CareerPortalScanner:
                 error = "ScanCancelled: stopped by user"
                 diagnostics.append(error)
                 status = "cancelled"
+            except _BrowserBusy:
+                # Not a failure: the target never got a browser worker in
+                # time. Escape before any log row is written; the caller
+                # re-queues it for a deferral sweep (see execute_crawler).
+                raise
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 diagnostics.append(error)
@@ -14362,18 +14761,38 @@ class CareerPortalScanner:
                     # writers. This wait is on the scan thread, NOT the GUI.
                     # Stop remains "Stopping" until bounded in-flight calls
                     # unwind; do not abandon workers into a subsequent run.
-                    done, pending = cf.wait(pending)
-                    for _f in done:
-                        try:
-                            wrote, quarantined, status = _f.result()
-                        except (ScanCancelled, cf.CancelledError):
-                            totals["cancelled"] += 1
-                        except Exception:
-                            pass  # already stopping; don't log straggler noise
-                        else:
-                            totals["written"] += wrote
-                            totals["quarantined"] += quarantined
-                            totals[status] += 1
+                    # The wait itself is now VISIBLE (2026-11-12): poll in
+                    # 5s slices and name the in-flight targets still
+                    # unwinding, so a slow Stop says WHICH company it is
+                    # waiting on instead of looking hung for 15-20 min.
+                    _wait_t0 = time.monotonic()
+                    _last_note = 0.0
+                    while pending:
+                        done, pending = cf.wait(pending, timeout=5)
+                        for _f in done:
+                            try:
+                                wrote, quarantined, status = _f.result()
+                            except (ScanCancelled, cf.CancelledError):
+                                totals["cancelled"] += 1
+                            except Exception:
+                                pass  # already stopping; don't log straggler noise
+                            else:
+                                totals["written"] += wrote
+                                totals["quarantined"] += quarantined
+                                totals[status] += 1
+                        if pending and time.monotonic() - _last_note >= 30:
+                            _last_note = time.monotonic()
+                            _names = []
+                            for _f in list(pending)[:6]:
+                                _row = futures_map.get(_f, (0, {}))[1] or {}
+                                _names.append(str(
+                                    _row.get("name") or _row.get("seed_name")
+                                    or "?"))
+                            print(f"   [stop] waiting on {len(pending)} "
+                                  f"in-flight target(s): "
+                                  f"{', '.join(_names)} "
+                                  f"({int(time.monotonic() - _wait_t0)}s)",
+                                  flush=True)
                     break
                 done, pending = cf.wait(
                     pending, timeout=0.5,
@@ -14386,6 +14805,10 @@ class CareerPortalScanner:
                         totals[status] += 1
                     except (ScanCancelled, cf.CancelledError):
                         totals["cancelled"] += 1
+                    except _BrowserBusy:
+                        # Deferred, not failed: re-queued for a later
+                        # sweep by execute_crawler (no log row was written).
+                        deferred_rows.append(futures_map[future])
                     except Exception as exc:
                         totals["thread_errors"] += 1
                         print(f"Worker escaped error: {type(exc).__name__}: {exc}")
@@ -14394,20 +14817,47 @@ class CareerPortalScanner:
                                          thread_name_prefix="api")
         dom_pool = cf.ThreadPoolExecutor(max_workers=self.max_workers,
                                          thread_name_prefix="dom")
+        futures_map = {}
+        deferred_rows = []
         try:
             futures = []
             for i, row in api_targets:
                 if check_control(self.cancel_event, self.pause_event):
                     break
                 _submitted_times[i]=time.monotonic()
-                futures.append(api_pool.submit(crawl_target, i, row))
+                _fut = api_pool.submit(crawl_target, i, row)
+                futures.append(_fut); futures_map[_fut] = (i, row)
             for i, row in dom_targets:
                 if check_control(self.cancel_event, self.pause_event):
                     print(f"   CANCELLED: not submitting remaining targets")
                     break
                 _submitted_times[i]=time.monotonic()
-                futures.append(dom_pool.submit(crawl_target, i, row))
+                _fut = dom_pool.submit(crawl_target, i, row)
+                futures.append(_fut); futures_map[_fut] = (i, row)
             _drain(futures)
+            # Browser-queue deferral sweeps (run 20261112T095642): targets
+            # that never got the single browser worker within the wait cap
+            # are re-crawled now instead of having errored after burning
+            # their full company budget in the queue. Sweep 2 waits with
+            # no cap (see _browser_wait_cap), so everything left settles.
+            for _sweep in (1, 2):
+                if not deferred_rows:
+                    break
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    break
+                self._sweep_no = _sweep
+                _rows, deferred_rows = deferred_rows, []
+                _reporter = getattr(self, '_progress_reporter', None)
+                if _reporter:
+                    _reporter.retry([r for _i, r in _rows])
+                print(f"\n[browser queue] re-crawl: {len(_rows)} deferred "
+                      f"target(s), sweep {_sweep}", flush=True)
+                _futs = []
+                for i, row in _rows:
+                    _submitted_times[i] = time.monotonic()
+                    _fut = dom_pool.submit(crawl_target, i, row)
+                    _futs.append(_fut); futures_map[_fut] = (i, row)
+                _drain(_futs)
         finally:
             # Also join on exceptional drain exits before closing browser
             # resources or reconciling outputs; queued work is cancelled.
@@ -14420,13 +14870,21 @@ class CareerPortalScanner:
         # 09-15 run silently lost 24 companies that way. Re-crawl anything
         # that died on DNS once the main pass is done (network has usually
         # recovered by then, and the hosts are re-checked before retrying).
+        # G1 (2026-11-13): eligibility now also covers the no-route family
+        # (ERR_INTERNET_DISCONNECTED & friends) via is_no_route_failure, and
+        # the pass waits for the route first -- see _wait_for_route.
         try:
             dns_failed = []
             with open(scan_log_csv, newline="", encoding="utf-8-sig") as f:
                 for row in csv.DictReader(f):
                     if (row.get("Run ID") or "") != self.run_id:
                         continue
-                    if is_dns_failure(row.get('Error'),row.get('Diagnostics')):
+                    # G1 (2026-11-13): eligibility widened from DNS-only to
+                    # the whole no-route family -- ERR_INTERNET_DISCONNECTED
+                    # targets (79 of run 20261113T131421's 80 outage errors)
+                    # previously qualified for no retry at all.
+                    if is_dns_failure(row.get('Error'),row.get('Diagnostics')) or \
+                            is_no_route_failure(row.get('Error'),row.get('Diagnostics')):
                         dns_failed.append((row.get('Seed Name') or row.get('Company') or '',row.get('Seed URL') or ''))
             retry_rows = [r for r in targets if any(
                 name in (r.get('name'),r.get('seed_name')) and (not url or url==r.get('careers_url'))
@@ -14436,6 +14894,13 @@ class CareerPortalScanner:
                 if _reporter:
                     _reporter.retry(retry_rows)
                 print(f"\n[dns retry] re-crawl: {len(retry_rows)} actual failed target(s), once; no host probes")
+                # G1: if the offline gate is still shut, wait for the route
+                # (bounded, Stop-aware) before spending the single retry
+                # pass. The gate is the only trigger -- this sweep's "no
+                # host probes" contract (P0-15b) is otherwise preserved.
+                if self._route_down.is_set() and \
+                        self._wait_for_route("network retry sweep"):
+                    retry_rows = []
                 still_live = retry_rows  # legacy local name; no DNS test
                 if still_live:
                     ex2 = cf.ThreadPoolExecutor(max_workers=self.max_workers)

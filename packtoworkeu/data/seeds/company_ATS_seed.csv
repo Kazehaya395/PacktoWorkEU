@@ -8,7 +8,7 @@ Backbase,https://job-boards.greenhouse.io/workatbackbase,greenhouse,workatbackba
 BambooHR,https://job-boards.greenhouse.io/bamboohr17,greenhouse,bamboohr17,direct_employer,Global,global,HR Tech,75,90,80,
 Bol.com,https://job-boards.greenhouse.io/bolcomen,greenhouse,bolcomen,direct_employer,Global,global,E-Commerce,80,85,60,
 Bonial,https://bonial.recruitee.com/,recruitee,bonial,direct_employer,Global,global,Retail Media,75,80,45,
-Brain Rocket,https://brainrocket.bamboohr.com/careers/,bamboohr,brainrocket,direct_employer,Global,global,iGaming/Tech,60,85,40,"verified 2026-09-18: API reachable, 0 open postings"
+Brain Rocket,https://job-boards.eu.greenhouse.io/brainrocketltd,bamboohr,brainrocket,direct_employer,Global,global,iGaming/Tech,60,85,40,"verified 2026-09-18: API reachable, 0 open postings"
 Brevo,https://jobs.lever.co/brevo,lever,brevo,direct_employer,Global,global,SaaS,80,85,60,
 Cargo.one,https://jobs.ashbyhq.com/cargo-one,ashby,cargo-one,direct_employer,Global,global,Logistics Tech,85,90,95,
 Contentful,https://boards.greenhouse.io/contentful,greenhouse,contentful,direct_employer,Global,global,SaaS,85,90,75,
@@ -35,12 +35,12 @@ Moonpay,https://jobs.lever.co/moonpay,lever,moonpay,direct_employer,Global,globa
 Moss,https://jobs.ashbyhq.com/moss,ashby,moss,direct_employer,Global,global,Fintech,80,85,60,"moved 2026-10-18 from Personio (404): Ashby board verified live, 29 postings"
 Netlify,https://job-boards.greenhouse.io/netlify,greenhouse,netlify,direct_employer,Global,global,Developer Tools,85,95,90,
 Nexthink,https://careers.smartrecruiters.com/nexthink,smartrecruiters,nexthink,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: smartrecruiters API adapter
-NXP Semiconductors,https://nxp.wd3.myworkdayjobs.com/careers,workday,nxp/careers,direct_employer,Global,global,Semiconductors,80,85,55,FIX P0-20: workday API adapter
+NXP Semiconductors,https://nxp.myworkdayjobs.com/careers,workday,nxp/careers,direct_employer,Global,global,Semiconductors,80,85,55,FIX P0-20: workday API adapter
 Ohpen,https://ohpen.jobs.personio.com/?language=en,personio,ohpen,direct_employer,Global,global,Banking SaaS,75,85,55,
 Philips,https://philips.wd3.myworkdayjobs.com/jobs-and-careers,workday,philips/jobs-and-careers,direct_employer,Global,global,Engineering,80,80,55,FIX P0-20: workday API adapter
 Pleo,https://jobs.ashbyhq.com/pleo/,ashby,pleo,direct_employer,Global,global,Fintech,80,90,75,
 Prysmian Group,https://prysmiangroup.wd3.myworkdayjobs.com/Careers,workday,prysmiangroup/Careers,direct_employer,Global,global,Manufacturing,40,70,60,FIX P0-20: workday API adapter
-QuantumDiam,https://quantum-diamond.jobs.personio.de/,personio,quantum-diamond,direct_employer,Global,global,Quantum Tech,70,80,40,
+QuantumDiam,https://recruiting2.ultipro.com/QUA1014QUAM/JobBoard/ca0ab154-0d7f-47e3-af84-cd9bd79768dc/?q=&o=postedDateDesc&w=&wc=&we=&wpst=,personio,quantum-diamond,direct_employer,Global,global,Quantum Tech,70,80,40,
 Raisin,https://boards.greenhouse.io/raisin,greenhouse,raisin,direct_employer,Global,global,Fintech,80,85,60,
 Scalable Capital,https://careers.smartrecruiters.com/ScalableGmbH,smartrecruiters,ScalableGmbH,direct_employer,Global,global,Fintech,80,85,55,"SmartRecruiters - no API adapter, DOM path; FIX P0-20: smartrecruiters API adapter"
 Sentry,https://jobs.ashbyhq.com/sentry,ashby,sentry,direct_employer,Global,global,Developer Tools,80,95,85,
@@ -85,4 +85,3 @@ Aeyde GmbH,https://aeyde.jobs.personio.de/?language=en,personio,aeyde,direct_emp
 Airbus Deutschland GmbH,https://ag.wd3.myworkdayjobs.com/de-DE/Airbus,workday,Airbus,direct_employer,Germany,seed_url,Aviation and Aerospace Component Manufacturing,70,85,40,Multiple locations
 Aklamio GmbH,https://aklamio.bamboohr.com/careers,bamboohr,aklamio,direct_employer,Germany,seed_url,Marketing Services,70,85,45,Berlin
 APPINIO GmbH,https://job-boards.eu.greenhouse.io/appinio,greenhouse,appinio,direct_employer,Germany,seed_url,Market Research,70,90,50,Hamburg
-Klarna AG,https://jobs.deel.com/klarna#jobs,deel,klarna,direct_employer,Germany,seed_url,Software Development,70,95,60,Multiple locations

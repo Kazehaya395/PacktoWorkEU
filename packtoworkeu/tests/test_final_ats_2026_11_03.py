@@ -149,3 +149,234 @@ def test_cube_stamp_cache_is_scoped_to_task_and_database(local_db,tmp_path):
         conn.execute("UPDATE jobs SET insights_dirty=0");conn.commit()
     with DatabaseReadTask():
         with db.get_connection(local_db)as conn:assert cube._stamp(conn)!=first
+
+
+# ── Run 20261110T185858: seed slugs were trusted blindly, an unsupported
+#    provider emptied silently, and network resets were final ─────────────
+
+def _ats():
+    from packtoworkeu.scanning.ats.ats_scanner import ATSScanner
+    return ATSScanner(seed_file='__unused__.csv', output_file='__unused__.csv')
+
+
+def _http_error(code):
+    import urllib.error
+    return urllib.error.HTTPError('https://fixture.invalid', code, 'x', None, None)
+
+
+_LEVER_JOB = [{"text": "Engineer", "hostedUrl": "https://jobs.lever.co/x/1",
+               "categories": {"location": "Berlin, Germany"},
+               "descriptionPlain": "Build useful things with Python. " * 10}]
+
+
+def _lever_scanner(monkeypatch, behaviour):
+    s = _ats()
+    monkeypatch.setattr(s, '_get_json', behaviour)
+    monkeypatch.setattr(s, 'make_row', lambda target, title, url, *a, **k:
+                        {"Job Title": title, "Job URL": url})
+    return s
+
+
+def test_lever_falls_back_to_url_board_when_seed_slug_404s(monkeypatch):
+    def behaviour(url):
+        if '/swapcards?' in url or '/swapcards/' in url:
+            raise _http_error(404)
+        assert '/swapcard?' in url or '/swapcard/' in url
+        return _LEVER_JOB
+    s = _lever_scanner(monkeypatch, behaviour)
+    rows = s.scan_lever({"name": "swapcards", "url": "https://jobs.lever.co/swapcard",
+                         "board_slug": "swapcards", "ats_type": "lever"})
+    assert len(rows) == 1 and rows[0]["Job Title"] == "Engineer"
+
+
+def test_lever_falls_back_to_other_region(monkeypatch):
+    def behaviour(url):
+        if 'api.eu.lever.co' in url:
+            raise _http_error(404)
+        return _LEVER_JOB
+    s = _lever_scanner(monkeypatch, behaviour)
+    rows = s.scan_lever({"name": "InnoGames", "url": "https://jobs.eu.lever.co/innogames",
+                         "board_slug": "innogames", "ats_type": "lever"})
+    assert len(rows) == 1
+
+
+def test_lever_all_404s_still_raise(monkeypatch):
+    def behaviour(url):
+        raise _http_error(404)
+    s = _lever_scanner(monkeypatch, behaviour)
+    with pytest.raises(Exception):
+        s.scan_lever({"name": "Gone", "url": "https://jobs.lever.co/gone",
+                      "board_slug": "gone", "ats_type": "lever"})
+
+
+def test_workday_single_piece_slug_names_site_not_tenant(monkeypatch):
+    s = _ats()
+    calls = []
+    monkeypatch.setattr(s, '_post_json', lambda url, body:
+                        (calls.append(url), {"total": 0, "jobPostings": []})[1])
+    rows = s.scan_workday({"name": "Airbus Deutschland GmbH",
+                           "url": "https://ag.wd3.myworkdayjobs.com/de-DE/Airbus",
+                           "board_slug": "Airbus", "ats_type": "workday"})
+    assert rows == []
+    assert calls == ["https://ag.wd3.myworkdayjobs.com/wday/cxs/ag/Airbus/jobs"]
+
+
+def test_workday_site_falls_back_to_url_site_on_422(monkeypatch):
+    s = _ats()
+    calls = []
+
+    def post(url, body):
+        calls.append(url)
+        if '/WrongSite/' in url:
+            raise _http_error(422)
+        return {"total": 0, "jobPostings": []}
+    monkeypatch.setattr(s, '_post_json', post)
+    rows = s.scan_workday({"name": "Fixture",
+                           "url": "https://ag.wd3.myworkdayjobs.com/de-DE/Airbus",
+                           "board_slug": "ag/WrongSite", "ats_type": "workday"})
+    assert rows == [] and len(calls) == 2 and '/Airbus/' in calls[1]
+
+
+def test_unsupported_provider_fails_loudly():
+    s = _ats()
+    with pytest.raises(ValueError, match="unsupported ATS provider"):
+        s.scan_target({"name": "Klarna AG", "url": "https://jobs.deel.com/klarna",
+                       "ats_type": "deel"})
+
+
+def _seed_csv(path):
+    path.write_text(
+        "name,careers_url,provider,board_slug,source_type,target_country,"
+        "scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes\n"
+        "Fixture,https://jobs.lever.co/fixture,lever,fixture,direct_employer,"
+        "Germany,seed_url,Tech,70,80,50,\n", encoding='utf-8')
+    return path
+
+
+def test_network_reset_target_is_retried_once_and_recovers(tmp_path, monkeypatch):
+    import csv as _csv
+    import urllib.error
+    from packtoworkeu.scanning.ats.ats_scanner import ATSScanner
+    seed = _seed_csv(tmp_path / 'seed.csv')
+    out = tmp_path / 'jobs.csv'
+    s = ATSScanner(seed_file=str(seed), output_file=str(out))
+    calls = []
+
+    def flaky(target):
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.URLError(
+                "<urlopen error [WinError 10054] forcibly closed>")
+        return [s.make_row(target, "Software Engineer",
+                           "https://jobs.lever.co/fixture/1",
+                           "Berlin, Germany", "Berlin, Germany", "",
+                           "Build useful things. " * 30, "lever_api")]
+    monkeypatch.setattr(s, 'scan_target', flaky)
+    s.run()
+    jobs = list(_csv.DictReader(out.open(encoding='utf-8-sig')))
+    log = list(_csv.DictReader((tmp_path / 'jobs_scan_log.csv').open(encoding='utf-8-sig')))
+    errors = list(_csv.DictReader((tmp_path / 'jobs_errors.csv').open(encoding='utf-8-sig')))
+    assert len(calls) == 2 and len(jobs) == 1
+    assert log[0]['Status'] == 'ok' and log[0]['Attempts'] == '2'
+    assert errors == []
+
+
+def test_network_reset_that_sticks_is_one_error_with_two_attempts(tmp_path, monkeypatch):
+    import csv as _csv
+    import urllib.error
+    from packtoworkeu.scanning.ats.ats_scanner import ATSScanner
+    seed = _seed_csv(tmp_path / 'seed.csv')
+    out = tmp_path / 'jobs.csv'
+    s = ATSScanner(seed_file=str(seed), output_file=str(out))
+
+    def dead(target):
+        raise urllib.error.URLError("<urlopen error [WinError 10054] forcibly closed>")
+    monkeypatch.setattr(s, 'scan_target', dead)
+    s.run()
+    log = list(_csv.DictReader((tmp_path / 'jobs_scan_log.csv').open(encoding='utf-8-sig')))
+    errors = list(_csv.DictReader((tmp_path / 'jobs_errors.csv').open(encoding='utf-8-sig')))
+    assert log[0]['Status'] == 'error' and log[0]['Attempts'] == '2'
+    assert len(errors) == 1
+
+
+def _seed_csv_text(tmp_path, name, url, provider, slug):
+    path = tmp_path / 'seed.csv'
+    path.write_text(
+        "name,careers_url,provider,board_slug,source_type,target_country,"
+        "scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes\n"
+        f"{name},{url},{provider},{slug},direct_employer,Global,global,Tech,70,80,50,\n",
+        encoding='utf-8')
+    return path
+
+
+def test_known_dead_board_is_skipped_without_error(tmp_path, monkeypatch):
+    import csv as _csv
+    from packtoworkeu.scanning.ats.ats_scanner import ATSScanner
+    seed = _seed_csv_text(tmp_path, "QuantumDiam",
+                          "https://quantum-diamond.jobs.personio.de/",
+                          "personio", "quantum-diamond")
+    out = tmp_path / 'jobs.csv'
+    s = ATSScanner(seed_file=str(seed), output_file=str(out))
+    called = []
+    monkeypatch.setattr(s, 'scan_target', lambda t: called.append(1) or [])
+    s.run()
+    log = list(_csv.DictReader((tmp_path / 'jobs_scan_log.csv').open(encoding='utf-8-sig')))
+    errors = list(_csv.DictReader((tmp_path / 'jobs_errors.csv').open(encoding='utf-8-sig')))
+    assert called == []  # never scanned
+    assert log[0]['Status'] == 'empty' and errors == []
+    assert 'known-dead' in log[0]['Diagnostics']
+
+
+def test_known_dead_name_with_new_url_scans_normally(tmp_path, monkeypatch):
+    import csv as _csv
+    from packtoworkeu.scanning.ats.ats_scanner import ATSScanner
+    seed = _seed_csv_text(tmp_path, "QuantumDiam",
+                          "https://jobs.example.com/boards/quantum",
+                          "personio", "quantum-diamond")
+    out = tmp_path / 'jobs.csv'
+    s = ATSScanner(seed_file=str(seed), output_file=str(out))
+    called = []
+    monkeypatch.setattr(s, 'scan_target', lambda t: called.append(1) or [])
+    s.run()
+    log = list(_csv.DictReader((tmp_path / 'jobs_scan_log.csv').open(encoding='utf-8-sig')))
+    assert called == [1]  # moved board -> scanned again
+    assert 'known-dead' not in log[0]['Diagnostics']
+
+
+def test_bundled_seed_klarna_moved_off_deel():
+    import csv as _csv
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ats = list(_csv.DictReader((root / 'data/seeds/company_ATS_seed.csv').open(encoding='utf-8-sig')))
+    career = list(_csv.DictReader((root / 'data/seeds/company_Career_seed.csv').open(encoding='utf-8-sig')))
+    assert all(r['provider'].strip().lower() != 'deel' for r in ats)
+    assert not any(r['name'] == 'Klarna AG' for r in ats)
+    assert any(r['name'] == 'Klarna AG' and 'klarna.com/careers' in r['careers_url'] for r in career)
+
+
+def test_workday_host_without_wd_cluster_is_scanned(monkeypatch):
+    # NXP's tenant lives on nxp.myworkdayjobs.com (no wdN segment) and
+    # answers CXS there; requiring wd\d+ silently returned [] (2026-11-10).
+    s = _ats()
+    calls = []
+    monkeypatch.setattr(s, '_post_json', lambda url, body:
+                        (calls.append(url), {"total": 0, "jobPostings": []})[1])
+    rows = s.scan_workday({"name": "NXP Semiconductors",
+                           "url": "https://nxp.myworkdayjobs.com/careers",
+                           "board_slug": "nxp/careers", "ats_type": "workday"})
+    assert rows == []
+    assert calls == ["https://nxp.myworkdayjobs.com/wday/cxs/nxp/careers/jobs"]
+
+
+def test_bundled_seed_boards_verified_live_2026_11_10():
+    import csv as _csv
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ats = {r['name']: r for r in _csv.DictReader(
+        (root / 'data/seeds/company_ATS_seed.csv').open(encoding='utf-8-sig'))}
+    assert ats['Brain Rocket']['provider'] == 'greenhouse'
+    assert ats['Brain Rocket']['board_slug'] == 'brainrocketltd'
+    assert ats['Virtuagym']['provider'] == 'teamtailor'
+    assert ats['QuantumDiam']['provider'] == 'ashby'
+    assert ats['QuantumDiam']['board_slug'] == 'quantumdiamonds'
+    assert ats['NXP Semiconductors']['careers_url'] == 'https://nxp.myworkdayjobs.com/careers'
