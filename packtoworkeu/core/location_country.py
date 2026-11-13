@@ -697,6 +697,50 @@ def country_from_location(location: str, fallback: str = "") -> str:
         if re.search(r"\b%s\b" % re.escape(alias), work):
             return COUNTRY_NAMES[alias]
 
+    # ── 7c. Compound place names (2026-11-13, McDonald's Italia) ───────────
+    # A town with a venue/street suffix glued on ("Roma Appia",
+    # "Padova Guido Reni", "Sesto San Giovanni Drive", "Orio al Serio
+    # Aeroporto", "Torino Via Pio VII") never matches the whole-string
+    # gazetteer, so every such row lost its country. Drop trailing venue
+    # tokens, then accept the longest token prefix that resolves to
+    # exactly one country. Ambiguity still resolves to "" — this only
+    # fires after every exact check above has failed.
+    # Single-segment strings only: with several comma/dash segments the
+    # explicit-country logic below owns the answer ("La Paz - Bolivia"
+    # must stay Bolivia, never the US town sharing the prefix's name).
+    _tokens = parts[0].split() if len(parts) == 1 else []
+    _VENUE_TAIL = {"drive", "aeroporto", "airport", "stazione", "station",
+                   "mall", "tangenziale", "autostrada", "outlet"}
+    while len(_tokens) > 1 and _tokens[-1] in _VENUE_TAIL:
+        _tokens.pop()
+    if _tokens and " ".join(_tokens) != stripped:
+        _compound = _tokens          # venue tail removed: retry shortened
+    elif len(_tokens) >= 2:
+        _compound = _tokens          # plain compound: try town prefixes
+    else:
+        _compound = []
+    if _compound:
+        from packtoworkeu.core.place_index import (
+            country_from_place_components as _cfpc,
+            explicit_country_name as _ecn)
+        # A token naming a country outright ("La Paz Bolivia") belongs to
+        # the explicit-country logic below, not to prefix guessing.
+        if any(_ecn(t) for t in _compound):
+            _compound = []
+    if _compound:
+        for _n in range(len(_compound), 0, -1):
+            _cand = " ".join(_compound[:_n])
+            if _cand == stripped:
+                continue  # whole string already tried above
+            # The curated city table carries endonyms the GeoNames index
+            # keys by exonym (roma/milano/torino/padova), so consult it
+            # first, then the unique-country place components.
+            if _cand in CITY_TO_COUNTRY:
+                return CITY_TO_COUNTRY[_cand]
+            _resolved = _cfpc([_cand])
+            if _resolved:
+                return _resolved
+
     # Offline geographic evidence from the observed location, never the
     # company/host/seed. Global homonyms are retained, not population-ranked.
     from packtoworkeu.core.place_index import country_from_place_components

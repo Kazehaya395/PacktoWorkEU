@@ -1243,7 +1243,33 @@ KNOWN_BOARD_ISSUES = {
     "Ecosia": "Historical note (2026-09-11): Ashby board 'ecosia.org' returned zero jobs. Current empty response does not establish a hiring freeze.",
     "Dbt Labs": "Greenhouse board 'dbtlabsinc' returns 404 (board taken private)",
     "Crealytics": "Personio board currently returns 0 positions",
+    "QuantumDiam": "Historical (2026-11-10): Personio board was deleted (404); company moved to Ashby 'quantumdiamonds' (22 jobs verified live).",
+    "NXP Semiconductors": "Historical (2026-11-10): wd3 Workday tenant dead (500/422); tenant now on nxp.myworkdayjobs.com/careers (800 postings verified live).",
 }
+# Boards verified dead on the EMPLOYER side (re-probed live 2026-11-10):
+# scanning them can only ever produce the same HTTP error, so the run skips
+# them with an explanatory diagnostic instead of recording an error every
+# time. Keyed by seed name AND a host substring of the dead URL — if the
+# seed is pointed at a new board URL, the target scans normally again.
+KNOWN_DEAD_BOARDS = {
+    "QuantumDiam": (
+        "quantum-diamond.jobs.personio.de",
+        "Personio XML feed 404 since 2026-11-10 (employer-side: board moved or feed disabled)"),
+    "NXP Semiconductors": (
+        "nxp.wd3.myworkdayjobs.com",
+        "Workday tenant 500/422 since 2026-11-10 (employer-side tenant outage/move)"),
+}
+
+
+def _known_dead_reason(target):
+    """Reason string if this target is a verified-dead board, else ''."""
+    entry = KNOWN_DEAD_BOARDS.get(str(target.get("name") or ""))
+    if not entry:
+        return ""
+    host_hint, reason = entry
+    if host_hint and host_hint not in str(target.get("url") or ""):
+        return ""
+    return reason
 # ───────────────────────── SHARED HELPERS ────────────────────────────────────
 def clean(value):
     value = unescape(str(value or ""))
@@ -1854,6 +1880,15 @@ class ATSScanner:
             "getaddrinfo", "connectionrefused",
         )
         return any(m in msg for m in markers)
+
+    @staticmethod
+    def _is_retryable_network(err_type, err_msg):
+        """True when a target-level failure is a transient transport reset
+        worth one deferred second pass (not a 404/422/config error)."""
+        if err_type in ("URLError", "TimeoutError", "ConnectionError",
+                        "ConnectionResetError", "BrokenPipeError"):
+            return True
+        return ATSScanner._is_network_error(Exception(err_msg or ""))
     def _preflight_connectivity(self, targets=()):
         """F-40: probe only the hosts THIS run will actually touch (deduped
         netlocs of the selected targets, capped at four), in parallel, and
@@ -3702,17 +3737,56 @@ class ATSScanner:
     def scan_lever(self, target):
         url = target["url"]
         parts = [p for p in urlparse(url).path.split("/") if p]
-        board = self._seed_slug(target) or (parts[0] if parts else "")
-        if not board:
+        url_board = parts[0] if parts else ""
+        seed_board = self._seed_slug(target)
+        if not seed_board and not url_board:
             return []
+        # A wrong seed board_slug used to be fatal: run 20261110T185858
+        # carried slug 'swapcards' for the board actually named 'swapcard',
+        # so the API 404'd while 6 live postings sat on the URL-derived
+        # board. Try the seed slug, then the URL slug, on the configured
+        # region and then the other one (InnoGames lives on EU only,
+        # Jobandtalent on US only); a 404/empty on one combo falls through
+        # to the next instead of silently returning zero jobs.
+        boards = []
+        for b in (seed_board, url_board):
+            if b and b not in boards:
+                boards.append(b)
         region = target.get("lever_region") or ""
         if not region and ".eu.lever.co" in urlparse(url).netloc:
             region = "eu"
-        base = "api.eu.lever.co" if region == "eu" else "api.lever.co"
-        data = self._get_json(f"https://{base}/v0/postings/{board}?mode=json")
+        primary = "eu" if region == "eu" else "us"
+        regions = [primary, "us" if primary == "eu" else "eu"]
+        import urllib.error
+        data = None
+        last_exc = None
+        for board in boards:
+            for reg in regions:
+                base = "api.eu.lever.co" if reg == "eu" else "api.lever.co"
+                try:
+                    got = self._get_json(
+                        f"https://{base}/v0/postings/{board}?mode=json")
+                except urllib.error.HTTPError as exc:
+                    if exc.code in (404, 410):
+                        last_exc = exc
+                        continue
+                    raise
+                if isinstance(got, list) and got:
+                    data = got
+                    if board != boards[0] or reg != regions[0]:
+                        self._note(
+                            f"lever fallback: board '{board}' via {base} "
+                            f"(seed slug/region returned nothing)")
+                    break
+                if isinstance(got, list):
+                    last_exc = None  # reachable board, genuinely empty
+            if data:
+                break
+        if data is None:
+            if last_exc is not None:
+                raise last_exc
+            return []
         rows = []
-        if not isinstance(data, list):
-            return rows
         for job in data:
             cats = job.get("categories", {})
             loc_val = cats.get("location") or "; ".join(cats.get("allLocations", []))
@@ -4225,19 +4299,36 @@ class ATSScanner:
         # embl.wd103.myworkdayjobs.com, so the match failed and scan_workday
         # returned [] with no error at all: the seed reported 0 jobs forever
         # and looked like an empty board.
-        m = re.match(r"([^.]+)\.(wd\d+)\.myworkdayjobs\.com", host, re.I)
+        m = re.match(r"([^.]+)(?:\.(wd\d+))?\.myworkdayjobs\.com", host, re.I)
         if not m:
             return []
-        tenant, wd = m.group(1), m.group(2)
-        site = (parsed.path.strip("/").split("/") or [""])[-1]
+        tenant = m.group(1)
+        # The wd cluster segment is OPTIONAL: NXP's tenant lives on
+        # nxp.myworkdayjobs.com (no wdN) and answers CXS there (801 postings
+        # verified live 2026-11-10), while the old nxp.wd3 host is dead.
+        # Requiring wd\d+ silently returned [] for such tenants. The API is
+        # always called on the seed URL's own host (host == tenant.wdN for
+        # clustered tenants, so behaviour there is unchanged).
+        url_site = (parsed.path.strip("/").split("/") or [""])[-1]
+        site = url_site
         # FIX P0-43: board_slug is "<tenant>/<site>". SOTI's URL is
         # /Careers/jobs, so the last-segment guess picked "jobs" and queried a
         # site that does not exist.
-        tenant = self._seed_slug(target, 0) or tenant
-        site = self._seed_slug(target, 1) or site
+        _seed_tenant = self._seed_slug(target, 0)
+        _seed_site = self._seed_slug(target, 1)
+        if _seed_site:
+            tenant = _seed_tenant or tenant
+            site = _seed_site
+        elif _seed_tenant:
+            # A single-piece board_slug names the SITE, never the tenant:
+            # the tenant always comes from the wd host. Run
+            # 20261110T185858's Airbus row carried slug "Airbus", which used
+            # to replace tenant 'ag' and 422 the whole board while
+            # ag/Airbus held ~2,000 live postings.
+            site = _seed_tenant
         if not site:
             return []
-        api = f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+        api = f"https://{host}/wday/cxs/{tenant}/{site}/jobs"
         try:
             detail_budget = [int(os.environ.get(
                 "PACKTOWORKEU_WORKDAY_DETAILS", "2000"))]
@@ -4265,18 +4356,49 @@ class ATSScanner:
             self._tls.evidence_scope=target["url"]
             try:
                 d = self._get_json(
-                    f"https://{tenant}.{wd}.myworkdayjobs.com"
+                    f"https://{host}"
                     f"/wday/cxs/{tenant}/{site}{ext_path}")
                 return (d or {}).get("jobPostingInfo") or {}
             except Exception:
                 return None
         pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+        # If the seed's site name is rejected (400/404/422), retry the first
+        # page with the site taken from the careers URL itself before giving
+        # up on the whole tenant.
+        _site_candidates = [site] + (
+            [url_site] if url_site and url_site != site else [])
+        import urllib.error as _urlerr
         try:
             while True:
-                data = self._post_json(api, {
-                    "appliedFacets": {}, "limit": limit, "offset": offset,
-                    "searchText": "",
-                })
+                if offset == 0 and len(_site_candidates) > 1:
+                    data = None
+                    _last_exc = None
+                    for _cand in _site_candidates:
+                        _api = (f"https://{host}"
+                                f"/wday/cxs/{tenant}/{_cand}/jobs")
+                        try:
+                            data = self._post_json(_api, {
+                                "appliedFacets": {}, "limit": limit,
+                                "offset": offset, "searchText": "",
+                            })
+                        except _urlerr.HTTPError as _exc:
+                            if _exc.code in (400, 404, 422):
+                                _last_exc = _exc
+                                continue
+                            raise
+                        if _cand != site:
+                            self._note(
+                                f"workday fallback: site '{_cand}' from URL "
+                                f"(seed site '{site}' rejected)")
+                            site, api = _cand, _api
+                        break
+                    if data is None:
+                        raise _last_exc
+                else:
+                    data = self._post_json(api, {
+                        "appliedFacets": {}, "limit": limit, "offset": offset,
+                        "searchText": "",
+                    })
                 # Workday only reports `total` on the FIRST page; later pages return 0.
                 if total is None:
                     total = data.get("total") or 0
@@ -4673,6 +4795,17 @@ class ATSScanner:
         }
         adapter = adapters.get(target["ats_type"])
         if adapter is None:
+            # A provider value with no adapter anywhere (e.g. 'deel' in a
+            # seed) must fail loudly: run 20261110T185858's Klarna row used
+            # to fall through to a generic scrape and report a misleading
+            # "empty". Generic types that intentionally use the
+            # static/browser path stay exempt (keep in sync with
+            # seed_manager.SUPPORTED_ATS_TYPES).
+            if target["ats_type"] not in ("auto", "official_careers",
+                                          "oracle", "pam", "digitalrecruiters"):
+                raise ValueError(
+                    f"unsupported ATS provider {target['ats_type']!r}: no "
+                    "adapter; fix the seed's provider value or careers URL")
             # FIX P0-31: try the static-HTML fast path before paying for a
             # Chromium launch. Uses this scanner's OWN validators so the
             # acceptance rules are identical; bails out on hydration shells
@@ -4797,9 +4930,9 @@ class ATSScanner:
             f"run_id={self.run_id}; resume={self.resume} ({describe_host_budget()})"
         )
 
-        def _scan_one_ats(idx, target):
+        def _scan_one_ats(idx, target, defer_error_record=False):
             if check_control(self.cancel_event, self.pause_event):
-                return
+                return None
             started = time.monotonic()
             _reporter = getattr(self, '_progress_reporter', None)
             _progress_key = _reporter.begin(target) if _reporter else None
@@ -4811,13 +4944,22 @@ class ATSScanner:
             err_type = err_msg = ""
             self._target_notes = []
             self._tls.evidence_scope=target["url"]
-            try:
-                result = self.scan_target(target)
-            except Exception as exc:
+            _dead = _known_dead_reason(target)
+            if _dead:
+                diagnostics.append(
+                    f"skipped: known-dead board - {_dead}; not scanned "
+                    "(update the seed careers URL if the board moves)")
+                print(f"   SKIPPED: [{target['name']}] known-dead board - {_dead}",
+                      flush=True)
                 result = []
-                err_type, err_msg = type(exc).__name__, str(exc)
-                error = f"{err_type}: {err_msg}"
-                diagnostics.append(error)
+            else:
+                try:
+                    result = self.scan_target(target)
+                except Exception as exc:
+                    result = []
+                    err_type, err_msg = type(exc).__name__, str(exc)
+                    error = f"{err_type}: {err_msg}"
+                    diagnostics.append(error)
             diagnostics.extend(self._target_notes)
             if not result and not error and not self._target_notes:
                 diagnostics.append(
@@ -4895,19 +5037,25 @@ class ATSScanner:
                         "Duration Sec": round(time.monotonic() - started, 1),
                         "Seed URL": target["url"],
                     })
-            if error:
+            if error and not defer_error_record:
                 self._record_error(target["name"], "target", err_type, err_msg,
                                    target["url"])
             if _reporter:
                 _reporter.end(_progress_key, status, coverage=_coverage)
             print(f"   {status.upper()}: [{target['name']}] wrote={len(accepted)}, quarantined={len(quarantined)}, dups={duplicates}")
+            return {"idx": idx, "target": target, "error": error,
+                    "err_type": err_type, "err_msg": err_msg,
+                    "accepted": len(accepted)}
 
+        outcomes = []
         if ats_workers <= 1 or len(targets) <= 1:
             for idx, target in enumerate(targets, 1):
                 if check_control(self.cancel_event, self.pause_event):
                     print(f"   CANCELLED: stopping before target [{idx}] {target.get('name', '?')}")
                     break
-                _scan_one_ats(idx, target)
+                _outcome = _scan_one_ats(idx, target, defer_error_record=True)
+                if _outcome:
+                    outcomes.append(_outcome)
         else:
             import concurrent.futures as _cf
             ats_pool = _cf.ThreadPoolExecutor(max_workers=ats_workers, thread_name_prefix="ats")
@@ -4916,7 +5064,8 @@ class ATSScanner:
                 for idx, target in enumerate(targets, 1):
                     if check_control(self.cancel_event, self.pause_event):
                         break
-                    futs.append(ats_pool.submit(_scan_one_ats, idx, target))
+                    futs.append(ats_pool.submit(
+                        _scan_one_ats, idx, target, True))
                 pending = set(futs)
                 while pending:
                     if self.cancel_event is not None and self.cancel_event.is_set():
@@ -4927,11 +5076,45 @@ class ATSScanner:
                     done, pending = _cf.wait(pending, timeout=0.25, return_when=_cf.FIRST_COMPLETED)
                     for _f in done:
                         try:
-                            _f.result()
+                            _outcome = _f.result()
+                            if _outcome:
+                                outcomes.append(_outcome)
                         except Exception as _wexc:
                             self._record_error("?", "ats_worker", type(_wexc).__name__, str(_wexc))
             finally:
                 ats_pool.shutdown(wait=False, cancel_futures=True)
+        # Deferred second pass for targets lost to transient network resets
+        # (run 20261110T185858: five boards whose APIs verified live died on
+        # WinError 10054 after the per-request retries were exhausted).
+        # reconcile_scan_artifacts keeps the latest log outcome per target
+        # and counts Attempts, so a recovered board reports its retry
+        # result; the errors CSV only ever records a failure that stuck.
+        _retryable = []
+        for _o in outcomes:
+            if not _o["error"]:
+                continue
+            if not _o["accepted"] and self._is_retryable_network(
+                    _o["err_type"], _o["err_msg"]):
+                _retryable.append(_o)
+            else:
+                self._record_error(_o["target"]["name"], "target",
+                                   _o["err_type"], _o["err_msg"],
+                                   _o["target"]["url"])
+        if _retryable:
+            print(f"\nRetrying {len(_retryable)} target(s) lost to network "
+                  "errors (deferred second pass)...")
+            for _o in _retryable:
+                if check_control(self.cancel_event, self.pause_event):
+                    self._record_error(_o["target"]["name"], "target",
+                                       _o["err_type"], _o["err_msg"],
+                                       _o["target"]["url"])
+                    continue
+                _o2 = _scan_one_ats(_o["idx"], _o["target"],
+                                    defer_error_record=True)
+                if _o2 and _o2["error"]:
+                    self._record_error(_o2["target"]["name"], "target",
+                                       _o2["err_type"], _o2["err_msg"],
+                                       _o2["target"]["url"])
         # FIX P0-52: make the false-positive guards auditable. If the
         # sponsored-jobs count looks low, this says whether the guards took
         # the verdicts or the JDs simply never offered sponsorship.

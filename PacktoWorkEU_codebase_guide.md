@@ -189,6 +189,24 @@ time to return. Campaign Resume continues remaining portal tasks; a settled
 partial/error target is not automatically a request to retry every unread JD.
 Assisted provides separate saved-listing and unread-description continuation.
 
+Network resilience (2026-11-13): `career_scanner.is_no_route_failure` names
+the no-route family (`ERR_INTERNET_DISCONNECTED` & friends, never wall
+vocabulary). After `_OFFLINE_STREAK_LIMIT` consecutive no-route seed failures
+the `_route_down` gate shuts and workers pause in `_wait_for_route` (literal-IP
+probe, then the run's own target hosts; bounded by
+`PACKTOWORKEU_ROUTE_WAIT_SEC`, default 1800 s; Stop/Pause stay responsive).
+The end-of-run retry sweep accepts DNS *and* no-route failures and waits for
+the route only when the gate is shut (preserving the "no host probes"
+contract). In `scan_scope.settled_targets`, an `error` row whose message is a
+transient transport failure (`scanning.common.is_transient_transport_failure`)
+is **not** settled, so Resume re-offers outage casualties while genuine walls
+stay settled. Settled state is kill-proof: the pipeline's `_LiveIngester`
+tails each phase's `_scan_log.csv` into the DB (`_ingest_scan_log_window`,
+byte offsets + seen-key dedupe), final `_ingest_scan_log` is replace-style
+(`db.delete_scan_log_rows`), and `db.reconcile_scan_log_from_artifacts`
+rebuilds a killed run's DB rows from its on-disk artifacts — invoked from
+`get_resumable_scan` and per chain run inside `settled_targets`.
+
 Listings are revisited to discover new postings. Known jobs are not a reason to
 stop pagination. Partial traversal or failure to see an old job does not, by
 itself, prove that the job expired. Progress totals can grow during discovery;
@@ -284,7 +302,17 @@ an unresolved wall — including a looping automatic check whose detail tab the
 user closes — blocks only that posting (Unknown, resumable `access_gate`);
 same-host postings defer without reopening the wall, other hosts keep reading,
 and only Stop/Save or loss of the whole browser context stops the batch. This
-never bypasses a wall or uses the personal browser profile.
+never bypasses a wall or uses the personal browser profile. Two refinements
+(2026-11-13): (1) content proof beats challenge suspicion — when the browser
+snapshot is `detail_ready` and `parse_detail` reads a substantial JD, a stale
+challenge iframe left in the DOM no longer burns the clearance wait or walls
+the origin; (2) aggregator clickout redirects — `SessionDetailEnricher.read`
+accepts `expected_title` (the harvest passes the saved card title) and
+`_redirect_result` accepts a redirected JD only when a JobPosting title on
+the landing page matches it (`_titles_match`); otherwise the historical
+"identity unproven" rejection stands. The Cloudflare verification *loop*
+itself (challenge re-issued after a manual solve on some clickout hosts)
+remains an open known issue, disclosed in the README; it is not bypassed.
 
 `AssistedWorker` owns browser/database work on its thread. GUI callbacks send
 commands/cancellation rather than executing Playwright work. Preserve bounded
@@ -586,3 +614,45 @@ in `ui/app.py` to describe the actual eight tabs; it changes no behaviour.
 Two regression modules also update four stale EN/IT terminal-result assertions
 to the approved static-readable-results contract. Their entire affected shards
 are rerun; no production logic or access rule is weakened to satisfy a test.
+
+### 2026-11-13 finalisation addendum (v0.3.0, version unchanged)
+
+Verified and shipped after the entries above; see
+`Changelogs/session_changelog_and_audit.md` (2026-11-12/13) and
+`Changelogs/universal_scan_audit_2026_11_13.md` for the full evidence trail:
+
+- **Assisted completion honesty:** the completion gate accepts
+  `unadvertised_synthetic_replay` pagination-end evidence (census-accounted,
+  no forward control), so an exhausted unique-ID listing reports verified
+  instead of perpetual "Collection incomplete" (`core/blocked_portals.py`);
+  the stated-total guard is unchanged.
+- **Compound locations:** `country_from_location` step 7c resolves
+  single-segment town+venue compounds ("Milano Malpensa", "Roma Appia") via
+  a unique-country longest-prefix rule with endonym priority; ambiguity
+  still yields no country. Assisted harvest keeps the observed card Title
+  place as display location (`_observed_card_location` Title fallback).
+- **Network resilience + resume-after-kill:** as documented in §5/§6 above
+  (offline gate, widened retry sweep, transient errors unsettled, live
+  scan-log tailing, artifact reconciliation).
+- **Bundled seed hygiene:** 45 career-seed rows with a blank `provider` were
+  normalized to explicit `auto` (runtime-identical; seed validation is now
+  fully green). Career seed 535 rows, ATS seed 86 rows, zero duplicate names.
+- **Critical verification (2026-11-13):** all 211 Python files parse; every
+  delivered fix ZIP's files match the tree (later ZIPs are cumulative
+  supersets — `assisted_clickout_redirect_fix_20261113.zip` carries the
+  current `blocked_portals.py`); zero old-brand residuals; version stays
+  **0.3.0**. Full test suite in the Linux sandbox: **1,783 passed**; the
+  remaining failures/errors are exclusively sandbox-environment absences
+  (PySide6, playwright, PyInstaller) and pre-existing timing flakes, each
+  spot-checked to its missing-module cause. New regression modules:
+  `test_assisted_synthetic_end_2026_11_12.py`,
+  `test_compound_location_2026_11_13.py`,
+  `test_network_resilience_2026_11_13.py`,
+  `test_resume_after_kill_2026_11_13.py`,
+  `test_assisted_clickout_redirect_2026_11_13.py`.
+- **Still open (honest list):** the Cloudflare verification loop on certain
+  clickout hosts (README "Known issues"); U3 persisted detail/location
+  recovery queue; U4 extra location-label languages (PT/CS/HU/RO/EL/DA/NO);
+  a small number of bundled seeds pointing at landing pages instead of job
+  lists; the deferred deep-dive items D2/D3/D4/P2/P4
+  (`Changelogs/deep_dive_audit_2026_11_12.md`).

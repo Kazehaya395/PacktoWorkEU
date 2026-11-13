@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from packtoworkeu.db import database as db
+from packtoworkeu.scanning.common import is_transient_transport_failure
 
 
 def target_key(row):
@@ -72,14 +73,34 @@ def load_plan(db_path, run_id):
 
 
 def settled_targets(db_path, run_id):
-    """Exact identities across a resume chain; phases and same-name routes stay distinct."""
+    """Exact identities across a resume chain; phases and same-name routes stay distinct.
+
+    Universal network resilience (2026-11-13, audit G2): a target whose only
+    outcome is a transient transport error (lost route, DNS failure, timeout,
+    connection reset) is NOT settled -- it says the machine could not reach
+    the portal on that attempt, so Resume must offer it again. Run
+    20261113T131421 recorded 80 such errors for one internet outage and the
+    old rule (any 'error' is settled) made every one of them unresumable.
+    Genuine portal outcomes (walls, 4xx, blocks -- see
+    is_transient_transport_failure's exclusions) stay settled."""
     done = {'ats': set(), 'career': set()}
     seen = set()
     conn = db.get_connection(db_path)
     try:
         while run_id and run_id not in seen:
             seen.add(run_id)
-            for row in conn.execute("SELECT scanner,seed_name,company,target_country,seed_url FROM scan_log WHERE run_id=? AND status IN ('ok','partial','empty','error')", (run_id,)):
+            # F2 (2026-11-13): every run in the chain reconciles its own
+            # on-disk scan_log artifacts first -- a killed parent (whose
+            # rows never reached the DB) must not read as "0 done" when a
+            # resume child is the run being examined.
+            try:
+                db.reconcile_scan_log_from_artifacts(db_path, run_id)
+            except Exception:
+                pass
+            for row in conn.execute("SELECT scanner,seed_name,company,target_country,seed_url,status,error FROM scan_log WHERE run_id=? AND status IN ('ok','partial','empty','error')", (run_id,)):
+                if (row['status'] or '').strip().casefold() == 'error' \
+                        and is_transient_transport_failure(row['error'] or ''):
+                    continue
                 phase = (row['scanner'] or '').lower()
                 if phase in done:
                     done[phase].add(target_key(dict(row)))
