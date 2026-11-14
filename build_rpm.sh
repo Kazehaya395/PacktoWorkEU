@@ -280,11 +280,16 @@ TOPDIR_ABS="$(cd "$TOPDIR" && pwd)"
 RPM_ARCH="$(rpmbuild --eval '%{_arch}' 2>/dev/null || uname -m)"
 
 # ── Compression probe ───────────────────────────────────────────────────────
-# PyInstaller bundles are large; RPM's default xz level 6 can look hung for
-# minutes while brp-strip / payload compression run. Disable all post-install
-# binary mangling (stripping breaks PyInstaller's embedded CPython/Qt ELF data
-# and debuginfo extraction fails on prebuilt wheels) and pick fast compression
-# by building a tiny 1-file probe RPM with the candidate _binary_payload macro.
+# PyInstaller bundles are large (~300 MB staged); payload compression decides
+# both artifact size and packaging time. Disable all post-install binary
+# mangling (stripping breaks PyInstaller's embedded CPython/Qt ELF data and
+# debuginfo extraction fails on prebuilt wheels) and pick the payload macro
+# by building a tiny 1-file probe RPM with each candidate _binary_payload.
+# Default priority (user decision 2026-11-13): smallest distributed .rpm.
+# zstd stays the default family (fast decompression at install time, no xz
+# support needed inside rpmbuild) but at its highest levels; the old level-3
+# default produced >100 MB artifacts where .deb/Windows land at 60-90 MB.
+# Set RPM_COMPRESSION=w3.zstdio to opt back into fastest packaging.
 PROBE_ROOT="$(mktemp -d)"
 mkdir -p "$PROBE_ROOT"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS,src}
 echo "probe" > "$PROBE_ROOT/src/probe.txt"
@@ -339,7 +344,7 @@ if [ "${RPM_COMPRESSION:-auto}" != "auto" ]; then
   fi
 fi
 if [ -z "$PAYLOAD_MACRO" ]; then
-  for candidate in "w3.zstdio" "w1.xzdio" "w2.gzdio"; do
+  for candidate in "w19.zstdio" "w12.zstdio" "w1.xzdio" "w2.gzdio"; do
     if probe_payload "$candidate"; then
       PAYLOAD_MACRO="$candidate"
       COMPRESS_LABEL="$candidate"
