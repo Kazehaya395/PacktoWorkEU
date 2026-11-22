@@ -48,7 +48,7 @@ except ModuleNotFoundError as _pw_exc:
 # the same control protocol.
 from packtoworkeu.scanning.common import check_control
 from packtoworkeu.scanning.common import completion_status,reconcile_scan_artifacts
-from packtoworkeu.scanning.response_evidence import challenge_reason,http_error_reason,response_metadata,listing_block_message
+from packtoworkeu.scanning.response_evidence import challenge_reason,http_error_reason,response_metadata,listing_block_message,is_confirmed_wall
 from packtoworkeu.scanning.detail_state import DetailRequestState
 from packtoworkeu.scanning.progress_events import final_diagnostics
 from packtoworkeu.core.location_evidence import apply_row_geography
@@ -1837,7 +1837,7 @@ class ATSScanner:
     def _target_notes(self, value):
         self._tls.target_notes = list(value) if value is not None else []
 
-    def store_captured_jd(self, url, text):
+    def store_captured_jd(self, url, text, *, captured_at=""):
         if not url or not text:
             return
         cleaned = str(text).strip()
@@ -1859,7 +1859,7 @@ class ATSScanner:
                 aliases[identity] = cleaned
 
         from packtoworkeu.core.saved_details import remember_capture
-        remember_capture(self,url,text)
+        remember_capture(self,url,text,captured_at=captured_at)
 
     def get_captured_jd(self, url):
         if not url:
@@ -3180,6 +3180,8 @@ class ATSScanner:
         # proactive/unsolicited application a vacancy.
         if any(p in low for p in ("talent community", "talent pool", "candidate database", "career day")):
             return False
+        if low in {'test job', 'test posting', 'test vacancy'}:
+            return False
         if evergreen_title(title):
             return False
         # FIX P73 (run 20261016T140013): identical rule to career -- a title
@@ -3214,9 +3216,14 @@ class ATSScanner:
             return False
         if re.fullmatch(r"[\d\s/.\-–]+", title):
             return False
-        # allow short CJK titles (e.g. 2-char "电工" = electrician); Latin titles
-        # under 3 chars ("IT", "HR", "QA") are never real job titles
-        if len(title) < 3 and not re.search(
+        # QA is a real published Workday requisition in the supplied DXC
+        # artifact. Do not relax navigation/department titles on generic URLs.
+        provider_qa = (low == 'qa' and
+                       (parsed.hostname or '').endswith('.myworkdayjobs.com') and
+                       '/job/' in parsed.path and
+                       bool(re.search(r'_[A-Za-z0-9][\w-]*/?$', parsed.path)))
+        # Allow short CJK titles and the narrowly evidenced QA requisition.
+        if len(title) < 3 and not provider_qa and not re.search(
                 r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", title):
             return False
         if low in BAD_TITLES:
@@ -3486,7 +3493,7 @@ class ATSScanner:
                     else "unverified_job_location")
         return "n/a"
     def make_row(self, target, title, url, location, raw_location, job_type,
-                 description, extraction_method, location_source="api"):
+                 description, extraction_method, location_source="api", *, captured_at=""):
         title = clean(title)
         url = clean(url)
         # FIX P0-41: recover an unlisted town / name the country from the
@@ -3534,6 +3541,10 @@ class ATSScanner:
         reason = None
         if not self.valid_job_url(url):
             reason = "invalid_or_application_only_url"
+        elif 'career day' in title.casefold():
+            reason = "non_vacancy_career_event"
+        elif title.casefold() in {'test job', 'test posting', 'test vacancy'}:
+            reason = "non_vacancy_test_posting"
         elif not self.valid_title(title, url):
             reason = "invalid_generic_or_department_title"
         elif title_place_conflict(title, location):
@@ -3646,7 +3657,10 @@ class ATSScanner:
         # Keep scan lightweight: persist full JD text for SQLite storage;
         # skill/category/domain extraction runs outside the scan loop in Insights.
         if description:
-            self.store_captured_jd(url, description)
+            if captured_at:
+                self.store_captured_jd(url, description, captured_at=captured_at)
+            else:
+                self.store_captured_jd(url, description)
         rec["Extracted Skills"] = ""
         return rec
     # ── ATS adapters ─────────────────────────────────────────────────────────
@@ -3723,15 +3737,39 @@ class ATSScanner:
         data = self._get_json(
             f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true")
         rows = []
+        # Bol publishes placeholders in Greenhouse for most roles. Its own
+        # sitemap and JobPosting JSON-LD carry the full JD under the same ID.
+        bol_links = {}
+        if board == 'bolcomen' and any(len(self._strip_html(j.get('content') or '')) < 200 for j in data.get('jobs', [])):
+            from .bol_descriptions import sitemap_jobs
+            try:
+                bol_links = sitemap_jobs(self._fetch('https://careers.bol.com/sitemap.xml'))
+            except Exception as exc:
+                self._note(f'detail fallback: Bol sitemap unavailable: {type(exc).__name__}: {exc}')
+        bol_remaining = 30
         for job in data.get("jobs", []):
             loc_obj = job.get("location") or {}
             location = self.format_location(loc_obj.get("name") or "")
             desc = self._strip_html(job.get("content") or "")
+            description_url = ''
+            link = bol_links.get(str(job.get('id')))
+            if len(desc) < 200 and link and bol_remaining > 0:
+                bol_remaining -= 1
+                from .bol_descriptions import posting_description
+                try:
+                    full = posting_description(self._fetch(link), job.get('id'), job.get('title') or '')
+                    if len(full) >= 200:
+                        desc, description_url = full, link
+                except Exception as exc:
+                    self._note(f'detail fallback: Bol ID {job.get("id")}: {type(exc).__name__}: {exc}')
             job_type = self.classify_job_type(
                 "", loc_obj.get("name") or "", desc)
             row = self.make_row(
                 target, job.get("title"), job.get("absolute_url"),
-                location, loc_obj.get("name") or "", job_type, desc, "greenhouse_api")
+                location, loc_obj.get("name") or "", job_type, desc,
+                "greenhouse_api+official_jsonld" if description_url else "greenhouse_api")
+            if description_url and row.get('Support Evidence'):
+                row['Support Evidence URL'] = description_url
             rows.append(row)
         return rows
     def scan_lever(self, target):
@@ -3791,7 +3829,19 @@ class ATSScanner:
             cats = job.get("categories", {})
             loc_val = cats.get("location") or "; ".join(cats.get("allLocations", []))
             location = self.format_location(loc_val)
-            desc = job.get("descriptionPlain") or ""
+            # Lever's descriptionPlain is often only the introduction. The
+            # actual duties/requirements live in lists; modern payloads also
+            # separate opening, descriptionBody and closing/additional text.
+            sections = [job.get('openingPlain') or job.get('descriptionPlain')
+                        or self._strip_html(job.get('description') or ''),
+                        job.get('descriptionBodyPlain') or
+                        self._strip_html(job.get('descriptionBody') or '')]
+            for section in job.get('lists') or []:
+                sections.extend([section.get('text') or '',
+                                 self._strip_html(section.get('content') or '')])
+            sections.append(job.get('additionalPlain') or
+                            self._strip_html(job.get('additional') or ''))
+            desc = '\n\n'.join(dict.fromkeys(x.strip() for x in sections if x and x.strip()))
             job_type = self.classify_job_type(
                 cats.get("commitment"), loc_val, desc)
             row = self.make_row(
@@ -3815,31 +3865,25 @@ class ATSScanner:
                 board = m.group(1)
         offset = 0
         rows = []
+        # Charge only missing detail reads, with both a request and time cap.
         try:
-            # FIX P19c (2026-10-28): 150 was a guess and run
-            # 20261028T192816 showed what it cost -- Delivery Hero has 945
-            # postings and got 150 descriptions, so 795 rows stayed
-            # listing-only purely because of this default. The four
-            # SmartRecruiters seeds in that run needed 945, 106, 64 and 2
-            # details, so 400 covers three of the four completely and takes
-            # Delivery Hero from 150 to 400 rows with a description; set
-            # PACKTOWORKEU_SMARTRECRUITERS_DETAILS=945 for full coverage of a
-            # board that size. Cost: the 150-detail seed spent 163.8 s in
-            # total including ten listing pages, so the extra details are tens
-            # of seconds, not minutes, and the per-seed time budget can still
-            # cut them off. BambooHR deliberately stays at 150 (its own
-            # default, see scan_bamboohr below) until one more run shows its
-            # boards need more.
-            sr_detail_budget = [int(os.environ.get(
-                "PACKTOWORKEU_SMARTRECRUITERS_DETAILS", "400"))]
+            sr_detail_budget=[max(0,int(os.environ.get('PACKTOWORKEU_SMARTRECRUITERS_DETAILS','1500')))]
         except ValueError:
-            sr_detail_budget = [400]
+            sr_detail_budget=[1500]
+        detail_deadline=time.monotonic()+900
+        sr_seen=set()
         while True:
             data = self._get_json(
                 f"https://api.smartrecruiters.com/v1/companies/{board}/postings"
                 f"?limit=100&offset={offset}")
             jobs = data.get("content", [])
+            before=len(sr_seen)
             for job in jobs:
+                if check_control(getattr(self,'cancel_event',None),getattr(self,'pause_event',None)):
+                    self._note('listing incomplete: SmartRecruiters stopped by user'); return rows
+                if job.get('id'):
+                    if job['id'] in sr_seen: continue
+                    sr_seen.add(job['id'])
                 loc_obj = job.get("location", {}) or {}
                 loc_parts = [x for x in [
                     loc_obj.get("city"), loc_obj.get("region"), loc_obj.get("country"),
@@ -3863,6 +3907,13 @@ class ATSScanner:
                         txt = sec.get("text") or sec.get("description") or ""
                         desc_parts.append(self._strip_html(txt))
                 desc = " ".join(desc_parts).strip()
+                captured_at = ''
+                reader = getattr(self,'_saved_jd_reader',None)
+                if not desc and reader is not None:
+                    reader.observe(job_url,title=title,revision=job.get('updatedOn') or job.get('releasedDate') or '')
+                    saved = reader.read(job_url)
+                    if saved:
+                        desc = saved['description']; captured_at = saved['jd_captured_at']
                 if not desc:
                     # FIX P19c (2026-10-28): split the two reasons a row can
                     # end up without a description. The coverage line reports
@@ -3872,8 +3923,9 @@ class ATSScanner:
                     _scope = getattr(self._tls, 'evidence_scope', '')
                     if not job.get("id"):
                         self._detail_state.note_transport(_scope, 'no_id')
-                    elif sr_detail_budget[0] > 0:
+                    elif sr_detail_budget[0] > 0 and time.monotonic()<detail_deadline:
                         try:
+                            sr_detail_budget[0] -= 1  # charge attempts, not successes
                             full = self._get_json(
                                 f"https://api.smartrecruiters.com/v1/companies/"
                                 f"{board}/postings/{job.get('id')}")
@@ -3883,8 +3935,6 @@ class ATSScanner:
                                 for k in ("companyDescription", "jobDescription",
                                           "qualifications", "additionalInformation")
                             ).strip()
-                            if desc:
-                                sr_detail_budget[0] -= 1
                         except Exception:
                             # Used to be a silent "desc = ''": a board whose
                             # detail endpoint 404s for every posting looked
@@ -3898,7 +3948,7 @@ class ATSScanner:
                     location, desc)
                 row = self.make_row(
                     target, title, job_url, location,
-                    location, job_type, desc, "smartrecruiters_api")
+                    location, job_type, desc, "smartrecruiters_api", **({"captured_at":captured_at} if captured_at else {}))
                 # FIX P0-30: SmartRecruiters publishes a structured
                 # experienceLevel on the LIST response — employer-set and
                 # free. It outranks any inference from title or prose.
@@ -3908,6 +3958,8 @@ class ATSScanner:
                                 .get("label") or ""))
                 rows.append(row)
             offset += len(jobs)
+            if len(sr_seen)==before and offset<data.get('totalFound',0):
+                self._note('listing incomplete: SmartRecruiters page empty or repeated before published total'); break
             if not jobs or offset >= data.get("totalFound", 0):
                 break
         return rows
@@ -4055,8 +4107,13 @@ class ATSScanner:
         slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
         if not slug:
             return []
+        # The configured Personio host is authoritative (both .de and .com
+        # are live). Replacing askui-gmbh.jobs.personio.com with the stale
+        # slug askui.jobs.personio.de caused a reproducible 404.
+        personio_host = (host if re.fullmatch(r'[a-zA-Z0-9-]+\.jobs\.personio\.(?:de|com)', host)
+                         else f'{slug}.jobs.personio.de')
         try:
-            raw = self._fetch(f"https://{slug}.jobs.personio.de/xml?language=en")
+            raw = self._fetch(f"https://{personio_host}/xml?language=en")
         except Exception as pers_exc:
             # Some company career sites are not Personio boards at all (Spendesk
             # moved to Teamtailor, 2026-10-18). When the Personio feed is missing,
@@ -4094,7 +4151,7 @@ class ATSScanner:
             pid = (pos.findtext("id") or "").strip()
             job_url = (pos.findtext("jobUrl") or "").strip()
             if not job_url and pid:
-                job_url = f"https://{slug}.jobs.personio.de/job/{pid}"
+                job_url = f"https://{personio_host}/job/{pid}"
             office = (pos.findtext("office") or "").strip()
             location = self.format_location(office)
             ctx = " | ".join(filter(None, [
@@ -4102,14 +4159,22 @@ class ATSScanner:
                 pos.findtext("schedule"),
             ]))
             job_type = self.classify_job_type("", "", ctx)
-            # The feed itself still carries no JD text; only a successful read
-            # of the posting page changes that, so an unreadable board keeps
-            # reporting Unknown rather than a guess (honest, as before).
-            desc = ""
-            if not job_url:
+            # Prefer the provider's sectioned XML body. HTML is a fallback
+            # for older/minimal feeds, never a prerequisite for a usable JD.
+            # Current Personio XML includes the full sectioned JD. Preserve
+            # it before trying HTML details; those pages may be unavailable.
+            sections = []
+            for section in pos.findall('./jobDescriptions/jobDescription'):
+                body = self._strip_html(section.findtext('value') or '')
+                if body:
+                    sections.extend([section.findtext('name') or '', body])
+            desc = '\n\n'.join(x.strip() for x in sections if x.strip())
+            if len(desc) >= 200:
+                pass
+            elif not job_url:
                 self._detail_state.note_transport(
                     getattr(self._tls, "evidence_scope", ""), "no_id")
-            elif ".jobs.personio.de/" not in job_url:
+            elif not re.fullmatch(r'[a-zA-Z0-9-]+\.jobs\.personio\.(?:de|com)', urlparse(job_url).hostname or ''):
                 # A feed may point at the company's own site instead. Fetching
                 # that is the career scanner's job, with its own wall
                 # detection; guessing a Personio layout on a foreign host would
@@ -4119,9 +4184,10 @@ class ATSScanner:
                     "skipped_external_url")
             elif pers_detail_budget[0] > 0:
                 try:
-                    desc = self._personio_jd_text(self._fetch(job_url))
+                    detail_desc = self._personio_jd_text(self._fetch(job_url))
+                    if len(detail_desc) > len(desc):
+                        desc = detail_desc
                 except Exception:
-                    desc = ""
                     self._detail_state.note_transport(
                         getattr(self._tls, "evidence_scope", ""),
                         "detail_errors")
@@ -4492,6 +4558,10 @@ class ATSScanner:
         finally:
             if pool is not None:
                 pool.shutdown(wait=True)
+        if total is not None and offset == total:
+            self._note(f'Workday listing complete: observed={offset}; total={total}')
+        elif total is not None:
+            self._note(f'listing incomplete: Workday observed={offset}; total={total}')
         if _empty_identity:
             self._target_notes.append(
                 f"workday listing: {_empty_identity} entr"
@@ -4793,6 +4863,11 @@ class ATSScanner:
             "icims": self.scan_icims,            # FIX P19
             "eightfold": self.scan_eightfold,    # FIX P19
         }
+        from packtoworkeu.scanning.ats.verified_routes import verified_target
+        effective = verified_target(target)
+        if effective is not target:
+            self._note(f"verified provider route: {effective['ats_type']}/{effective['board_slug']} (original scope retained)")
+        target = effective
         adapter = adapters.get(target["ats_type"])
         if adapter is None:
             # A provider value with no adapter anywhere (e.g. 'deel' in a
@@ -4986,10 +5061,28 @@ class ATSScanner:
                     accepted.append(row)
             _blocks=self._detail_state.scope_blocked(target['url'])
             if _blocks:
-                _message='blocked access: '+str(len(_blocks))+' unresolved response(s); '+ '; '.join(str(b.get('reason',''))+' at '+b['url'] for b in _blocks[:4])
-                error=(error+'; ' if error else '')+_message
-                err_type,err_msg='AccessBlocked',error
-                diagnostics.append(_message)
+                # Fix J (2026-11-17): same rule as the career scanner --
+                # bare 429/403 detail refusals without verification
+                # evidence are rate limiting, not a bot wall; only
+                # confirmed walls keep the blocked-access summary.
+                _confirmed=[b for b in _blocks
+                            if is_confirmed_wall(str(b.get('reason','')))]
+                _deferred=[b for b in _blocks
+                           if not is_confirmed_wall(str(b.get('reason','')))]
+                if _confirmed:
+                    _message='blocked access: '+str(len(_confirmed))+' unresolved response(s); '+ '; '.join(str(b.get('reason',''))+' at '+b['url'] for b in _confirmed[:4])
+                    error=(error+'; ' if error else '')+_message
+                    err_type,err_msg='AccessBlocked',error
+                    diagnostics.append(_message)
+                if _deferred:
+                    _first=_deferred[0]
+                    diagnostics.append(
+                        'descriptions deferred: '+str(len(_deferred))
+                        + ' detail response(s) refused without verification'
+                        ' evidence (rate limiting, e.g. '
+                        + str(_first.get('reason','')) + ' at '
+                        + str(_first.get('url',''))
+                        + '); listing result unaffected, retried next scan')
             # FIX P19c (2026-10-28): taken OUT of the `if accepted` block
             # below, because the seeds that most need this line (zero rows, or
             # details that all failed) are exactly the ones with nothing
@@ -5003,6 +5096,9 @@ class ATSScanner:
             _urls=[row.get('Job URL','')for row in accepted]
             _coverage=self._detail_state.coverage(target['url'],_urls,self.get_captured_jd)
             if accepted:
+                if (all(r.get('Extraction Method') == 'workday_api' for r in accepted)
+                        and all(self.get_captured_jd(u).strip() for u in _urls)):
+                    diagnostics.append('Workday descriptions captured: nonempty=' + str(_coverage['observed']))
                 if _coverage['readable']<_coverage['observed']:
                     diagnostics.append('JD coverage incomplete: '+str(_coverage['observed']-_coverage['readable'])+' observed posting(s) without a usable full JD; Unknown is not a negative verdict')
             for row in accepted+quarantined:

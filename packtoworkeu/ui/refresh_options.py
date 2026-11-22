@@ -21,9 +21,10 @@ def refresh_summary(counts):
         return ''
     text = _('Observed jobs — new: {new}; already saved: {existing}.').format(
         new=counts.get('jobs_new',0),existing=counts.get('jobs_existing',0))
-    text += '\n' + _('Descriptions — reused: {reused}; read afresh: {fresh}; unread/unresolved: {pending} (blocked: {blocked}; inconclusive: {inconclusive}).').format(
+    text += '\n' + _('Descriptions — reused: {reused}; read afresh: {fresh}; without confirmed reuse or fresh save: {pending} (blocked: {blocked}; rate limited: {rate_limited}; automatic check: {automatic_check}; inconclusive: {inconclusive}).').format(
         reused=counts.get('jd_reused',0),fresh=counts.get('jd_fresh',0),pending=counts.get('jd_pending',0),
-        blocked=counts.get('jd_blocked',0),inconclusive=counts.get('jd_inconclusive',0))
+        blocked=counts.get('jd_blocked',0),rate_limited=counts.get('jd_rate_limited',0),automatic_check=counts.get('jd_automatic_check',0),inconclusive=counts.get('jd_inconclusive',0))
+    text += '\n' + _('These are saved-description tracking counts. The results bar counts readable descriptions for portal observations; a readable result is not necessarily a confirmed fresh save.')
     if not counts.get('tracking_complete',True):
         text += '\n' + _('Counts are partial: some observations could not be tracked.')
     return text

@@ -723,6 +723,14 @@ class JDSupportDetector:
                     and self._INTERNATIONAL_TALENT_RE.search(sentence)):
                 return VERDICT_UNKNOWN, 0.2, ["international-talent-mention"]
             return None
+        # Swedish 'visa' also means 'show'. Only a direct employer statement
+        # about visumsponsring qualifies; UI navigation is never visa evidence.
+        if concept_re is self.VISA_CONCEPTS:
+            if re.fullmatch(r'\s*visa (?:fler|alla)(?: lediga)? (?:jobb|tjänster)[.!]?\s*',sentence,re.I):
+                return None
+            sv_offer = re.fullmatch(r'\s*vi erbjuder (inte |ingen )?visumsponsring(?: för (?:denna|den här) (?:roll|tjänst)(?:en)?)?[.!]?\s*',sentence,re.I)
+            if sv_offer:
+                return (VERDICT_NO if sv_offer[1] else VERDICT_YES), 0.9, ['explicit-employer-statement-sv']
         if (concept_re is self.RELOCATION_CONCEPTS
                 and self._EMPTY_RELOCATION_LABEL_RE.fullmatch(sentence)):
             # No decisive evidence, not a refusal. Other sentences still vote.

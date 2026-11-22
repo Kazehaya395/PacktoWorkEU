@@ -18,7 +18,7 @@ def is_location_hint(source):
 def observed_geography(location='',raw_location='',source=''):
     source=str(source or '').strip().casefold()
     loc=str(location or '').strip();raw=str(raw_location or '').strip()
-    if loc.casefold()in _EMPTY:loc=''
+    if loc.casefold() in _EMPTY or (source=='address' and loc=='Are' and not raw):loc=''
     if raw.casefold()in _EMPTY:raw=''
     if is_location_hint(source):
         # An original card/field string can contain actual geography even when

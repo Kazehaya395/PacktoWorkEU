@@ -640,6 +640,14 @@ class InsightsTab(QWidget):
         self.grid.addWidget(self.scope_help)
         self.grid.addLayout(row_bars)
 
+        from packtoworkeu.ui.role_skills import RoleSkillsBox
+        self.role_skills = RoleSkillsBox(db_path, lambda: (
+            self.country_combo.currentText() if self.country_combo.currentIndex()>0 else '',
+            self.source_combo.currentData() or ''))
+        self.grid.addWidget(self.role_skills)
+        self.country_combo.currentIndexChanged.connect(self.role_skills.schedule)
+        self.source_combo.currentIndexChanged.connect(self.role_skills.schedule)
+
         # Row 3: Sponsorship Breakdown Table
         self.spon_box = QGroupBox(_("Sponsorship by Category"))
         spon_vbox = QVBoxLayout(self.spon_box)
@@ -702,6 +710,7 @@ class InsightsTab(QWidget):
         self.source_combo.blockSignals(False)
         set_table_header_labels(self.spon_table, 
             [_('Category'),_('Total'),_('Visa Yes'),_('Visa ?'),_('Reloc Yes')])
+        self.role_skills.retranslate()
         self.refresh(auto_backfill=False)  # charts only, no hidden forced rebuild
 
     def _confirm_rebuild(self):
@@ -718,6 +727,7 @@ class InsightsTab(QWidget):
 
     def shutdown(self,wait_ms=3000):
         self._closing = True
+        self.role_skills.shutdown()
         for loader in (self._chart_loader, self._country_loader, self._pending_loader):
             loader.close()
         self.cancel_refresh()
@@ -784,6 +794,7 @@ class InsightsTab(QWidget):
                           if self._insights_worker is None and not self._closing else None)
         rerun, force = self._refresh_pending, self._force_pending
         self._refresh_pending = self._force_pending = False
+        if not self._closing:self.role_skills.schedule()
         if not error and not cancelled and not self._closing:
             if rerun and force:
                 QTimer.singleShot(0, self, lambda: self.refresh_from_sqlite(force_all=True))

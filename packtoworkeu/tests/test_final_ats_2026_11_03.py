@@ -368,15 +368,19 @@ def test_workday_host_without_wd_cluster_is_scanned(monkeypatch):
     assert calls == ["https://nxp.myworkdayjobs.com/wday/cxs/nxp/careers/jobs"]
 
 
-def test_bundled_seed_boards_verified_live_2026_11_10():
+def test_bundled_legacy_seed_routes_preserve_manually_checked_urls():
     import csv as _csv
     from pathlib import Path
+    from packtoworkeu.scanning.ats.verified_routes import verified_target
     root = Path(__file__).resolve().parents[1]
-    ats = {r['name']: r for r in _csv.DictReader(
-        (root / 'data/seeds/company_ATS_seed.csv').open(encoding='utf-8-sig'))}
-    assert ats['Brain Rocket']['provider'] == 'greenhouse'
-    assert ats['Brain Rocket']['board_slug'] == 'brainrocketltd'
-    assert ats['Virtuagym']['provider'] == 'teamtailor'
-    assert ats['QuantumDiam']['provider'] == 'ashby'
-    assert ats['QuantumDiam']['board_slug'] == 'quantumdiamonds'
+    with (root / 'data/seeds/company_ATS_seed.csv').open(encoding='utf-8-sig') as f:
+        ats = {r['name']: r for r in _csv.DictReader(f)}
+    for name, provider, slug in [('Brain Rocket','greenhouse','brainrocketltd'),
+                                  ('Virtuagym','teamtailor','virtuagym'),
+                                  ('QuantumDiam','ashby','quantumdiamonds')]:
+        row=ats[name]
+        effective=verified_target(dict(name=name,url=row['careers_url'],
+                                      ats_type=row['provider'],board_slug=row['board_slug']))
+        assert effective['ats_type']==provider and effective['board_slug']==slug
+        assert effective['url']==row['careers_url']
     assert ats['NXP Semiconductors']['careers_url'] == 'https://nxp.myworkdayjobs.com/careers'

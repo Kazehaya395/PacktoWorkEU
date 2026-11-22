@@ -51,6 +51,20 @@ class ScanCoordinator(QObject):
     PROGRESS_FLUSH_SEC = 0.05
     PROGRESS_FLUSH_LINES = 10
 
+    @staticmethod
+    def stop_grace_sec() -> float:
+        """Graceful-stop budget (2026-11-17, Task 34).
+
+        After Stop is pressed the scanners get this long to unwind
+        in-flight work cooperatively; past it the UI may offer a force
+        close. Env-overridable for slow machines, clamped to [10, 300].
+        """
+        try:
+            return min(300.0, max(10.0, float(
+                os.environ.get("PACKTOWORKEU_STOP_GRACE_SEC") or 75)))
+        except (TypeError, ValueError):
+            return 75.0
+
     def __init__(self, db_path: str | None = None):
         super().__init__()
         self.db_path = db_path
@@ -58,6 +72,7 @@ class ScanCoordinator(QObject):
         self._pause = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._state: str = "idle"
+        self._stop_requested_at: Optional[float] = None
 
     def state(self) -> str:
         """Current scan-control state without touching the worker or database."""
@@ -95,6 +110,7 @@ class ScanCoordinator(QObject):
 
         self._cancel.clear()
         self._pause.clear()
+        self._stop_requested_at = None
         self._emit_state("running")
 
         def worker():
@@ -173,6 +189,7 @@ class ScanCoordinator(QObject):
                     pause_event=self._pause,
                     progress=on_progress,
                     resume_from=resume_from,
+                    **(dict(retry_from=scope["retry_from"]) if scope and scope.get("retry_from") else {}),
                     only_ats=scope.get("ats") if scope else None,
                     only_career=scope.get("career") if scope else None,
                     run_ats=bool(scope.get("run_ats", True)) if scope else True,
@@ -204,8 +221,25 @@ class ScanCoordinator(QObject):
         """Cooperative stop: scanners check this between control gates."""
         self._pause.clear()
         self._cancel.set()
+        if self._stop_requested_at is None:
+            self._stop_requested_at = time.monotonic()
         if self.is_running():
             self._emit_state("stopping")
+
+    def is_stopping(self) -> bool:
+        """True between the first Stop request and the worker's exit."""
+        return self._stop_requested_at is not None and self.is_running()
+
+    def stopping_elapsed(self) -> float:
+        """Seconds since Stop was first requested (0 if never stopped)."""
+        if self._stop_requested_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self._stop_requested_at)
+
+    def stop_grace_exceeded(self) -> bool:
+        """True once in-flight work has had its full graceful budget."""
+        return (self.is_stopping()
+                and self.stopping_elapsed() >= self.stop_grace_sec())
 
 
 PROGRESS_PREFIX = "PROGRESS:"

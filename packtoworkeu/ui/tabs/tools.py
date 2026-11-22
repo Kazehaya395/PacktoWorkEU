@@ -775,7 +775,14 @@ class ToolsTab(QWidget):
         self.custom_btn = QPushButton(_("Custom Scan"))
         self.custom_btn.setToolTip(_(CUSTOM_BTN_TOOLTIP))
         self.custom_btn.clicked.connect(self.start_custom_scan)
-        self.resume_btn = QPushButton(_("Resume"))
+        self.resume_btn = QPushButton(_("Resume interrupted scan"))
+        self.resume_btn.hide()
+        self.retry_portals_btn = QPushButton(_("Retry incomplete results"))
+        self.retry_portals_btn.setVisible(False)
+        self.retry_portals_btn.clicked.connect(self._retry_unsuccessful_portals)
+        self.description_review_btn = QPushButton(_('Review unresolved descriptions'))
+        self.description_review_btn.hide()
+        self.description_review_btn.clicked.connect(self._show_description_review)
         self.resume_btn.setEnabled(False)
         self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
         self.resume_btn.clicked.connect(self.resume_scan)
@@ -793,7 +800,7 @@ class ToolsTab(QWidget):
         self.stop_btn.setToolTip(_(STOP_BTN_TOOLTIP))
         self.stop_btn.clicked.connect(self.confirm_stop)
         self.scan_status = QLabel(_("Idle"))
-        for w in (self.scan_btn, self.custom_btn, self.resume_btn,
+        for w in (self.scan_btn, self.custom_btn, self.resume_btn, self.retry_portals_btn, self.description_review_btn,
                   self.pause_btn, self.stop_btn, self.scan_status):
             if isinstance(w, QPushButton):
                 w.setMinimumHeight(32)
@@ -969,6 +976,8 @@ class ToolsTab(QWidget):
         self._last_repeat_summary = None
         self.refresh_jd_cb.setEnabled(False)
         self.scan_started.emit()
+        self.retry_portals_btn.hide()
+        self.description_review_btn.hide()
         self.scan_btn.setEnabled(False)
         self.custom_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
@@ -1122,6 +1131,41 @@ class ToolsTab(QWidget):
         self.coordinator.start(SCAN_METHOD, scan_scope=scope, **(dict(refresh_descriptions=True) if refresh else {}))
         self.refresh_jd_cb.setChecked(False)
 
+    def _show_description_review(self):
+        box = QMessageBox(self)
+        box.setWindowTitle(_('Review unresolved descriptions'))
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(_('Listing complete. Some saved postings have no readable full description. No scan will start.'))
+        lines, evidence = [], []
+        for name, total, readable, counts, samples in self._description_reviews:
+            lines.append(f'{name}: {readable}/{total} — ' + ', '.join(f'{k}: {v}' for k,v in counts.items()))
+            evidence.extend(f'{name}: {s}' for s in samples)
+        box.setInformativeText('\n'.join(lines))
+        if evidence: box.setDetailedText('\n'.join(evidence))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+
+    def _retry_unsuccessful_portals(self):
+        info = getattr(self, '_retry_offer', None)
+        if not info or self.coordinator.is_running() or getattr(self,'_assisted_busy',False) or self._review_busy:
+            return
+        run, count, method, lines = info
+        box = QMessageBox(self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setWindowTitle(_('Retry incomplete results'))
+        box.setText(_('Start a new scan of {count} partial, unverified-empty or failed portals from {run}?').format(count=count,run=run))
+        box.setInformativeText(_('Only the listed ATS/career targets will run. The count is portals, not missing descriptions.') + '\n\n' + '\n'.join(lines[:12]))
+        if len(lines)>12: box.setDetailedText('\n'.join(lines))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        from packtoworkeu.ui.browser_setup import ensure_browser_ready
+        if ensure_browser_ready(self):
+            self.scan_log.clear()
+            self._set_scan_running_ui(_('Retry incomplete results'))
+            self.coordinator.start(method,scan_scope={'retry_from':run})
+
     def resume_scan(self):
         """Continue the newest stopped run (Stop-as-checkpoint).
 
@@ -1170,10 +1214,25 @@ class ToolsTab(QWidget):
         def worker():
             try:
                 checkpoint = db.get_resumable_scan(self.db_path)
+                offer = None
+                reviews = {}
+                if not arm_dialog:
+                    from packtoworkeu.application.scan_scope import retry_plan, target_key
+                    latest = db.list_scan_runs(self.db_path,limit=1)
+                    if latest:
+                        rid = latest[0]['run_id']; reasons = {}
+                        plan = retry_plan(self.db_path,rid,reasons=reasons,reviews=reviews)
+                        if plan:
+                            lines = []
+                            for phase in ('ats','career'):
+                                for row in plan[phase]:
+                                    state, why = reasons[phase,target_key(row)]
+                                    lines.append(f"[{phase.upper()}] {row.get('seed_name') or row.get('name')} — {state}: {why}")
+                            offer = (rid,len(lines),plan['method'],lines)
             except Exception as exc:  # defensive: marshal, never crash
                 self._resume_lookup_done.emit((seq, "error", str(exc)))
             else:
-                self._resume_lookup_done.emit((seq, "ok", checkpoint))
+                self._resume_lookup_done.emit((seq, "ok", checkpoint, offer, list(reviews.values())))
 
         threading.Thread(target=worker, name="ResumeLookup",
                          daemon=True).start()
@@ -1181,14 +1240,24 @@ class ToolsTab(QWidget):
     def _on_resume_lookup_done(self, payload: object):
         """Apply the newest resume lookup; drop superseded slow replies."""
         try:
-            seq, kind, data = payload
+            seq, kind, data = payload[:3]
         except (TypeError, ValueError):  # pragma: no cover - defensive
             return
-        if seq != self._resume_lookup_seq or getattr(self,'_assisted_busy',False):
+        if seq != self._resume_lookup_seq or self.coordinator.is_running() or getattr(self,'_review_busy',False) or getattr(self,'_assisted_busy',False):
             return  # superseded lookup or explicit assisted worker owns controls
         arm_dialog = self._resume_dialog_armed
         self._resume_dialog_armed = False
         if not arm_dialog:
+            self._retry_offer = payload[3] if kind == 'ok' and len(payload)>3 else None
+            self._description_reviews = payload[4] if kind=='ok' and len(payload)>4 else []
+            missing = sum(total-readable for _,total,readable,_,_ in self._description_reviews)
+            self.description_review_btn.setVisible(bool(missing))
+            self.description_review_btn.setText(_('Review unresolved descriptions') + f' ({missing})')
+            self.retry_portals_btn.setEnabled(True)
+            self.retry_portals_btn.setVisible(bool(self._retry_offer))
+            if self._retry_offer:
+                self.retry_portals_btn.setText(_('Retry incomplete results') + f' ({self._retry_offer[1]})')
+                self.retry_portals_btn.setToolTip(self._retry_offer[0])
             self._apply_resume_probe(data if kind == "ok" else None)
             return
         self.scan_phase.setText("")
@@ -1205,12 +1274,19 @@ class ToolsTab(QWidget):
                 _("Nothing safe to resume. Runs without a saved target scope cannot be reconstructed safely; start an explicitly selected custom scan instead."))
             self._refresh_resume_button()
             return
+        displayed = getattr(self,'_visible_checkpoint',None)
+        if displayed and displayed['run_id'] != data['run_id']:
+            self._apply_resume_probe(data)
+            return  # Never silently resume a different run than the button named.
         self._begin_checkpoint_resume(data)
 
     def _apply_resume_probe(self, checkpoint):
         """Silent probe result: only enable/disable Resume + its tooltip."""
         if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
             return
+        self._visible_checkpoint = checkpoint
+        self.resume_btn.setText(_('Resume interrupted scan') + (' · '+checkpoint['run_id'] if checkpoint else ''))
+        self.resume_btn.setVisible(bool(checkpoint))
         self.resume_btn.setEnabled(bool(checkpoint))
         if checkpoint:
             remaining = (len(checkpoint["remaining_ats"])
@@ -1315,7 +1391,7 @@ class ToolsTab(QWidget):
             self.jd_bar.setValue(int(checked*100/observed) if observed else 0)
         else:
             self.jd_bar.setRange(0, 0)
-        self.jd_outcomes.setText(_("Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · blocked: {blocked} · unattempted: {unattempted}").format(**cov))
+        self.jd_outcomes.setText(_("Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · rate limited: {rate_limited} · automatic check: {automatic_check} · blocked: {blocked} · unattempted: {unattempted}").format(**cov))
         self.jd_outcomes.setToolTip(
             _("Classification includes readable, thin, empty, failed and blocked outcomes. It is not the percentage of readable descriptions. Unattempted is not proof of blocked access. Saved jobs are retained.") if finished
             else _("Checked does not mean readable. Totals grow as portals discover candidates."))
@@ -1324,7 +1400,7 @@ class ToolsTab(QWidget):
             for task in data['active']:
                 stage = _("Reading JDs") if task['stage'] == 'details' else _("Listing/provider collection (may include JD reads)")
                 n = task.get('observed', 0)
-                c = sum(task.get(k, 0) for k in ('readable', 'thin', 'empty', 'failed', 'blocked'))
+                c = sum(task.get(k, 0) for k in ('readable', 'thin', 'empty', 'failed', 'rate_limited', 'automatic_check', 'blocked'))
                 rows.append(_("{company} — {stage} · JD candidates: {checked}/{total}").format(
                     company=task['name'], stage=stage, checked=min(n, c), total=n))
         self.active_scan_work.setPlainText('\n'.join(rows))
@@ -1479,6 +1555,7 @@ class ToolsTab(QWidget):
         self.refresh_jd_cb.setEnabled(not running and not scanning)
         for button in (self.scan_btn,self.custom_btn):
             button.setEnabled(not running and not scanning)
+        self.retry_portals_btn.setEnabled(not running and not scanning)
         if running:
             self.resume_btn.setEnabled(False)
         else:
@@ -1619,7 +1696,8 @@ class ToolsTab(QWidget):
             self._review_busy=value
             self.scan_btn.setEnabled(not value)
             self.custom_btn.setEnabled(not value)
-            self.resume_btn.setEnabled(not value)
+            self.retry_portals_btn.setEnabled(not value)
+            self.resume_btn.setEnabled(not value and bool(getattr(self,"_visible_checkpoint",None)))
         dialog.busy_changed.connect(busy)
         dialog.changed.connect(self.data_changed.emit)
         dialog.exec()
@@ -1843,7 +1921,7 @@ class ToolsTab(QWidget):
             else _(PAUSE_BTN_TOOLTIP))
         self.stop_btn.setText(_("Stop"))
         self.stop_btn.setToolTip(_(STOP_BTN_TOOLTIP))
-        self.resume_btn.setText(_("Resume"))
+        self.resume_btn.setText(_("Resume interrupted scan") + (" · "+self._visible_checkpoint["run_id"] if getattr(self,"_visible_checkpoint",None) else ""))
         self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
         # Never clobber a transitional acknowledge ("Pausing…"/"Stopping…"
         # set by the button handlers): a language switch that rewrote them

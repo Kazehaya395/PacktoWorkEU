@@ -20,7 +20,7 @@ from html import unescape
 from typing import Any
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
-from packtoworkeu.scanning.response_evidence import challenge_reason, stated_job_total, visible_text
+from packtoworkeu.scanning.response_evidence import challenge_reason, stated_job_total, visible_text, is_confirmed_wall
 from packtoworkeu.core.browser_evidence import inspect_page,public_snapshot,redact_url,redact_text,sensitive_url,watch_page_responses,admitted_job_links,career_listing_links
 from packtoworkeu.i18n import _ as _translate
 from packtoworkeu.core.activity import ingestion_task
@@ -877,6 +877,51 @@ def _bounded_admitted_card_text(anchor, admitted_urls):
         return ""
 
 
+def _assisted_url_location(scanner, job_url, extracted_loc, seed_name):
+    """(location, url_country) for an assisted card row. Fix K.
+
+    The regular scanner reads the place stated in the posting's OWN URL
+    (Workday slot G1, slug pass G2); the assisted harvest never did, so
+    card rows whose cards show no place saved as Unknown even when the
+    URL names it (AERQ assisted run 20261117T214536: 204 Unknown
+    locations, 156 recoverable from the URL offline). This is
+    first-party evidence from the same posting -- not employer/HQ
+    inference -- and the caller marks it country_source='url'. An
+    observed card place is never replaced; only a missing country is
+    appended, and only when the text itself resolves to none (the
+    "Milan, MI" guard stays intact). Returns (location, "") when the
+    URL states nothing usable.
+    """
+    from packtoworkeu.core.location_country import country_from_location
+    wd = ("", "")
+    for meth in ("_workday_url_location", "_location_from_job_url_slug"):
+        fn = getattr(scanner, meth, None)
+        if not callable(fn):
+            continue
+        try:
+            wd = fn(job_url) or ("", "")
+        except Exception:
+            wd = ("", "")
+        if wd and wd[1]:
+            break
+    if not (wd and wd[1]):
+        return extracted_loc, ""
+    url_country = wd[1]
+    if not extracted_loc or extracted_loc == "Unknown":
+        pl = wd[0] or ""
+        if pl:
+            try:
+                pl = scanner._sanitize_job_location(pl, seed_name)
+            except Exception:
+                pass
+        loc = (f"{pl}, {url_country}" if pl and pl != "Unknown"
+               else url_country)
+        return loc, url_country
+    if not country_from_location(extracted_loc):
+        return f"{extracted_loc}, {url_country}", url_country
+    return extracted_loc, ""
+
+
 def _observed_card_location(scanner, card_text, title, seed_name):
     """Apply the existing card-place policy only to *this* posting's text.
 
@@ -1596,8 +1641,14 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
     try:
         with sync_playwright() as pw:
             try:
+                # Bundle F (2026-11-19): the assisted browser runs in
+                # the BACKGROUND -- launched minimized instead of
+                # maximized-in-your-face. It comes forward only when a
+                # confirmed human-verification wait starts (the
+                # bring_to_front calls on challenge paths) or when the
+                # user clicks "Show verification browser".
                 browser = launch_chromium(pw.chromium,headless=False,args=[
-                    '--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized'])
+                    '--disable-blink-features=AutomationControlled','--disable-gpu','--start-minimized'])
                 context = browser.new_context(
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
                     no_viewport=True)
@@ -2433,8 +2484,19 @@ def run_assisted_ingestion(url: str, seed_name: str, conn, max_pages: int = 500,
                             elif re.search(r"\b(on[- ]?site|in[- ]office|vor Ort)\b", card_text, re.I):
                                 remote_type = "onsite"
 
+                            # Fix K (2026-11-17): assisted card rows get
+                            # the same own-URL location passes as the
+                            # regular scanner (see _assisted_url_location).
+                            extracted_loc, _url_country = _assisted_url_location(
+                                scanner, job_url, extracted_loc, seed_name)
+
                             # Country only from observed place or explicit job country.
-                            country, country_source, country_evidence = country_resolver.resolve(job_url,extracted_loc,allow_request=False)
+                            if _url_country:
+                                country, country_source, country_evidence = (
+                                    _url_country, "url",
+                                    "job URL location slot")
+                            else:
+                                country, country_source, country_evidence = country_resolver.resolve(job_url,extracted_loc,allow_request=False)
 
                             # Initial card evidence is provisional and passes the
                             # SAME context/false-positive policy as regular details.
@@ -3197,55 +3259,57 @@ def is_web_url(url: str | None) -> bool:
 # re-crawl a listing whose jobs are already saved. Keying on that generic
 # prefix is what queued 20 portals for a run that had already kept 3,478 of
 # their jobs (issue 2026-10-28, run 20261027T231035).
-_LISTING_BLOCK_MARKERS = (
-    'blocked by bot protection:',
-    'listing access blocked:',
-    'human-verification challenge',
-    'no human clearance observed',
-    'no readable current listing accepted',
-    'client challenge interstitial',
-)
-
-
-# The aggregate line the scanners build out of the per-detail outcome cache.
-# It says "N job-detail responses stayed unread"; it does NOT say the listing
-# was refused. Keying the queue on it is what handed back 10 portals whose
-# listings had already been read in full (run 20261027T231035 kept 3,469 jobs
-# from them while 49 detail pages behind click-outs stayed unread).
-# Access-failure wording of any kind. On its own it does not say WHICH request
-# was refused, so it only queues a portal when the listing also kept nothing.
-_ANY_ACCESS_RE = re.compile(
-    r'blocked access:|challenge page served instead of|access blocked|'
-    r'no listing could be read', re.I)
-
-
 def _is_block_message(message: str, jobs_found=None) -> bool:
-    """Listing-level access walls only; an absorbed JD failure is not a block.
+    """Admit explicit listing evidence, never infer a challenge from zero yield."""
+    for segment in str(message or '').casefold().split('|'):
+        # A detail summary can contain legacy listing wording within its reasons.
+        listing = segment.partition('blocked access:')[0]
+        for part in listing.split(';'):
+            if any(x in part for x in ('not confirmed', 'no verification challenge observed')):
+                continue
+            if '(interactive action requested)' not in part:
+                continue
+            if ('blocked by bot protection:' in part or
+                    'challenge page served instead of the job list' in part or
+                    'human-verification challenge' in part):
+                return True
+    return False
 
-    Two cases, decided by what the listing itself did:
 
-    * the listing saved rows (or its outcome is unknown) -> only an explicit
-      listing-wall marker queues it. A `blocked access: N unresolved response(s)`
-      summary over a readable board is a JD-coverage gap, and handing that portal
-      to a browser re-crawls a listing whose jobs are already saved (10 portals,
-      3,469 jobs in run 20261027T231035).
-    * the listing provably saved nothing -> any access failure is worth a human
-      look, because the board genuinely never answered.
+def _detail_summary_is_wall(text) -> bool:
+    """A count, refusal or follow-up diagnostic is not positive wall evidence."""
+    match = re.search(r'blocked access:\s*[1-9]\d*\s+unresolved response\(s\)\s*;([^|]*)',
+                      str(text or ''), re.I)
+    return bool(match and any(
+        '(interactive action requested)' in part.casefold() and
+        'challenge page served instead of' in part.casefold() and is_confirmed_wall(part)
+        for part in match[1].split(';')))
+
+
+def _queue_evidence_note(combined):
+    """Plain-language scanner evidence for a queued access issue.
+
+    Bundle V (2026-11-19): the queue used to show the raw scanner
+    summary alone ("blocked access: 6 unresolved response(s);
+    Cloudflare challenge page served..."), which reads as if the
+    PORTAL blocks people. The underlying evidence only ever shows the
+    AUTOMATED scanner being served a bot-verification page (E.ON,
+    run 20261119T135951: 'Performing security verification', Ray ID,
+    HTTP 403, on HTTP and browser probes alike), while a human
+    browser typically passes with no visible check. Say exactly that,
+    and name the remedy the queue row exists for.
     """
-    value = str(message or '').casefold()
-    if not value:
-        return False
-    if any(marker in value for marker in _LISTING_BLOCK_MARKERS):
-        return True
-    if jobs_found is None:
-        # Nothing proves the listing stayed unreadable, so an ambiguous
-        # "blocked access" summary is not enough to ask a human to re-crawl it.
-        return False
-    try:
-        saved = int(jobs_found)
-    except (TypeError, ValueError):
-        saved = 0
-    return saved <= 0 and bool(_ANY_ACCESS_RE.search(value))
+    low = str(combined or '').casefold()
+    if 'cloudflare' in low or 'just a moment' in low:
+        who = 'Cloudflare'
+    elif 'challenge page served' in low or 'security check' in low:
+        who = 'A bot-verification service'
+    else:
+        return ''
+    return (f'{who} served its bot-verification page to the automated '
+            'scanner (the scanner is blocked, not people; this portal '
+            'typically opens normally in a browser). '
+            'Use Collect / continue to read it in the assisted browser.')
 
 
 def blocked_portals_from_errors_csv(csv_path, phase: str = "", yields=None, include_detail_issues=False) -> list[dict[str, str]]:
@@ -3277,14 +3341,26 @@ def blocked_portals_from_errors_csv(csv_path, phase: str = "", yields=None, incl
                         jobs = None
                 else:
                     jobs = yields.get(key) if yields else None
-                combined = message + ' ' + diagnostics
+                combined = message + ' | ' + diagnostics
                 listing_blocked = _is_block_message(combined, jobs)
+                _blocked_m = re.search(r'blocked access:\s*(\d+)\s+unresolved', combined, re.I)
+                # Bundle Q (2026-11-19): a single walled response on an
+                # otherwise-reading portal is an incident, not a
+                # human-verification queue entry (Airbus, run
+                # 20261119T114259: 1 Cloudflare detail out of 119
+                # postings queued the whole tenant). Require >= 2
+                # unresolved responses with a confirmed wall.
                 detail_blocked = bool(include_detail_issues and jobs is not None and jobs > 0
-                                      and re.search(r'blocked access:\s*[1-9]\d*\s+unresolved', combined, re.I))
+                                      and _blocked_m and int(_blocked_m.group(1)) >= 2
+                                      and _detail_summary_is_wall(message or combined))
                 if key and (listing_blocked or detail_blocked):
+                    _reason = message or diagnostics
+                    _note = _queue_evidence_note(combined)
+                    if _note and _note not in _reason:
+                        _reason = (_reason + ' | ' + _note).strip(' |')
                     found.append({'access_scope': 'details' if detail_blocked and not listing_blocked else 'listing',
                                   'seed_name': str(row.get('Seed Name') or row.get('seed_name') or row.get('Company') or '').strip(),
-                                  'url':url,'reason':message or diagnostics,'phase':phase,
+                                  'url':url,'reason':_reason,'phase':phase,
                                   'source_subtype':('recruiter' if str(row.get('Source Type') or row.get('source_type') or '').casefold() in ('recruiter','agency','aggregator') else '')})
     except Exception as exc:
         logger.warning('Error reading blocked-target artifact %s: %s',csv_path,exc)
@@ -3375,6 +3451,30 @@ def open_in_default_browser(url: str) -> bool:
         return False
 
 
+def retire_closed_listings(db_path, run_id, phase, scan_log, active):
+    """Only retire an untouched closure-only warning superseded by a later read."""
+    from packtoworkeu.db import database
+    if not re.fullmatch(r'\d{8}T\d{6}(?:_[0-9a-f]{8})?', str(run_id)):
+        return
+    active_keys = {portal_queue_key(row.get('url')) for row in active}
+    keys = [key for key, count in listing_yield_by_url(scan_log).items()
+            if count > 0 and key not in active_keys]
+    if not keys:
+        return
+    conn = database.get_connection(db_path)
+    try:
+        with conn:
+            for key in keys:
+                row = conn.execute("SELECT reason, run_id FROM blocked_portals WHERE url_key=? AND phase=? AND access_scope='listing' AND status='pending' AND pages=0 AND jobs=0 AND result=''", (key,phase)).fetchone()
+                if not row or not re.fullmatch(r'\d{8}T\d{6}(?:_[0-9a-f]{8})?',row['run_id']) or row['run_id'][:15] >= run_id[:15]:
+                    continue
+                if not re.fullmatch(r'(?:CAREER: |ATS: )?TargetClosedError: (?:[\w.]+: )?Target page, context or browser has been closed',row['reason'].strip(),re.I):
+                    continue
+                conn.execute("UPDATE blocked_portals SET status='resolved', result=? WHERE url_key=? AND run_id=? AND phase=? AND reason=? AND status='pending' AND access_scope='listing' AND pages=0 AND jobs=0 AND result=''", ('Listing read in '+run_id+'; previous browser closure superseded.',key,row['run_id'],phase,row['reason']))
+    finally:
+        conn.close()
+
+
 def backfill_recent_access_issues(db_path):
     """Recover omitted JD diagnostics from existing exports; no scan/network.
 
@@ -3399,7 +3499,9 @@ def backfill_recent_access_issues(db_path):
             phases.remove(phase)
             summary = {'artifacts': {phase: {'scan_log': str(scan_log),
                        'errors': str(base.with_name(base.name + '_errors.csv'))}}}
-            for portal in blocked_portals_from_summary(summary, include_detail_issues=True):
+            active = blocked_portals_from_summary(summary, include_detail_issues=True)
+            retire_closed_listings(db_path, run_id, phase, scan_log, active)
+            for portal in active:
                 key = portal_queue_key(portal.get('url'))
                 if key and key not in existing:
                     added += database.enqueue_blocked_portals(db_path, [portal], run_id=run_id)

@@ -585,7 +585,9 @@ def test_assisted_launch_preserves_previous_working_configuration():
     tree=ast.parse(inspect.getsource(bp.run_assisted_ingestion))
     launch=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and isinstance(n.func,ast.Name)and n.func.id=='launch_chromium')
     launch_options={k.arg:ast.literal_eval(k.value)for k in launch.keywords}
-    assert launch_options==dict(headless=False,args=['--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized'])
+    # Bundle F (2026-11-19): assisted browser launches minimized (background);
+    # it comes forward only on a confirmed verification wait or explicit request.
+    assert launch_options==dict(headless=False,args=['--disable-blink-features=AutomationControlled','--disable-gpu','--start-minimized'])
     context=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and isinstance(n.func,ast.Attribute)and n.func.attr=='new_context'and isinstance(n.func.value,ast.Name)and n.func.value.id=='browser')
     context_options={k.arg:ast.literal_eval(k.value)for k in context.keywords}
     assert context_options==dict(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',no_viewport=True)

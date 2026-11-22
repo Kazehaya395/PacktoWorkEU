@@ -5,6 +5,24 @@ It describes the current working tree, including incremental JD refresh,
 Assisted continuation, the simplified EN/IT UI and contextual Insights.
 It is not a release announcement or a promise that every portal is accessible.
 
+## Current implementation: where to trace a scan
+
+Start with the path for the symptom rather than the portal name. Earlier dated sections describe historical changes; for the differences from the imported source, see [CHANGELOG.md](CHANGELOG.md).
+
+| Symptom or question | First source to inspect | Invariant |
+|---|---|---|
+| Unexpected Resume, Retry or Review | `application/scan_scope.py` → `ui/tabs/tools.py` | A finished partial run is not an interruption. Retry uses eligible routes from the saved plan; review is read-only. |
+| Site says there are jobs but few or none are listed | `scanning/career/native_boards.py`, `scanning/career/large_boards.py`, `scanning/career/career_scanner.py` | AMS reconciles distinct offer UUIDs; Emply reads vacancy cells, not unrelated numbers. The supported SuccessFactors tables require matching ranges and distinct URLs; a cursor alone never proves completeness. |
+| Wrong tenant or repeated old URL | `scanning/ats/verified_routes.py`, `scanning/ats/ats_scanner.py` | Compatibility repairs match specific stale configurations. Do not import ITONICS postings for the separately named IT-Tronics employer. A provider correction is not permission to rewrite a seed URL. |
+| Known listing, missing description | `scanning/career/large_boards.py`, `career_scanner.py`, `scanning/detail_backlog.py` | Lidl Italia uses its public search response; AnyMind uses the publisher’s Greenhouse board and retains historical query permalinks. A parent Career export can prioritize still-listed unattempted URLs; it is not a universal per-posting checkpoint. |
+| Readable in export, not counted as fresh | `core/saved_details.py`, `core/run_ledger.py`, `scanning/pipeline.py` | Trace the posting identity, capture proof and database write separately. The spill ledger stores run-local metadata, not descriptions or a durable resume plan. |
+
+**Seed maintenance.** Production defaults are under `packtoworkeu/data/seeds/`. The latest checked import (96 ATS, 502 active Career) supersedes earlier seed snapshots. Cross-phase equivalence was audited but not implemented as a scheduling policy. Do not deduplicate by company name or ATS hostname. Tests of earlier catalog values can describe pre-import fixtures: compare the current CSV and the effective adapter before diagnosing a scanner failure.
+
+### Role-scoped skills explorer
+
+`ui/role_skills.py` owns the 350 ms debounce, isolated `AsyncLoader`, two lists and evidence preview. `insights/role_skills.py` matches titles inside the active Insights population, fetches only matching JD rows in batches, and ranks terms from competency text alone. `regex` provides per-title and cumulative matching time limits. The bounded in-memory session index keys extraction by taxonomy version and description digest; identical descriptions share extraction, not posting counts. No DB migration, scan or existing chart-index rebuild is required. Capture verification checks integrity without applying the scanner’s freshness window. Legacy inclusion is opt-in and does not override a failed hash. Regression entry point: `packtoworkeu/tests/test_role_skills.py`.
+
 ## 1. Project status and boundaries
 
 - The active Python package is `packtoworkeu/`. The unused nested legacy
@@ -87,6 +105,8 @@ per-phase target picker. Full detail enrichment is the default. `--quick` is a
 developer option that skips the additional detail-enrichment pass, not a second
 everyday GUI mode. `--full` is a deprecated alias. `--dedup` explicitly requests
 backed-up, audited alias cleanup after scanning; it is not ordinary scan behaviour.
+
+In binaries built from the current entry point, `PacktoWorkEU --run-scan --company "Company name"` invokes the same CLI. Browser setup is still required. A full run with no company filter uses the configured seed files; test with an isolated data directory and disposable database. Older packages may not recognize `--run-scan`.
 
 The CLI currently does **not** expose `--resume` or `--refresh-descriptions`.
 Those are GUI/API capabilities, not valid CLI flags.
@@ -268,7 +288,7 @@ The completion summary and scan-event evidence contain:
 - `jd_blocked`, `jd_inconclusive`: subsets of unresolved descriptions, not additive totals.
 - `tracking_complete`: false if database/tracking constraints prevent complete accounting.
 
-Observation tracking is bounded at 20,000 identities. Do not fabricate new-job
+Normal observation tracking no longer stops at 20,000 identities. A `RunLedger` spills from memory into anonymous SQLite after 4,096 entries by default. An explicit tracking limit or unavailable database can still leave counts incomplete. Do not fabricate new-job
 counts when the database is unavailable or claim an inaccessible listing's full
 inventory. Unattempted work is not a blocked result. A provider that silently
 changes content without exposing a changed title/revision cannot be detected
@@ -312,7 +332,7 @@ accepts `expected_title` (the harvest passes the saved card title) and
 the landing page matches it (`_titles_match`); otherwise the historical
 "identity unproven" rejection stands. The Cloudflare verification *loop*
 itself (challenge re-issued after a manual solve on some clickout hosts)
-remains an open known issue, disclosed in the README; it is not bypassed.
+remains a limitation of assisted sessions on those hosts; it is not bypassed.
 
 `AssistedWorker` owns browser/database work on its thread. GUI callbacks send
 commands/cancellation rather than executing Playwright work. Preserve bounded
@@ -651,8 +671,97 @@ Verified and shipped after the entries above; see
   `test_resume_after_kill_2026_11_13.py`,
   `test_assisted_clickout_redirect_2026_11_13.py`.
 - **Still open (honest list):** the Cloudflare verification loop on certain
-  clickout hosts (README "Known issues"); U3 persisted detail/location
+  clickout hosts (section 6); U3 persisted detail/location
   recovery queue; U4 extra location-label languages (PT/CS/HU/RO/EL/DA/NO);
   a small number of bundled seeds pointing at landing pages instead of job
   lists; the deferred deep-dive items D2/D3/D4/P2/P4
   (`Changelogs/deep_dive_audit_2026_11_12.md`).
+
+
+---
+
+## 11. 2026-11-19 addendum (v0.3.0, version unchanged)
+
+Current-state contracts added after the 2026-11-13 finalisation. Where this
+addendum and an earlier section disagree, this addendum describes the code.
+
+### Completion statuses and exports
+
+- Career/ATS scan-log `Status` vocabulary: `ok`, `partial`, `empty`,
+  `unverified_empty`, `error`, `cancelled` (`scanning/common.py`
+  `completion_status`). `empty` is emitted only with positive proof (the
+  page states zero vacancies, or a provider reports a total of 0). A
+  dead end -- no cards matched the extractors -- is `unverified_empty`,
+  never `empty`. The browser dead-end path first performs one bounded
+  post-timeout stability wait (networkidle 4s + 600ms) and re-extracts.
+- Career exports carry a trailing `JD Read Status` column per row:
+  `readable`, `thin`, `empty`, `failed`, `blocked`, `unattempted`,
+  stamped from the detail-outcome cache (or captured-JD length) at
+  write time. `Unknown` sponsorship/relocation values are interpreted
+  together with this column: never-read versus read-and-absent.
+- Every career target's diagnostics start with a build stamp:
+  `build: verification-fixes-2026-11-19 (F-S/F-T/F-L/F-B/F-J/F-ST) +
+  queue-transport-2026-11-19 (Q/T/F/W)`. On cancellation the diagnostics
+  also persist a `stop timing:` line with the drain seconds.
+
+### Detail transports and failure policy
+
+- Per-posting confirmed wall: the URL is blocked immediately.
+- HTTP transport: 2 confirmed security-wall responses close host HTTP
+  (half-open recovery: 30s cooldown, max 2 serialized probes per
+  host/run). Bare 401/403/429 without challenge evidence is rate
+  limiting, not a wall (`response_evidence.is_confirmed_wall` is the
+  single reader of the "human verification not confirmed" marker).
+- Browser transport on an HTTP-walled host: up to 3 bounded probes
+  (`_detail_browser_probe_failures`); a third browser-side failure
+  closes the host for the browser too (`_detail_browser_closed_hosts`).
+  A landed browser read resets probe accounting only; it never clears
+  the HTTP wall. Per-host browser failure threshold off walled hosts
+  remains 2. `_detail_host_unavailable(url, browser=True)` is the
+  single admission check for all of the above.
+- Title validation rejects aggregator index/channel URL shapes
+  (`channel(s)` segments, `/jobs/{stadt,staedte,cities,berufsfelder,
+  kategorien,categories,branchen}` tails) and facet labels, in
+  `CareerPortalScanner.is_valid_job_title`.
+- Workday CXS list fetches (`_fetch_workday_jobs`) honour a 429
+  `Retry-After` (clamped 5-120s, interruptible, at most 2 long waits
+  per board) on top of `_http_fetch_with_retry`'s short backoff.
+
+### Access queue admission
+
+- The Assisted Ingestion queue is derived only from scan artifacts
+  (`blocked_portals_from_summary` / `blocked_portals_from_errors_csv`,
+  plus `backfill_recent_access_issues`); there is no fixed portal list.
+- Listing or detail admission requires positive evidence that the rendered challenge
+  asks for an action (for example, checking a box). A generic vendor label, HTTP
+  429, or automatic verification screen is not enough. Detail admission on a
+  readable listing additionally requires at least two unresolved responses.
+- The career results distinguish status-only HTTP 429 (`rate_limited`) and observed
+  automatic verification (`automatic_check`) from other blocked and unattempted JDs.
+  Transport retry limits remain in force; stopping reads is not evidence of a wall
+  on every remaining posting.
+- A later positive listing yield can resolve an untouched scanner-created warning
+  for an older closed browser target. It cannot retire manual work or a detail issue.
+- New career plans coalesce selected aliases only when all non-name input fields
+  match, preserving names in the frozen scope. Different countries, filters, slugs,
+  and seed metadata remain independent; existing resume plans are not rewritten.
+- Queued rows append a plain-language evidence note to the reason
+  (`_queue_evidence_note`): the bot-verification page was served to
+  the automated scanner; the portal typically opens normally in a
+  browser; Collect / continue reads it in the assisted browser.
+
+### Browsers
+
+- All launches go through `services/browser_policy.launch_chromium`
+  (selected full executable, isolated temp profiles; tree-wide direct
+  `launch_chromium(` call sites: 6, pinned by
+  `test_browser_policy_and_uninstall.py`).
+- Career scanner: one helper, `CareerPortalScanner._launch_scan_browser`,
+  launches the selected Chromium headless for worker, scope, JD and support
+  enrichment paths. No unattended fallback opens a visible window.
+- Assisted Ingestion: Chromium launches `--start-minimized` and is
+  brought forward only on a confirmed human-verification wait
+  (`page.bring_to_front()` sites in `core/blocked_portals.py` and
+  `core/session_details.py`) or the explicit **Show verification
+  browser** command (`core/assisted_control.py`). Challenges are never
+  solved programmatically.

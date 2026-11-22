@@ -149,11 +149,18 @@ def challenge_reason(html='',*,title='',body='',frame_urls=(),status=0,subject='
     elif not re.search(r'(?i)human|captcha|robot|press\s+(?:&|and)\s+hold|checking (?:your|the) browser',title+' '+low):
         return f'HTTP {status} access blocked (human verification not confirmed)' if status else 'Access blocked: access-denied wall (human verification not confirmed)'
     else:vendor='Human verification'
-    pending = ('; automatic verification pending (human action not inferred)' if automatic_pending else
-               '; verification pending (human action not inferred)' if localized_wall else '')
+    # Vendor, HTTP status and a waiting screen do not establish human action.
+    # Only explicit instructions on the active wall qualify for assisted work.
+    instruction = re.compile(r'(?i)\b(?:press\s+(?:&|and)\s+hold|(?:complete|solve) (?:the |this |a )?captcha|(?:click|check|tick|select) (?:the |this )?(?:checkbox|box)|click (?:to |below to )?verify)\b')
+    actionable = bool(instruction.search(heading) or
+                      any(instruction.search(visible_text(f)) for f in foreground_fragments) or
+                      (not real_posting and len(text) < 1500 and instruction.search(text)))
+    action = ' (interactive action requested)' if actionable else ''
+    pending = ('; automatic verification pending (human action not inferred)' if automatic_pending and not actionable else
+               '; verification pending (human action not inferred)' if localized_wall and not actionable else '')
     if str(subject or '').casefold()=='detail':
-        return f'{vendor} challenge page served instead of the job detail text; no job description could be read'+pending
-    return f'{vendor} challenge page served instead of the job list; no listing could be read'+pending
+        return f'{vendor} challenge page served instead of the job detail text{action}; no job description could be read'+pending
+    return f'{vendor} challenge page served instead of the job list{action}; no listing could be read'+pending
 
 
 def response_metadata(html='',*,status=0,transport='HTTP'):
@@ -232,7 +239,7 @@ def listing_continuation(html,observed):
         return f'stated job total {total} exceeds {observed} observed'
     for m in re.finditer(r'(?i)(?:showing|displaying|results?|jobs?|vacancies)\s*[: ]*\d+\s*[-–]\s*\d+\s+(?:of|out of)\s+(\d+)',text):
         if int(m[1])>observed:return f'stated result total {m[1]} exceeds {observed} observed'
-    for m in re.finditer(r'(?i)\b(\d+)\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference)\b)|vacancies|vacatures|open positions|openings)\b',text):
+    for m in re.finditer(r'(?i)\b(\d+)\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference|area)\b)|vacancies|vacatures|open positions|openings)\b',text):
         if int(m[1])>observed:return f'stated job total {m[1]} exceeds {observed} observed'
     for m in re.finditer(r'(?is)<(?:button|a)\b([^>]*)>(.*?)</(?:button|a)>',html):
         attrs=m[1];label=visible_text(m[2]).casefold()
@@ -247,7 +254,7 @@ def stated_job_total(html):
     number=r'(?:\d{1,3}(?:[,. \u00a0]\d{3})+|\d+)'
     match=re.search(r'(?i)(?:showing|displaying|results?|jobs?|vacancies)\s*[: ]*'+number+r'\s*[-–]\s*'+number+r'\s+(?:of|out of)\s+('+number+r')',text)
     if not match:
-        match=re.search(r'(?i)\b('+number+r')\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference)\b)|vacancies|vacatures|open positions|openings)\b',text)
+        match=re.search(r'(?i)(?<![\d:])\b('+number+r')\s+(?:(?:open|available)\s+)?(?:jobs?(?!\s+(?:description|details|id|reference|area)\b)|vacancies|vacatures|open positions|openings)\b',text)
     if not match:
         match=re.search(r'(?i)\b('+number+r')\s+(?:Möglichkeiten\s+bei\b|Stellenangebote\b|offene\s+Stellen\b)',text)
     if match:return int(re.sub(r'[^0-9]','',match[1]))

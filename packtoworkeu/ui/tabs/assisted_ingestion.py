@@ -368,7 +368,7 @@ class AssistedIngestionTab(QWidget):
         row=self._queue_rows[index]
         reason=str(row.get('reason')or'')
         if row.get('access_scope')=='details':
-            reason=_('Job descriptions: access unresolved. Saved records do not prove listing completeness. {reason}').format(reason=reason)
+            reason=_('Job details only: the scanner read the listing but could not read some descriptions. {reason}').format(reason=reason)
         else:
             reason=_('Listing access unresolved. This does not mean there are no vacancies. {reason}').format(reason=reason)
         self.queue_details.setPlainText(str(row.get('seed_name')or'')+'\n'+str(row.get('url')or'')+'\n'+reason+'\n\n'+str(row.get('result')or''))
@@ -423,7 +423,7 @@ class AssistedIngestionTab(QWidget):
                 self.portals_table.setItem(index,column,item)
             detail_only = row.get('access_scope') == 'details'
             if detail_only:
-                reason = _('Job descriptions: access unresolved. Saved records do not prove listing completeness. {reason}').format(reason=reason)
+                reason = _('Job details only: the scanner read the listing but could not read some descriptions. {reason}').format(reason=reason)
                 self.portals_table.item(index, 2).setText(reason)
                 self.portals_table.item(index, 2).setToolTip(reason)
             button = QPushButton(_("Collect / continue"))

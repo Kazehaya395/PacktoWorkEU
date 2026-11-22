@@ -548,9 +548,16 @@ def _read_csv_window(path: Path, start_offset: int) -> tuple[list[str] | None, s
             # re-read the header as if it were data.
             tail_start = nl + 1
 
-    if tail and not tail.endswith(b"\n"):
-        cut = tail.rfind(b"\n")
-        tail = tail[: cut + 1] if cut >= 0 else b""
+    # CSV diagnostics/JDs can contain quoted newlines. A physical newline
+    # inside an unfinished quoted field is NOT a committed record boundary.
+    quoted = False
+    boundary = 0
+    for pos, byte in enumerate(tail):
+        if byte == 34:
+            quoted = not quoted  # escaped quote pairs cancel each other
+        elif byte == 10 and not quoted:
+            boundary = pos + 1
+    tail = tail[:boundary]
 
     # utf-8-sig strips the BOM the scanners write; a mid-file slice never has one.
     fieldnames = next(csv.reader(io.StringIO(header_bytes.decode("utf-8-sig"))), None)
@@ -731,7 +738,6 @@ def _ingest_scan_log_window(db_path, path: Path, run_id: str, scanner: str,
     if not path or not path.exists():
         return 0
     fieldnames, text, next_offset = _read_csv_window(path, skip_box[0])
-    skip_box[0] = next_offset
     if not text or not fieldnames:
         return 0
     rows = []
@@ -742,10 +748,13 @@ def _ingest_scan_log_window(db_path, path: Path, run_id: str, scanner: str,
                (row.get("Seed URL") or "").strip())
         if key in seen_keys:
             continue
-        seen_keys.add(key)
         rows.append(row)
     if rows:
         db.record_scan_log_rows(db_path, run_id, scanner, rows)
+        seen_keys.update(((r.get("Seed Name") or "").strip().casefold(),
+                          (r.get("Seed URL") or "").strip()) for r in rows)
+    # Commit the cursor only after the database write succeeds.
+    skip_box[0] = next_offset
     return len(rows)
 
 
@@ -757,10 +766,10 @@ def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[in
     merged rows preserve the final source-artifact reconciliation.
     """
     if not path or not path.exists():
-        return 0, {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
+        return 0, {"ok":0,"empty":0,"unverified_empty":0,"error":0,"partial":0,"merged":0,"retained":0}
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
-    status_counts = {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
+    status_counts = {"ok":0,"empty":0,"unverified_empty":0,"error":0,"partial":0,"merged":0,"retained":0}
     if rows:
         # Replace-style (2026-11-13, F1): the live ingester may already have
         # tailed these rows into the DB during the phase; the CSV artifact
@@ -778,11 +787,13 @@ def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[in
             status_counts['retained'] += int(row.get('Jobs Retained',row.get('Jobs Found',0)) or 0)
             if status == 'partial':
                 status_counts['partial'] += 1
+            elif status == "unverified_empty":
+                status_counts[status] += 1
             elif status == "empty":
                 status_counts["empty"] += 1
             elif status == "error" or (err and status not in ("ok", "partial")):
                 status_counts["error"] += 1
-            else:
+            elif status == "ok":
                 # Only a genuinely complete successful target counts as OK.
                 status_counts["ok"] += 1
             if status in ("error", "failed", "partial") or err:
@@ -1125,7 +1136,7 @@ def run_scan(method: str = "full",
              only_career: list | None = None,
              run_ats: bool = True,
              run_career: bool = True,
-             refresh_descriptions: bool = False) -> dict:
+             refresh_descriptions: bool = False, retry_from: str | None = None) -> dict:
     """Run a full scan campaign and ingest the results.
 
     method:
@@ -1213,7 +1224,20 @@ def run_scan(method: str = "full",
 
     from packtoworkeu.application.scan_scope import (
         read_targets, load_plan, save_plan, remaining_targets, write_seed)
-    if resume_from:
+    if retry_from:
+        from packtoworkeu.application.scan_scope import retry_plan
+        if resume_from:
+            raise ValueError('Retry and resume are distinct operations')
+        plan = retry_plan(db_path, retry_from)
+        if not plan:
+            raise ValueError('No unsuccessful portals with a saved scope to retry')
+        method = plan['method']; detail = method == 'full'
+        # A retry continues missing work, not the parent's forced refresh.
+        refresh_descriptions = False
+        plan['refresh_descriptions'] = False
+        remaining = {phase:list(plan[phase]) for phase in ('ats','career')}
+        summary['retry_of'] = retry_from
+    elif resume_from:
         plan = load_plan(db_path, resume_from)
         if plan is None:
             raise ValueError("This legacy run has no saved target scope. Resume refused to avoid adding unselected targets; start an explicitly selected custom scan.")
@@ -1228,6 +1252,8 @@ def run_scan(method: str = "full",
                 'ats': read_targets(seed_manager.user_ats_path(), _normalize_names(ats_selection) if ats_selection is not None else None) if run_ats else [],
                 'career': read_targets(seed_manager.user_career_path(), _normalize_names(career_selection) if career_selection is not None else None) if run_career else []}
         plan['refresh_descriptions'] = bool(refresh_descriptions)
+        from packtoworkeu.application.scan_scope import share_career_targets
+        plan['career'] = share_career_targets(plan['career'])
         remaining = {phase: list(plan[phase]) for phase in ('ats', 'career')}
     run_ats, run_career = bool(plan['ats']), bool(plan['career'])
     full_ats, full_career = len(plan['ats']), len(plan['career'])
@@ -1341,6 +1367,7 @@ def run_scan(method: str = "full",
                 pause_event=pause_event,
                 only_companies=scan_only_ats,
             )
+            scanner._saved_jd_reader = refresh_reader
             active_scanners["ats"] = scanner
             scanner.run_id = run_id
             ats_module.progress_cb = progress
@@ -1394,6 +1421,11 @@ def run_scan(method: str = "full",
             )
             from packtoworkeu.core.saved_details import SavedDetailReader
             scanner._saved_jd_reader = refresh_reader
+            from packtoworkeu.scanning.detail_backlog import load_pending
+            scanner._parent_scan = retry_from or resume_from
+            scanner._prior_pending = load_pending(out_dir,retry_from or plan.get('retry_of'),remaining['career'])
+            if scanner._prior_pending:
+                progress(f"Prioritising {sum(map(len,scanner._prior_pending.values()))} previously unattempted career detail URLs if still listed")
             scanner._saved_jd_reader.load_scopes(remaining['career'], cancel_event)
             active_scanners["career"] = scanner
             scanner.run_id = run_id
@@ -1426,7 +1458,7 @@ def run_scan(method: str = "full",
     # (rows already ingested live are simply upserted again, idempotently).
     seen_canonical: set = set()
     ingested_total = dup_total = log_rows_total = 0
-    targets_ok = targets_empty = targets_error = targets_partial = merged_total = 0
+    targets_ok = targets_empty = targets_unverified = targets_error = targets_partial = merged_total = 0
     final_ingest_failures = []
     for csv_base, scanner_label in ((ats_csv, "ats"), (career_csv, "career")):
         if csv_base is None:
@@ -1458,6 +1490,7 @@ def run_scan(method: str = "full",
         dup_total += dups + rec_dups
         log_rows_total += log_rows
         targets_ok += status_counts["ok"]
+        targets_unverified += status_counts.get("unverified_empty",0)
         targets_empty += status_counts["empty"]
         targets_error += status_counts["error"]
         targets_partial += status_counts['partial']
@@ -1492,6 +1525,14 @@ def run_scan(method: str = "full",
             logger.warning('Could not save blocked portal queue: %s',exc)
             summary['queue_error'] = str(exc)
 
+    from packtoworkeu.core.blocked_portals import retire_closed_listings
+    for phase, artifacts in summary['artifacts'].items():
+        if phase in ('ats','career') and isinstance(artifacts, dict):
+            try:
+                retire_closed_listings(db_path, run_id, phase, artifacts.get('scan_log'), summary['blocked_portals'])
+            except Exception as exc:
+                logger.warning('Could not reconcile older browser closure: %s', exc)
+
     summary['ingestion_failures'] = final_ingest_failures
     if final_ingest_failures:
         phase_errors.append(f"Final ingestion: {len(final_ingest_failures)} accepted row(s) could not be saved; see scan events and ingestion_failures")
@@ -1505,6 +1546,7 @@ def run_scan(method: str = "full",
     summary["ingested"] = ingested_total
     summary["duplicates"] = dup_total
     summary['merged'] = merged_total+dup_total
+    summary['targets_unverified_empty'] = targets_unverified
     summary['targets_partial'] = targets_partial
     summary["quarantined"] = quarantined_total
     summary["log_rows"] = log_rows_total
@@ -1515,7 +1557,7 @@ def run_scan(method: str = "full",
         summary["status"] = "error"
     elif cancelled:
         summary["status"] = "cancelled"
-    elif phase_errors or targets_error>0 or targets_partial>0:
+    elif phase_errors or targets_error>0 or targets_partial>0 or targets_unverified>0:
         # F9 fix: dead/error targets make the run partial, not completed.
         summary["status"] = "partial"
     else:
@@ -1533,7 +1575,7 @@ def run_scan(method: str = "full",
         db.finish_scan_run(
             db_path, run_id,
             targets_ok=targets_ok, targets_empty=targets_empty,
-            targets_error=targets_error,targets_partial=targets_partial,
+            targets_error=targets_error,targets_partial=targets_partial,targets_unverified_empty=targets_unverified,
             jobs_merged=merged_total+dup_total,
             jobs_found=ingested_total, jobs_quarantined=quarantined_total,
             jobs_duplicates=dup_total, status=summary["status"],
@@ -1556,7 +1598,7 @@ def run_scan(method: str = "full",
     progress(f"Scan {run_id} finished: status={summary['status']}, "
              f"ingested={ingested_total}, duplicates={dup_total}, "
              f"quarantined={quarantined_total}, "
-             f"targets ok/empty/partial/error={targets_ok}/{targets_empty}/{targets_partial}/{targets_error}")
+             f"targets ok/empty/unverified_empty/partial/error={targets_ok}/{targets_empty}/{targets_unverified}/{targets_partial}/{targets_error}")
     # Flush the final lines into the run timeline.
     try:
         progress.flush()

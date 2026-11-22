@@ -32,17 +32,17 @@ from packtoworkeu.scanning.response_evidence import (  # noqa: E402
 
 # --- verbatim error texts from run 20261027T231035 (career phase) ----------
 DETAIL_ONLY_SUMMARY = (
-    "blocked access: 15 unresolved response(s); Cloudflare challenge page served "
+    "blocked access: 15 unresolved response(s); Cloudflare (interactive action requested) challenge page served "
     "instead of the job list; no listing could be read at "
     "https://www.harnham.com/job/e1aeb1da-8723-4ba1-d23d-08d5948a7341-data-scientis")
 UNCONFIRMED_403_ON_LISTING = (
     "blocked access: 1 unresolved response(s); HTTP 403 access blocked "
     "(human verification not confirmed) at https://www.gamesjobsdirect.com/results")
 PROVEN_LISTING_WALL_WITH_ROWS = (
-    "blocked by bot protection: Imperva challenge page served instead of the job "
+    "blocked by bot protection: Imperva (interactive action requested) challenge page served instead of the job "
     "list; no listing could be read")
 PROVEN_ZERO_ROW_WALL = (
-    "blocked by bot protection: Akamai challenge page served instead of the job "
+    "blocked by bot protection: Akamai (interactive action requested) challenge page served instead of the job "
     "list; no listing could be read")
 NOT_A_BLOCK = "seed page did not load: https://careers.quinyx.com/jobs"
 DNS_FAILURE = "net::ERR_NAME_NOT_RESOLVED"
@@ -85,8 +85,8 @@ def test_confirmed_wall_keeps_the_queue_marker():
 
 @pytest.mark.parametrize("message,jobs_found,queued", [
     (DETAIL_ONLY_SUMMARY, 1210, False),
-    (DETAIL_ONLY_SUMMARY, 0, True),          # nothing readable -> still worth a look
-    (UNCONFIRMED_403_ON_LISTING, 0, True),
+    (DETAIL_ONLY_SUMMARY, 0, False),          # zero yield does not turn detail evidence into listing evidence
+    (UNCONFIRMED_403_ON_LISTING, 0, False),
     (PROVEN_LISTING_WALL_WITH_ROWS, 9, True),
     (PROVEN_ZERO_ROW_WALL, 0, True),
     (NOT_A_BLOCK, 0, False),
@@ -147,7 +147,7 @@ def test_readable_listings_leave_the_queue_and_walls_stay(tmp_path):
     names = {row["seed_name"] for row in queued}
     # the 4 listings that saved rows and only had detail walls are gone; Quinyx never
     # had a wall; the two real listing walls and the unreadable board stay queued.
-    assert names == {"BAE Systems", "gamesjobsdirect", "NCS"}
+    assert names == {"BAE Systems", "NCS"}
     assert not {"Harnham Germany", "Work in Finland", "HelloFresh", "Doctolib",
                 "English Jobs Austria (Analyst)", "Quinyx"} & names
 
@@ -191,4 +191,4 @@ def test_parser_accepts_the_yields_map_without_a_scan_log(tmp_path):
     assert blocked_portals_from_errors_csv(str(errors), phase="career") == []
     found = blocked_portals_from_errors_csv(
         str(errors), phase="career", yields={"https://harnham.com/job-search/": 0})
-    assert [row["seed_name"] for row in found] == ["X"]
+    assert found == []

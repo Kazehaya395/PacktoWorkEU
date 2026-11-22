@@ -65,6 +65,15 @@ def test_actual_challenge_remains_protected(status):
                                blocked=True,transport='HTTP',status=status)
         assert s._detail_url_blocked(url)
         assert not s._detail_can_browser(url)
+    # The walled URLs and the HTTP transport stay protected; since
+    # Bundle T (2026-11-19) the browser gets up to 3 bounded probes on
+    # the host instead of being silenced unread (E.ON, run
+    # 20261119T114259). Three browser-side walls close it too.
+    assert s._detail_host_unavailable('https://fixture.invalid/new')
+    assert not s._detail_host_unavailable('https://fixture.invalid/new',browser=True)
+    for i in range(3):
+        s._note_detail_failure(f'https://fixture.invalid/probe{i}','Cloudflare challenge page served instead of the job detail text',
+                               blocked=True,transport='browser',status=status)
     assert s._detail_host_unavailable('https://fixture.invalid/new',browser=True)
 
 
@@ -313,6 +322,12 @@ def test_parallel_confirmed_walls_stop_host_with_bounded_inflight_allowance(monk
     with ThreadPoolExecutor(max_workers=4)as ex:
         assert all(r==('','','')for r in ex.map(lambda u:s._fetch_jd_text(u,allow_browser=False),urls))
     assert 2<=len(calls)<=3  # two failures plus at most one earlier-admitted request
-    assert s._detail_host_unavailable(urls[-1],browser=True)
     assert s._detail_host_unavailable(urls[-1])
+    # Bundle T (2026-11-19): browser probes (max 3) remain available on
+    # an HTTP-walled host; none were spent here (allow_browser=False,
+    # and the browser fetch above is armed to fail the test if used).
+    assert not s._detail_host_unavailable(urls[-1],browser=True)
+    for i in range(3):
+        s._note_detail_failure(urls[-1],'Cloudflare challenge page served instead of the job detail text',blocked=True,transport='browser',status=403)
+    assert s._detail_host_unavailable(urls[-1],browser=True)
     assert not s._http_schedule.waiters and s._http_schedule.active==0

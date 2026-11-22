@@ -9,6 +9,7 @@ import re
 import sqlite3
 import threading
 from collections import Counter
+from packtoworkeu.core.run_ledger import RunLedger
 from packtoworkeu.core.job_identity import find_existing_posting, posting_identity
 
 
@@ -76,11 +77,11 @@ class SavedDetailReader:
         self.force_refresh = bool(force_refresh)
         self.started_at = datetime.now(timezone.utc)
         self._lock = threading.RLock()
-        self._observed = {}  # bounded first observations; no JD prose preload
-        self._results = {}
-        self._outcomes = {}
+        self._observed = RunLedger()  # bounded first observations; no JD prose preload
+        self._results = RunLedger()
+        self._outcomes = RunLedger()
         self._unavailable_observations = set()
-        self.limit = 20000
+        self.limit = None  # optional explicit hard ceiling; normal runs spill to disk
         self.tracking_complete = True
 
     @staticmethod
@@ -116,17 +117,18 @@ class SavedDetailReader:
             existing = self._observed.get(key)
             if existing is not None:
                 self._update_observation(existing, title, digest)
+                self._observed[key] = existing
                 if existing['reason'] in ('changed','unread') and self._results.get(key) == 'reused':
                     self._results[key] = existing['reason']
                 return
-            if len(self._observed) >= self.limit:
+            if self.limit is not None and len(self._observed) >= self.limit:
                 self.tracking_complete = False
                 return
         row = self._lookup(url)
         if row is _UNAVAILABLE:
             with self._lock:
                 self.tracking_complete = False
-                if len(self._unavailable_observations) < self.limit:
+                if len(self._unavailable_observations) < (20000 if self.limit is None else self.limit):
                     self._unavailable_observations.add(key)
             return
         previous_revision = re.findall(r'(?:^|;\s*)listing_revision_sha256=([0-9a-f]{64})',str((row or {}).get('support_evidence_type') or ''))
@@ -137,10 +139,12 @@ class SavedDetailReader:
         self._update_observation(observation, title, digest)
         with self._lock:
             if key in self._observed:
-                self._update_observation(self._observed[key], title, digest)
+                existing = self._observed[key]
+                self._update_observation(existing, title, digest)
+                self._observed[key] = existing
                 if self._observed[key]['reason'] in ('changed','unread') and self._results.get(key) == 'reused':
                     self._results[key] = self._observed[key]['reason']
-            elif len(self._observed) < self.limit:
+            elif self.limit is None or len(self._observed) < self.limit:
                 self._observed[key] = observation
             else:
                 self.tracking_complete = False
@@ -202,17 +206,19 @@ class SavedDetailReader:
     def summary(self):
         with self._lock:
             results = Counter(self._results.values())
-            observed = list(self._observed.values())
+            observed = len(self._observed)
+            existing = sum(x['existing'] for x in self._observed.values())
             unresolved = Counter(status for key,status in self._outcomes.items() if self._results.get(key) not in ('fresh','reused'))
             reasons = Counter(value for value in self._results.values() if value not in ('reused','fresh'))
-        return dict(jobs_new=sum(not x['existing'] for x in observed),
-                    jobs_existing=sum(x['existing'] for x in observed),
+        return dict(jobs_new=observed-existing,
+                    jobs_existing=existing,
                     jd_reused=results['reused'], jd_fresh=results['fresh'],
-                    jd_pending=max(0,len(observed)-results['reused']-results['fresh']),
+                    jd_pending=max(0,observed-results['reused']-results['fresh']),
                     jd_blocked=unresolved['blocked']+unresolved['protected'],
+                    jd_rate_limited=unresolved['rate_limited'], jd_automatic_check=unresolved['automatic_check'],
                     jd_inconclusive=sum(unresolved[x] for x in ('failed','thin','empty','truncated')),
                     reasons=dict(reasons), force_refresh=self.force_refresh,
-                    tracked=len(observed), tracking_limit=self.limit, tracking_complete=self.tracking_complete)
+                    tracked=observed, tracking_limit=self.limit, tracking_complete=self.tracking_complete)
 
 
     def load_scopes(self, targets, cancel_event=None):
@@ -336,9 +342,8 @@ def remember_capture(scanner, url, text, *, captured_at=''):
     with lock:
         proofs = getattr(scanner, '_capture_proofs', None)
         if proofs is None:
-            scanner._capture_proofs = proofs = {}
-        if key in proofs or len(proofs) < 20000:
-            proofs[key] = marker
+            scanner._capture_proofs = proofs = RunLedger()
+        proofs[key] = marker
 
 
 def capture_proof(scanner, url, text):

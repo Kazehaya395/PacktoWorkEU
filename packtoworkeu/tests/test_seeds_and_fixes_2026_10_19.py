@@ -73,7 +73,16 @@ def test_revision_sync_keeps_both_pam_panorama_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(sm, "user_career_path", lambda: seeds / "company_Career_seed.csv")
     monkeypatch.setattr(sm, "ensure_user_seeds", lambda force=False: None)
     _write(seeds / "company_ATS_seed.csv", sm.bundled_ats_path().read_text(encoding="utf-8-sig"))
-    _write(seeds / "company_Career_seed.csv", sm.bundled_career_path().read_text(encoding="utf-8-sig"))
+    # Exercise two distinct routes explicitly; do not require reintroducing a removed catalog seed.
+    import csv
+    fixture = tmp_path / 'bundled-career.csv'
+    data = sm.read_seed_rows(sm.bundled_career_path())
+    pam = next(row for row in data['rows'] if row['name']=='Pam Panorama')
+    with fixture.open('w', newline='', encoding='utf-8') as fh:
+        writer = csv.DictWriter(fh,fieldnames=data['columns']); writer.writeheader()
+        writer.writerows([pam, dict(pam,careers_url='https://example.test/pam/second-route')])
+    monkeypatch.setattr(sm, 'bundled_career_path', lambda: fixture)
+    _write(seeds / 'company_Career_seed.csv', fixture.read_text(encoding='utf-8'))
     sm._sync_to_revision(log_fn=lambda *_: None)
     pam = [r["careers_url"] for r in sm.read_seed_rows(seeds / "company_Career_seed.csv")["rows"]
            if r["name"] == "Pam Panorama"]

@@ -40,7 +40,8 @@ def test_identity_alias_reuses_hash_proven_text_without_network_or_clearance_res
     result=s._fetch_jd_text(URL.rstrip('/'),allow_browser=True,need_metadata=True)
     assert result[0]==TEXT.strip()
     assert s._detail_state.total==0 and s._jd_browser_used==0
-    assert s._detail_host_unavailable(URL,browser=True) # reuse is not clearance
+    assert s._detail_host_unavailable(URL) # reuse is not clearance: the HTTP wall stands
+    assert not s._detail_host_unavailable(URL,browser=True) # Bundle T (2026-11-19): browser probes (max 3) are policy on a walled host; reuse neither grants nor spends them
     assert s._detail_state.get_metadata(URL.rstrip('/'))['titles']==['Platform Engineer']
     assert not s._detail_state.outcomes # no fabricated fresh HTTP200
     coverage=s._detail_state.coverage(s._tls.detail_scope,[URL.rstrip('/')],s.get_captured_jd)
@@ -184,7 +185,8 @@ def test_151_saved_jds_reused_in_bounded_http_enrichment(saved,monkeypatch):
     assert coverage['readable']==151 and coverage['unattempted']==0
     assert s._detail_state.total==0 and s._jd_browser_used==0
     assert all(r['Visa Sponsorship']=='Unknown'for r in rows)
-    assert s._detail_host_unavailable(URL,browser=True)
+    assert s._detail_host_unavailable(URL) # reuse did not clear the HTTP wall
+    assert not s._detail_host_unavailable(URL,browser=True) # Bundle T (2026-11-19): browser probes (max 3) are policy on a walled host; reuse neither grants nor spends them
 
 
 def test_weak_refresh_keeps_description_proof_and_original_time(tmp_path):

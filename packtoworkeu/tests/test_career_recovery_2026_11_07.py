@@ -80,9 +80,18 @@ def test_security_wall_is_not_retried_as_an_ordinary_transport_failure():
     fail(s, 2, blocked=True, transport='http', status=429)
     fresh = 'https://fixture.invalid/job/new'
     assert s._detail_host_unavailable(fresh)
-    assert s._detail_host_unavailable(fresh, browser=True)
+    # Bundle T (2026-11-19, supersedes the 2026-11-07 both-transports
+    # assertion below): HTTP walls no longer silence the browser --
+    # it gets up to 3 bounded probes per host (E.ON, run
+    # 20261119T114259, where 0 browser reads were attempted).
+    assert not s._detail_host_unavailable(fresh, browser=True)
     # A transport success is not a clearance for an actual observed security wall.
     s._note_detail_http_success(fresh)
+    assert s._detail_host_unavailable(fresh)
+    assert not s._detail_host_unavailable(fresh, browser=True)
+    # Three browser-side failures exhaust the probes and close the host.
+    for i in range(3):
+        fail(s, f'wall{i}', blocked=True, transport='browser', status=403)
     assert s._detail_host_unavailable(fresh, browser=True)
 
 

@@ -12,6 +12,17 @@ from urllib.parse import urlsplit
 from packtoworkeu.scanning.response_evidence import is_plain_http_refusal
 
 
+def reported_detail_kind(outcome):
+    kind = outcome.get('kind')
+    if kind == 'blocked':
+        reason = str(outcome.get('reason') or '').casefold()
+        if reason == 'http 429 access blocked (human verification not confirmed)':
+            return 'rate_limited'
+        if 'automatic verification pending (human action not inferred)' in reason:
+            return 'automatic_check'
+    return kind
+
+
 class DetailRequestState:
     def __init__(self,cache_size=512):
         self.lock = threading.RLock()
@@ -280,7 +291,7 @@ class DetailRequestState:
                 if len(saved.strip())>=200 or value.get('kind')=='readable':
                     result['readable']+=1
                 elif value.get('kind') in ('thin','empty','failed','blocked'):
-                    result[value['kind']]+=1
+                    result[reported_detail_kind(value)]+=1
                 else:
                     result['unattempted']+=1
             return dict(result)

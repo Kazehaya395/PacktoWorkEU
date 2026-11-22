@@ -23,10 +23,10 @@ def test_only_bot_blocks_are_listed_and_urls_are_deduplicated(tmp_path):
     errs = tmp_path / "run_errors.csv"
     _write_errors(errs, [
         {"Seed Name": "Robert Walters Germany", "Error Type": "RuntimeError",
-         "Message": "blocked by bot protection: PerimeterX challenge page",
+         "Message": "blocked by bot protection: PerimeterX (interactive action requested) challenge page",
          "Seed URL": "https://www.robertwalters.de/en/jobs.html"},
         {"Seed Name": "Robert Walters Germany", "Error Type": "RuntimeError",
-         "Message": "blocked by bot protection: PerimeterX challenge page",
+         "Message": "blocked by bot protection: PerimeterX (interactive action requested) challenge page",
          "Seed URL": "https://www.robertwalters.de/en/jobs.html"},
         {"Seed Name": "Clearmatics", "Error Type": "TimeoutError",
          "Message": "navigation timeout", "Seed URL": "https://clearmatics.example/jobs"},
@@ -46,11 +46,11 @@ def test_summary_lists_confirmed_blocks_from_both_phases(tmp_path):
     career = tmp_path / "career_errors.csv"
     ats = tmp_path / "ats_errors.csv"
     _write_errors(career, [{"Seed Name": "Robert Walters Germany",
-                            "Message": "blocked by bot protection: PerimeterX challenge page",
+                            "Message": "blocked by bot protection: PerimeterX (interactive action requested) challenge page",
                             "Seed URL": "https://www.robertwalters.de/en/jobs.html"}])
     # Real ATS blocks are queued too; an unconfirmed plain HTTP 403 is not.
     _write_errors(ats, [{"Seed Name": "Some ATS board",
-                         "Message": "blocked by bot protection: PerimeterX challenge page",
+                         "Message": "blocked by bot protection: PerimeterX (interactive action requested) challenge page",
                          "Seed URL": "https://boards.example/some"},
                         {"Seed Name": "Greenhouse board", "Message": "HTTP 403",
                          "Seed URL": "https://boards.greenhouse.io/x"}])
@@ -62,7 +62,7 @@ def test_summary_lists_confirmed_blocks_from_both_phases(tmp_path):
 
 def test_ats_only_block_is_still_queued(tmp_path):
     ats = tmp_path / "ats_errors.csv"
-    _write_errors(ats, [{"Message": "blocked by bot protection: X", "Seed URL": "https://a.example/"}])
+    _write_errors(ats, [{"Message": "blocked by bot protection: X (interactive action requested)", "Seed URL": "https://a.example/"}])
     found=bp.blocked_portals_from_summary({"artifacts":{"ats":{"errors":str(ats)}}})
     assert len(found)==1 and found[0]["phase"]=="ats"
 
@@ -76,8 +76,8 @@ def test_generic_blocked_text_without_bot_marker_is_not_offered(tmp_path):
 
 def test_non_web_urls_are_never_offered(tmp_path):
     errs = tmp_path / "e.csv"
-    _write_errors(errs, [{"Message": "blocked by bot protection: X", "Seed URL": "file:///etc/passwd"},
-                         {"Message": "blocked by bot protection: X", "Seed URL": "javascript:alert(1)"}])
+    _write_errors(errs, [{"Message": "blocked by bot protection: X (interactive action requested)", "Seed URL": "file:///etc/passwd"},
+                         {"Message": "blocked by bot protection: X (interactive action requested)", "Seed URL": "javascript:alert(1)"}])
     assert bp.blocked_portals_from_errors_csv(errs) == []
 
 
