@@ -14,6 +14,9 @@ build/
 dist/
 *.egg-info/
 requirements.txt
+uv.lock
+requirements.txt
+packtoworkeu.egg-info
 
 # Machine-local/editor files
 .DS_Store
