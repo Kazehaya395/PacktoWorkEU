@@ -295,6 +295,7 @@ def _repair_sponsorship_scores(conn):
                  "WHERE source_type = 'verified' AND visa_sponsorship = 'N' "
                  "AND sponsorship_score <> 0")
     for table,column,definition in (
+        ('scan_runs','targets_unverified_empty','INTEGER NOT NULL DEFAULT 0'),
         ('scan_runs','targets_partial','INTEGER NOT NULL DEFAULT 0'),
         ('scan_runs','jobs_merged','INTEGER NOT NULL DEFAULT 0'),
         ('scan_log','jobs_retained','INTEGER NOT NULL DEFAULT 0'),
@@ -305,6 +306,16 @@ def _repair_sponsorship_scores(conn):
     ):
         try:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+            if column == 'targets_unverified_empty':
+                # One-time, evidence-only correction of the historical OK bucket.
+                # Leave summaries alone if surviving logs do not reconcile.
+                conn.execute("""WITH tally AS (
+                    SELECT run_id, sum(status='ok') AS ok, sum(status='unverified_empty') AS ue
+                    FROM scan_log GROUP BY run_id HAVING sum(status='unverified_empty')>0
+                ) UPDATE scan_runs SET targets_ok=(SELECT ok FROM tally WHERE tally.run_id=scan_runs.run_id),
+                    targets_unverified_empty=(SELECT ue FROM tally WHERE tally.run_id=scan_runs.run_id)
+                    WHERE finished_at IS NOT NULL AND EXISTS (SELECT 1 FROM tally WHERE tally.run_id=scan_runs.run_id
+                        AND scan_runs.targets_ok=tally.ok+tally.ue)""")
         except sqlite3.OperationalError as exc:
             if 'duplicate column name' not in str(exc):
                 raise
@@ -909,7 +920,7 @@ def finish_scan_run(db_path, run_id: str, targets_ok: int = 0,
                     targets_empty: int = 0, targets_error: int = 0,
                     jobs_found: int = 0, jobs_quarantined: int = 0,
                     jobs_duplicates: int = 0, status: str = "completed",
-                    error: str = "", targets_partial: int = 0,jobs_merged: int = 0):
+                    error: str = "", targets_partial: int = 0,jobs_merged: int = 0,targets_unverified_empty: int = 0):
     conn = None
     try:
         conn = get_connection(db_path)
@@ -917,12 +928,12 @@ def finish_scan_run(db_path, run_id: str, targets_ok: int = 0,
             """UPDATE scan_runs SET
                  targets_ok=?, targets_empty=?, targets_error=?,
                  jobs_found=?, jobs_quarantined=?, jobs_duplicates=?,
-                 targets_partial=?,jobs_merged=?,
+                 targets_partial=?,jobs_merged=?,targets_unverified_empty=?,
                  finished_at=CURRENT_TIMESTAMP, status=?, error=?
                WHERE run_id=?""",
             (int(targets_ok), int(targets_empty), int(targets_error),
              int(jobs_found), int(jobs_quarantined), int(jobs_duplicates),
-             int(targets_partial),int(jobs_merged),status, error, run_id),
+             int(targets_partial),int(jobs_merged),int(targets_unverified_empty),status, error, run_id),
         )
         conn.commit()
     finally:
@@ -934,6 +945,25 @@ def record_scan_log_rows(db_path, run_id: str, scanner: str, rows):
     """Insert per-company scan-log rows (dicts using the scan_log columns)."""
     if not rows:
         return
+    # A damaged historical CSV row must not stop ingestion of every other
+    # portal. Preserve the raw duration and mark the log row as erroneous.
+    import math
+    clean_rows = []
+    for original in rows:
+        r = dict(original)
+        raw = r.get("duration_sec", r.get("Duration Sec", 0)) or 0
+        try:
+            duration = float(raw)
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError("invalid duration")
+        except (TypeError, ValueError):
+            duration = 0
+            r["status"] = "error"
+            r["error"] = (str(r.get("error") or r.get("Error") or "") +
+                          f" | Invalid scan-log duration: {raw!r}")
+        r["duration_sec"] = duration
+        clean_rows.append(r)
+    rows = clean_rows
     conn = None
     try:
         conn = get_connection(db_path)
@@ -1095,8 +1125,8 @@ def list_scan_runs(db_path, limit: int = 25):
             """SELECT run_id, method, started_at, finished_at, status, error,
                       targets_ok, targets_empty, targets_error,targets_partial,
                       jobs_found, jobs_quarantined, jobs_duplicates,jobs_merged,
-                      ats_companies, career_companies
-               FROM scan_runs ORDER BY started_at DESC LIMIT ?""",
+                      ats_companies, career_companies,targets_unverified_empty
+               FROM scan_runs ORDER BY started_at DESC, rowid DESC LIMIT ?""",
             (int(limit),),
         ).fetchall()
         return rows
@@ -1133,7 +1163,7 @@ def get_scan_run(db_path, run_id: str):
             """SELECT run_id, method, started_at, finished_at, status, error,
                       targets_ok, targets_empty, targets_error,targets_partial,
                       jobs_found, jobs_quarantined, jobs_duplicates,jobs_merged,
-                      ats_companies, career_companies
+                      ats_companies, career_companies,targets_unverified_empty
                FROM scan_runs WHERE run_id=?""",
             (run_id,),
         ).fetchone()
@@ -1260,7 +1290,7 @@ def get_resumable_scan(db_path) -> dict | None:
     from packtoworkeu.application.scan_scope import load_plan, checkpoint
     conn = get_connection(db_path)
     try:
-        runs = conn.execute("SELECT run_id FROM scan_runs WHERE status IN ('cancelled','partial','error','running') ORDER BY rowid DESC LIMIT 25").fetchall()
+        runs = conn.execute("SELECT run_id FROM scan_runs WHERE status IN ('cancelled','running') ORDER BY rowid DESC LIMIT 25").fetchall()
     finally:
         conn.close()
     for row in runs:
@@ -1374,6 +1404,7 @@ def export_scan_run_csv(db_path, run_id: str) -> str:
         ("Quarantined", run["jobs_quarantined"] or 0),
         ("Targets OK", run["targets_ok"] or 0),
         ("Targets Empty", run["targets_empty"] or 0),
+        ("Targets Unverified Empty", run["targets_unverified_empty"] or 0),
         ("Targets Error", run["targets_error"] or 0),
         ("Targets Partial",run['targets_partial'] or 0),
         ("Run Error", run["error"] or ""),

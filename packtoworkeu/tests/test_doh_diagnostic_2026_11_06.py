@@ -37,7 +37,7 @@ def test_normal_launch_and_wall_guards_after_diagnostic_removal(monkeypatch,tmp_
     try:
         bp.run_assisted_ingestion(root,'Fixture',conn,max_pages=1,clear_wait_s=.1,db_path=str(path))
         assert len(launches)==1 and launches[0]['headless']is False
-        assert launches[0]['args'][:-1]==['--disable-blink-features=AutomationControlled','--disable-gpu','--start-maximized']
+        assert launches[0]['args'][:-1]==['--disable-blink-features=AutomationControlled','--disable-gpu','--start-minimized']
         assert launches[0]['args'][-1].startswith('--crash-dumps-dir=')
         assert launches[0]['executable_path'] and launches[0]['channel']=='chromium'
         assert 'PacktoWorkEU'in launches[0]['env']['HOME'] or '.packtoworkeu'in launches[0]['env']['HOME']

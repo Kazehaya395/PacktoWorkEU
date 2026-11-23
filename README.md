@@ -2,7 +2,7 @@
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
 
-Discover jobs from configured official sources and check the available
+Discover jobs from configured employer, recruiter and job-board sources and check the available
 sponsorship evidence. Results and application notes are stored on your computer.
 
 > **Start here:** [📸 Screenshots / Schermate](#-screenshots) ·
@@ -19,6 +19,40 @@ Insights to reach lower controls and charts.*
 
 
 # 🇬🇧 English
+
+## Latest Career reliability update
+
+The current source includes safer identity-matched description capture, deadline and pagination handling, explicit empty-result checks, and Italian role-title validation. **These repairs do not certify 90–95% portal reliability.** Seed URLs were not changed by this repair patch.
+
+- **Coverage:** 516 enabled Career rows represent 501 literal URLs and **512 configurations** when provider, board, country and scope are included. Aliases do not justify merging different scopes.
+- **Completed application evidence:** Lavazza saved all 14 proven descriptions exactly; Angelini returned an explicitly verified empty listing. Esselunga accepted 43/45 before the title fix; its live rerun is not certified. TIM remained incomplete. The later 17-configuration cohort stopped without final results and is not counted.
+- **Interpretation:** 2/512 configurations have completed positive evidence in the consolidated scorecard (**0.39% verified coverage**, not an estimate that the remaining portals fail).
+- **Tests:** 55 new focused tests pass. The full suite records **2,624 passed, 182 skipped, 12 failed**; all 12 failures also reproduce against the saved pre-repair scanner/common modules. The suite is not fully green.
+
+A saved job, a readable description, a complete listing and a description stored with capture proof are separate outcomes. A blocked page or unknown zero-row result is not a verified empty listing. This update does not certify an installed application or a Windows installer.
+
+See the [repair and evidence report](docs/CAREER_RELIABILITY_V1.md), [configuration scorecard](seed-review/career-reliability/career-reliability-scorecard.csv), and [technical guide](PacktoWorkEU_codebase_guide.md). Existing installations retain their own seed copies; do not overwrite custom seeds to apply a runtime repair.
+
+## Insights: Skills by job title
+
+Enter `Analyst`, `SDE`, `Project Manager`, or another title in **Insights → Skills by job title**. Role match finds words in titles, including seniority variants and selected software-engineering aliases. For broader roles use a wildcard (`*sales*manager*`); choose Regex for patterns such as `\b(project|programme?)\s+manager\b`. Country and source apply, but clicking a chart elsewhere does not change this panel.
+
+The two lists show the top 25 technical and soft skills **mentioned** in saved descriptions, counted once per active, non-expired posting. Percentages use analyzed postings, not all matching titles. Descriptions with verified capture evidence are included by default; use the legacy checkbox to include eligible unverified text. Hover over a skill for examples. Missing descriptions or unrecognized terms are not evidence that no skills are required. No network or scan is needed.
+
+## After a scan: choose the right action
+
+| What Tools shows | What it means |
+|---|---|
+| **Resume interrupted scan** | Continue unfinished portal tasks from the saved scope. This is not a rerun of every portal. |
+| **Retry incomplete results** | Start a **new** scan of the eligible routes from the previous plan. Read the reasons before starting. A portal that found jobs may still have an incomplete listing. |
+| **Review unresolved descriptions** | Inspect a supported case where the listing was reconciled but some descriptions were thin or unavailable. Review does **not** start a scan. |
+| No recovery action | There is no eligible action to take. A successful scan does not need a retry. |
+
+**Read the counts separately.** A posting can be listed and saved without a readable description. A readable description may have been reused rather than freshly saved. “Unattempted” means no read was made; it does not mean blocked, expired, or no sponsorship. An HTTP refusal is not proof that the employer has no openings.
+
+**Seeds:** The bundled defaults contain 99 ATS rows and 516 active Career rows (plus 48 comments). The checked import preserved every manually supplied careers URL and its order. An earlier cross-file audit found four routes with the same URL, country and scope; those overlaps were retained. The scanner does not automatically suppress such cross-file overlaps. Existing installations use their own seed copies; review changes in Data Management rather than overwriting your files.
+
+**Build status:** These instructions describe the working source, not every installer labelled 0.3.0. The Linux package was tested on individual routes; a final improvement across the entire 150-route campaign has not been established. See the [change log](CHANGELOG.md) for the measured results and open items.
 
 ## 📖 Contents
 
@@ -107,7 +141,7 @@ entry. Before scanning, use **Browser setup** as described below.
 - **Scans seeded job sources** — 12 ATS provider types (Ashby, Greenhouse,
   Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday, Teamtailor,
   BambooHR, Oracle, DigitalRecruiters) through their public job feeds/APIs, plus employer and recruiter
-  career boards with a headless browser when needed. A centralised board may
+  career boards with a browser when needed. A centralised board may
   link to an external employer/aggregator detail page. Providers, access and
   extracted attributes can be incomplete; consult the recorded outcomes.
 - **Analyses available job text** — sponsorship, relocation support, remote type and
@@ -374,7 +408,7 @@ listing collection** controls. Resume is limited to the saved scope and observed
 continuation evidence. Human-verification controls appear only when an active
 session requests them. You perform checks yourself; **Continue after verification**
 asks for fresh inspection, not a bypass. Some sites may remain inaccessible;
-see [Troubleshooting](#-troubleshooting) for current limitations.
+see [Troubleshooting](#-troubleshooting) if a portal cannot be read.
 
 <img src="assets/assisted_ingestion.png" alt="Assisted Ingestion idle: company, source, URL, Collect / continue, Stop, Open website, collapsed Advanced and queue" width="860">
 
@@ -450,6 +484,9 @@ Normal and Custom scans do not open an interactive verification browser by
 themselves. If access issues remain, open **Assisted Ingestion**, select the queued
 portal (or enter its company and careers URL), then click **Collect / continue**.
 You complete any verification yourself in the app-controlled browser.
+The assisted browser window opens minimized in the background and comes
+forward only when a verification needs your attention (or when you choose
+**Show verification browser**).
 
 While the session asks for verification, use **Show verification browser** to
 bring it forward and **Continue after verification** to request another check.
@@ -581,30 +618,6 @@ an uninstall; for deliberate irreversible account cleanup, after backups, run
 
 ---
 
-## ⚠️ Known issues
-
-- **Cloudflare verification loop on certain portals (under development).** On a
-  small number of portals — typically job aggregators whose job links exit through
-  a redirect ("clickout") host — the *listing* loads normally in Assisted
-  Ingestion, but opening an individual job description can land on a Cloudflare
-  "Verify you are human" page that keeps re-appearing even after you tick the box,
-  so that description cannot be read. This is a known issue and a proper solution
-  is under development. It is **not** solved by retrying repeatedly. What to know
-  meanwhile:
-  - The portal's jobs (titles, companies, and locations shown on the listing) are
-    still collected and saved; only the full description text is unreachable.
-  - Affected postings honestly stay `Unknown` for sponsorship/relocation — never
-    a guessed "No" — and remain resumable in Assisted Ingestion.
-  - Solving the check manually in the assisted browser sometimes clears it; if
-    the challenge loops, stop that posting (closing the stuck tab skips just it)
-    and move on. PacktoWorkEU does not bypass CAPTCHAs or verification walls.
-  - Links that redirect to a *readable* job page on another host (a common
-    aggregator pattern) are supported when the landing page provably shows the
-    same job you clicked.
-- **A few bundled career seeds point at overview/landing pages** rather than a
-  searchable job list, so those companies can report zero jobs. Opening the
-  company's real job-list page and using its URL in a Custom Scan works around it.
-
 ## 🧰 Troubleshooting
 
 **The Dashboard looks empty after a scan.** Click **Refresh**. If still empty,
@@ -638,10 +651,12 @@ the other companies. Correct it in **Data Management**. The Scan button never
 rewrites your seed or upgrades its URLs behind your back.
 
 **Some companies returned no jobs.** Check that seed's scan log and errors
-CSV. `empty` is **not** proof that a portal has no jobs: the site may have
-served a different response, failed to render cards, or returned an explicit
-server error (reported as `error` when observed). See
-[Troubleshooting](#-troubleshooting) for current limitations.
+CSV. `unverified_empty` means the scan could not read the board; it is **not**
+proof that a portal has no jobs: the site may have served a different response,
+failed to render cards, or returned an explicit server error (reported as
+`error` when observed). A portal reported `empty` stated zero vacancies
+explicitly. See
+[Troubleshooting](#-troubleshooting) if a portal cannot be read.
 Do not assume a verification wall from a failed page or bypass one.
 
 **The scan is slow.** The detail-page pass is the slow part, and it is bounded:
@@ -846,6 +861,30 @@ Source and attribution details are included in `packtoworkeu/data/location_place
 
 # 🇮🇹 Italiano
 
+## Ultimo aggiornamento: affidabilità dei portali Career
+
+Il sorgente attuale migliora l’acquisizione delle descrizioni associate all’annuncio corretto, le scadenze delle richieste, la paginazione, i risultati vuoti verificati e il riconoscimento dei titoli professionali italiani. **Non certifica un’affidabilità del 90–95%.** La patch non modifica gli URL dei seed.
+
+Le 516 righe Career attive corrispondono a 501 URL letterali e **512 configurazioni** considerando provider, board, paese e ambito. Le verifiche applicative completate confermano Lavazza (14 descrizioni salvate integralmente con prova) e Angelini (elenco esplicitamente vuoto). Esselunga aveva accettato 43/45 annunci prima della correzione dei titoli; la nuova esecuzione completa non è certificata. TIM rimane incompleto. Il successivo gruppo di 17 configurazioni si è interrotto senza risultati finali e non viene conteggiato.
+
+La copertura verificata è quindi **2/512 (0,39%)**, non una stima della percentuale di portali funzionanti. I 55 nuovi test mirati passano; la suite completa registra **2.624 superati, 182 saltati e 12 falliti**. Tutti i 12 fallimenti si riproducono anche con i moduli scanner/common precedenti alla riparazione. Nessuna certificazione dell’installer Windows o dell’app installata è implicita.
+
+Consulta il [rapporto con limiti e risultati](docs/CAREER_RELIABILITY_V1.md) e la [tabella delle configurazioni](seed-review/career-reliability/career-reliability-scorecard.csv). Un rifiuto HTTP o zero annunci senza prova non equivalgono a un elenco vuoto verificato. Conserva i seed personalizzati delle installazioni esistenti.
+
+## Approfondimenti: competenze per titolo di lavoro
+
+Cerca un titolo, ad esempio `Analyst` o `SDE`, oppure usa caratteri jolly (`*sales*manager*`) o una regex. Paese e fonte delimitano gli annunci attivi e non scaduti. Le due classifiche contano una volta per annuncio le competenze tecniche e trasversali menzionate nelle descrizioni analizzate. I testi precedenti senza prova di acquisizione sono facoltativi. Passa il puntatore su una competenza per leggere esempi. Non serve una nuova scansione.
+
+## Dopo la scansione: quale azione scegliere?
+
+- **Riprendi scansione interrotta** continua le attività non terminate usando la selezione salvata.
+- **Riprova risultati incompleti** avvia una *nuova* scansione dei soli portali interessati. Leggi prima i motivi: trovare annunci non dimostra che l’elenco sia completo.
+- La **revisione delle descrizioni non risolte** permette di esaminare alcuni casi in cui l’elenco è completo ma il testo di singoli annunci manca o è troppo breve. Non avvia una scansione. Se non ci sono risultati da recuperare, non occorre riprovare.
+
+Annunci trovati, annunci salvati, descrizioni leggibili e descrizioni appena salvate sono conteggi diversi. Una lettura non tentata non indica un blocco né l’assenza di sponsorizzazione. Un rifiuto HTTP non dimostra che non ci siano posti disponibili.
+
+I file predefiniti contengono 99 righe ATS e 516 righe Career attive, più 48 commenti. Gli URL verificati manualmente sono rimasti invariati e nello stesso ordine. Una precedente verifica aveva individuato quattro percorsi con lo stesso URL, paese e ambito in entrambi i file; tali sovrapposizioni sono state conservate. Le installazioni esistenti usano le proprie copie. La verifica su singoli portali non certifica l’intera campagna di 150 percorsi; consulta il [registro delle modifiche](CHANGELOG.md).
+
 ## 📖 Indice
 
 - **[📸 Schermate](#-schermate)** — tutte le schede prima dell'installazione
@@ -940,7 +979,7 @@ un'esecuzione mirata.
 - **Scansiona le fonti configurate** — 12 tipi di provider ATS (Ashby,
   Greenhouse, Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday,
   Teamtailor, BambooHR, Oracle, DigitalRecruiters) tramite feed/API pubbliche, più le pagine carriera di
-  aziende e recruiter con un browser headless quando necessario. Un portale
+  aziende e recruiter con un browser quando necessario. Un portale
   centralizzato può rimandare a una scheda lavoro su un altro sito.
 - **Analizza il testo disponibile** — sponsorizzazione, trasferimento, tipo di lavoro
   remoto e idoneità alla Carta Blu UE, rilevati dalla descrizione.
@@ -1201,10 +1240,13 @@ l’esito dell’operazione.
 **Opzioni avanzate** parte chiusa: contiene lotti salvati, filtro risolti, dettagli
 e riprese separate delle JD non lette e dell'elenco. La ripresa conserva l'ambito
 salvato e richiede evidenze di continuazione osservata. I comandi di verifica
-compaiono solo se richiesti dalla sessione attiva. Completi tu la verifica;
+compaiono solo se richiesti dalla sessione attiva. La finestra del browser
+assistito si apre ridotta a icona in background e viene portata in primo piano
+solo quando una verifica richiede la tua attenzione, oppure quando scegli
+**Mostra browser verifica**. Completi tu la verifica;
 Continua richiede una nuova ispezione, non risolve né aggira il controllo.
-Alcuni siti possono restare inaccessibili: consulta
-[Risoluzione Problemi](#-risoluzione-problemi) per i limiti attuali.
+Alcuni siti possono restare inaccessibili: se un portale non
+può essere letto, consulta [Risoluzione Problemi](#-risoluzione-problemi).
 
 <img src="assets/assisted_ingestion_it.png" alt="Acquisizione assistita inattiva: nome, tipo, URL, Raccogli / continua, Ferma, Apri sito web e coda" width="860">
 
@@ -1416,34 +1458,6 @@ irreversibile volontaria dell’account, dopo il backup, usa
 
 ---
 
-## ⚠️ Problemi noti
-
-- **Ciclo di verifica Cloudflare su alcuni portali (in sviluppo).** Su un numero
-  ridotto di portali — in genere aggregatori i cui link di lavoro escono tramite
-  un host di reindirizzamento ("clickout") — l'*elenco* si carica normalmente
-  nella Raccolta Assistita, ma aprendo la singola descrizione si può finire su
-  una pagina Cloudflare "Verify you are human" che continua a ripresentarsi
-  anche dopo aver spuntato la casella, rendendo quella descrizione illeggibile.
-  È un problema noto e una soluzione adeguata è in sviluppo. **Non** si risolve
-  riprovando in continuazione. Nel frattempo:
-  - Le offerte del portale (titoli, aziende e località mostrate nell'elenco)
-    vengono comunque raccolte e salvate; è irraggiungibile solo il testo
-    completo della descrizione.
-  - Le offerte interessate restano onestamente `Unknown` per sponsorizzazione/
-    trasferimento — mai un "No" indovinato — e riprendibili nella Raccolta
-    Assistita.
-  - Risolvere manualmente la verifica nel browser assistito a volte la supera;
-    se il ciclo continua, ferma quell'offerta (chiudendo la scheda bloccata la
-    salti) e prosegui. PacktoWorkEU non aggira CAPTCHA o verifiche di accesso.
-  - I link che reindirizzano verso una pagina di offerta *leggibile* su un
-    altro host (schema comune degli aggregatori) sono supportati quando la
-    pagina di destinazione mostra in modo dimostrabile la stessa offerta
-    selezionata.
-- **Alcune righe degli elenchi carriera inclusi puntano a pagine di
-  presentazione** invece che a un elenco di offerte ricercabile, quindi quelle
-  aziende possono riportare zero offerte. Aprire la vera pagina elenco offerte
-  dell'azienda e usarne l'URL in una Scansione Personalizzata aggira il problema.
-
 ## 🧰 Risoluzione Problemi
 
 **Il Pannello sembra vuoto dopo una scansione.** Clicca **Aggiorna**. Se è
@@ -1478,10 +1492,12 @@ senza bloccare le altre. Correggilo in **Gestione Dati**. Il pulsante di
 scansione non riscrive il seed e non cambia automaticamente gli URL.
 
 **Alcune aziende non hanno restituito offerte.** Controlla il log e il CSV
-degli errori del seed. `empty` **non dimostra** che il portale sia senza
-posizioni: potrebbe aver restituito una risposta diversa, non aver mostrato le
-card o aver presentato un errore esplicito del server (se osservato, viene
-registrato come `error`). Per i limiti attuali consulta [Risoluzione Problemi](#-risoluzione-problemi). Non dedurre una protezione
+degli errori del seed. `unverified_empty` significa che la scansione non è riuscita a leggere la
+bacheca; **non dimostra** che il portale sia senza posizioni: potrebbe aver
+restituito una risposta diversa, non aver mostrato le card o aver presentato un
+errore esplicito del server (se osservato, viene registrato come `error`). Un
+portale riportato `empty` ha dichiarato esplicitamente zero posizioni aperte.
+Se un portale non può essere letto, consulta [Risoluzione Problemi](#-risoluzione-problemi). Non dedurre una protezione
 anti-bot da un caricamento fallito e non aggirare eventuali verifiche.
 
 **La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
@@ -1649,7 +1665,7 @@ python -m pytest packtoworkeu/tests
 
 ## Altre informazioni
 
-- [Risoluzione Problemi](#-risoluzione-problemi) — bug attuali e limiti pratici.
+- [Risoluzione Problemi](#-risoluzione-problemi) — situazioni comuni e soluzioni.
 - [Guida al codice](PacktoWorkEU_codebase_guide.md) — architettura, formati,
   sviluppo e manutenzione.
 

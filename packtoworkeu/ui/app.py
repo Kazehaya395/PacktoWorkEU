@@ -360,10 +360,46 @@ class PacktoWorkEUApp(QMainWindow):
             self._set_status(_("Data review is applying. Wait for the backup/audit result before closing."))
             event.ignore()
             return
-        if self.tools_tab.coordinator.is_running():
-            self.tools_tab.coordinator.stop()
-            self._set_status(_("Stopping scan. Close the application again after the scan has stopped."))
-            event.ignore()
+        coordinator = self.tools_tab.coordinator
+        if coordinator.is_running():
+            # Task 34 (2026-11-17): close used to be impossible until the
+            # scan thread died, and a slow unwind trapped the user for
+            # 10-15 min. Now: first close requests the stop; while the
+            # graceful budget runs out, further closes just report the
+            # countdown; once the budget is spent, close offers a force
+            # close. Work already saved is never at risk (the live
+            # ingester commits as it goes); only the in-flight company's
+            # unwritten tail is left for Resume.
+            if not coordinator.is_stopping():
+                coordinator.stop()
+                self._set_status(_(
+                    "Stopping scan. In-flight work gets up to {0}s to "
+                    "finish; close again after that to force close.").format(
+                        int(coordinator.stop_grace_sec())))
+                event.ignore()
+                return
+            if not coordinator.stop_grace_exceeded():
+                remaining = max(0, int(coordinator.stop_grace_sec()
+                                       - coordinator.stopping_elapsed()))
+                self._set_status(_(
+                    "Still stopping ({0}s elapsed). Force close unlocks "
+                    "in about {1}s; saved jobs are kept.").format(
+                        int(coordinator.stopping_elapsed()), remaining))
+                event.ignore()
+                return
+            answer = QMessageBox.question(
+                self, _("Force close?"),
+                _("The scan is still stopping after {0}s.\n\n"
+                  "Force close now? Jobs already saved are kept; the "
+                  "in-flight company's unwritten tail will be picked up "
+                  "by Resume on the next run.").format(
+                      int(coordinator.stopping_elapsed())),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self._force_close()
+            event.accept()
             return
         # Never wait on the GUI thread for a network/SQLite worker to stop.
         assisted_idle = self.assisted_tab.shutdown(wait_ms=0)
@@ -384,6 +420,29 @@ class PacktoWorkEUApp(QMainWindow):
                 if loader is not None:
                     loader.close()
         super().closeEvent(event)
+
+    def _force_close(self):
+        """Hard exit once the stop grace is spent (Task 34, 2026-11-17).
+
+        A plain interpreter exit would join the scanners' thread pools
+        in atexit hooks -- exactly the unbounded wait being escaped --
+        so a short timer hard-exits the process moments after the
+        window closes. The scan worker is a daemon thread and every
+        committed row is already in the database; SQLite WAL recovery
+        covers the in-flight instant.
+        """
+        import os
+        import threading
+        self._closing = True
+        try:
+            self.tools_tab.coordinator.stop()
+        except Exception:  # noqa: BLE001 - force close must not fail
+            pass
+        threading.Timer(0.75, os._exit, args=(0,)).start()
+        try:
+            QApplication.instance().quit()
+        except Exception:  # noqa: BLE001 - the timer is the guarantee
+            pass
 
     # ── First-run ───────────────────────────────────────────────────────────
     def _check_first_run(self):

@@ -210,7 +210,11 @@ def test_launch_sites_share_policy_and_no_persistent_profiles():
     root=Path(__file__).parents[1]
     paths=['services/browser_fetcher.py','scanning/ats/ats_scanner.py','scanning/career/career_scanner.py','core/blocked_portals.py','main.py']
     source='\n'.join((root/p).read_text()for p in paths)
-    assert source.count('launch_chromium(')==9
+    # Bundle H (2026-11-19): the career scanner's four launches were
+    # consolidated into one headed-minimized helper, so the tree-wide
+    # count dropped 9 -> 6; every launch still goes through the
+    # central browser_policy.launch_chromium checked below.
+    assert source.count('launch_chromium(')==6
     assert '.chromium.launch(' not in source and 'launch_persistent_context'not in source
 
 

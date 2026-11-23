@@ -53,7 +53,7 @@ class ScanProgressState:
                 if isinstance(coverage, dict):
                     task['jd_inflight'] = max(0, int(event.get('inflight', 0)))
                     task['coverage'] = {k:max(0, int(coverage.get(k, 0))) for k in
-                                        ('observed', 'readable', 'thin', 'empty', 'failed', 'blocked', 'unattempted')}
+                                        ('observed', 'readable', 'thin', 'empty', 'failed', 'rate_limited', 'automatic_check', 'blocked', 'unattempted')}
         return self.snapshot()
 
     def snapshot(self):
@@ -62,8 +62,8 @@ class ScanProgressState:
         settled = min(total, self.base + sum(t['state'] == 'settled' for t in tasks))
         active = [t for t in tasks if t['state'] == 'active']
         coverage = {k:sum(t['coverage'].get(k, 0) for t in tasks) for k in
-                    ('observed', 'readable', 'thin', 'empty', 'failed', 'blocked', 'unattempted')}
-        checked = min(coverage['observed'], sum(coverage[k] for k in ('readable', 'thin', 'empty', 'failed', 'blocked')))
+                    ('observed', 'readable', 'thin', 'empty', 'failed', 'rate_limited', 'automatic_check', 'blocked', 'unattempted')}
+        checked = min(coverage['observed'], sum(coverage[k] for k in ('readable', 'thin', 'empty', 'failed', 'rate_limited', 'automatic_check', 'blocked')))
         rows = [dict(name=t['name'], stage=t['stage'], **t['coverage']) for t in active]
         return dict(total=total, settled=settled, lifecycle=self.lifecycle,
                     percent=min(99, int(settled*100/total)) if total else 0,

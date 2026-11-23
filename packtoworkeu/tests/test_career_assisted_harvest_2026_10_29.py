@@ -117,7 +117,7 @@ def test_no_route_family_is_transient_and_a_served_wall_is_not():
     durable = [
         "Cloudflare challenge page served instead of the job list",
         "HTTP 403 Forbidden",
-        "blocked by bot protection: WAF/CDN rejected automated HTTP and headless browser navigation",
+        "blocked by bot protection: WAF/CDN rejected automated HTTP and browser navigation",
         "429 Too Many Requests",
         "PerimeterX challenge: Press & Hold",
     ]

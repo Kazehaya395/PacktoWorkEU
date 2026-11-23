@@ -36,7 +36,10 @@ class _FakeResp:
 
 def _serve(monkeypatch, pages):
     """Serve `pages` (url -> html) for every urlopen call; unknown URLs fail."""
-    def fake_urlopen(req, timeout=None):
+    def fake_urlopen(req, timeout=None, context=None):
+        import ssl
+        assert context is not None and context.check_hostname
+        assert context.verify_mode == ssl.CERT_REQUIRED
         url = req.full_url if hasattr(req, "full_url") else str(req)
         if url not in pages:
             raise OSError(f"no fixture for {url}")

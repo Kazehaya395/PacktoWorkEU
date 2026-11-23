@@ -140,8 +140,9 @@ def test_job_country_never_uses_the_seed_target_country():
 
 def test_job_country_column_is_in_the_output_schema_and_filled():
     assert '"Job Location", "Job Country", "Raw Location"' in SRC
-    # Direct/recruiter finalization is now shared, not two copied loops.
-    assert SRC.count('_r["Job Country"] = _job_country_from_record(_r)') >= 1
+    # Direct/recruiter finalization is shared, not two copied loops.
+    # (The _r[...] variant lived in reprocess_csv, removed as dead code
+    # 2026-11-19 after a tree-wide reference check found no callers.)
     assert SRC.count('rec["Job Country"] = _job_country_from_record(rec)') >= 1
     assert 'finalize_job_csvs(' in SRC
 

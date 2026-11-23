@@ -35,9 +35,17 @@ def _safe_storage() -> bool:
 
 
 _driver_start_lock = threading.Lock()
+_private_temp_lock = threading.Lock()
+_private_temp_paths: dict[str, Path] = {}
 
 
 def private_temp_dir(*, create=True):
+    """Serialize marker setup so concurrent browser checks cannot race it."""
+    with _private_temp_lock:
+        return _private_temp_dir(create=create)
+
+
+def _private_temp_dir(*, create=True):
     """Short Unix socket paths, owned by this UID/account; never arbitrary paths."""
     if os.name=='nt':
         path=state_dir()/'runtime/tmp'
@@ -49,7 +57,8 @@ def private_temp_dir(*, create=True):
     uid=os.getuid()
     identity=str(state_dir().absolute())
     digest=hashlib.sha256(identity.encode('utf-8')).hexdigest()[:10]
-    path=Path('/tmp').resolve()/f'packtoworkeu-{uid}-{digest}'
+    base=Path('/tmp').resolve()/f'packtoworkeu-{uid}-{digest}'
+    path=_private_temp_paths.get(identity, base)
     marker=path/'.packtoworkeu-owner'
     created=False
     if not path.exists() and not is_link(path):
@@ -60,7 +69,21 @@ def private_temp_dir(*, create=True):
     stat=path.stat()
     if stat.st_uid!=uid or stat.st_mode & 0o077:raise ValueError('Browser temp folder must be private to this account')
     if created:
-        marker.write_text(identity,encoding='utf-8')
+        # Exclusive creation never follows a marker symlink.
+        with marker.open('x', encoding='utf-8') as stream:
+            stream.write(identity)
+    elif not is_link(marker) and (not marker.exists() or
+            (marker.is_file() and marker.read_text(encoding='utf-8') != identity)):
+        # An interrupted older startup (or a temp cleaner) can leave a private
+        # directory without a valid marker. Never adopt/delete its contents. Use
+        # a fresh OS-created 0700 directory and remember it for this process.
+        if not create:
+            return None
+        path=Path(tempfile.mkdtemp(prefix=base.name+'-', dir=str(base.parent)))
+        marker=path/'.packtoworkeu-owner'
+        with marker.open('x', encoding='utf-8') as stream:
+            stream.write(identity)
+        _private_temp_paths[identity]=path
     if is_link(marker) or not marker.is_file() or marker.read_text(encoding='utf-8')!=identity:
         raise ValueError('Browser temp folder ownership could not be confirmed')
     return path

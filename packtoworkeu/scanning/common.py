@@ -296,16 +296,33 @@ def sleep_interruptible(seconds: float, cancel_event: threading.Event | None = N
     return True
 
 
-def tls_context() -> ssl.SSLContext:
-    """Create a verified SSLContext using OS truststore when available."""
+def tls_context(url: str = "") -> ssl.SSLContext:
+    """Verified OS trust, with chain completion for two exact vanity hosts.
+
+    An intermediate must chain to an independently trusted root: partial-chain
+    trust is disabled for this context. No network certificate retrieval or
+    hostname/verification bypass occurs here.
+    """
     try:
         import truststore
         ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
-        return ctx
     except Exception:
-        return ssl.create_default_context()
+        ctx = ssl.create_default_context()
+    from urllib.parse import urlsplit
+    from packtoworkeu.scanning.tls_intermediates import INTERMEDIATES
+    try:
+        parsed = urlsplit(url)
+        pem = (INTERMEDIATES.get(parsed.hostname)
+               if parsed.scheme == "https" and not parsed.username and not parsed.password
+               and parsed.port in (None, 443) else None)
+    except ValueError:
+        pem = None
+    if pem:
+        ctx.load_verify_locations(cadata=pem)
+        ctx.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
+    return ctx
 
 
 def workday_spaced_location(raw: str) -> str | None:
@@ -375,6 +392,13 @@ def is_transient_transport_failure(*messages) -> bool:
     ))
 
 
+def contradicted_zero(diagnostics):
+    """A portal-reported positive total conflicts with a zero-row harvest."""
+    import re
+    text = diagnostics if isinstance(diagnostics,str) else ' | '.join(map(str,diagnostics or ()))
+    return bool(re.search(r'\bstated (?:job )?total\s+[1-9][\d,]*\s+exceeds\s+(?:harvested\s+)?0\b',text,re.I))
+
+
 def completion_status(found: int,error: str = '',diagnostics=()) -> str:
     import re
     if str(error or '').startswith('ScanCancelled:'):
@@ -383,9 +407,25 @@ def completion_status(found: int,error: str = '',diagnostics=()) -> str:
         return 'partial' if found else 'error'
     if not found:
         text=' | '.join([diagnostics] if isinstance(diagnostics,str) else map(str,diagnostics or []))
+        if contradicted_zero(text):
+            return 'unverified_empty'
         if re.search(r'(?i)JSONDecodeError|(?:API|provider)[^|]*(?:invalid JSON|malformed response|failed to decode)|listing incomplete:|listing[^|]*time budget[^|]*exhausted',text):
             return 'error'
-        return 'empty'
+        # Fix F-S (2026-11-19): "empty" requires POSITIVE proof (the
+        # page stated zero vacancies, or a provider total of 0). A
+        # dead end -- no cards matched our selectors -- is reported
+        # as unverified_empty, never as an empty board. Run
+        # 20261119T012312 labelled 7 portals "empty" on selector
+        # misses alone (3 of them client-rendered join.com boards).
+        if re.search(r'(?:^|\|)\s*verified empty:', text, re.I):
+            return 'empty'
+        if any(re.fullmatch(r'\s*API returned 0 jobs\s*',str(piece),re.I)
+               for piece in ([diagnostics] if isinstance(diagnostics,str) else diagnostics or [])):
+            return 'empty'
+        if 'dead end: no job cards' in text or 'listing completeness unverified' in text or 'not a verified empty' in text:
+            return 'unverified_empty'
+        # Absence of rows is not positive evidence of an empty source.
+        return 'unverified_empty'
     pieces = [diagnostics] if isinstance(diagnostics,str) else list(diagnostics or [])
     listing = ' | '.join(str(piece) for piece in pieces if not re.search(
         r'(?i)^(?:\[?detail\]?|jd enrichment|enrichment activity|detail activity|verification snapshot:)',str(piece)))

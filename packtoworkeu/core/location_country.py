@@ -80,7 +80,7 @@ COUNTRY_NAMES: dict[str, str] = {
     "belgium": "Belgium", "brazil": "Brazil", "bulgaria": "Bulgaria",
     "canada": "Canada", "chile": "Chile", "china": "China",
     "colombia": "Colombia", "croatia": "Croatia", "cyprus": "Cyprus",
-    "czech republic": "Czech Republic", "czechia": "Czech Republic",
+    "czech republic": "Czech Republic", "czechia": "Czech Republic", "czech": "Czech Republic",
     "denmark": "Denmark", "estonia": "Estonia", "finland": "Finland",
     "france": "France", "germany": "Germany", "deutschland": "Germany",
     "greece": "Greece", "hungary": "Hungary", "india": "India",
@@ -124,6 +124,12 @@ COUNTRY_NAMES: dict[str, str] = {
 
 # ── City → Country ────────────────────────────────────────────────────────────
 CITY_TO_COUNTRY: dict[str, str] = {
+    # 2026-11-16 (fix A): cities observed failing in user runs 20261114/15
+    # (GeoNames keys only the long official forms, e.g. "Klagenfurt am
+    # Worthersee"; Tainan is CN/TW-ambiguous in GeoNames but is Taiwan).
+    "klagenfurt": "Austria", "makati": "Philippines",
+    "tainan": "Taiwan", "leicester": "United Kingdom",
+    "cheltenham": "United Kingdom",
     # Netherlands
     "amsterdam": "Netherlands", "rotterdam": "Netherlands",
     "the hague": "Netherlands", "den haag": "Netherlands",
@@ -535,6 +541,37 @@ def _strip_postal(seg: str) -> str:
     return new if new else seg
 
 
+# 2026-11-16 (fix A): UK counties/metro regions seen verbatim in job
+# locations ("Greater London", "Bolton, Greater Manchester", "East
+# Sussex") -- none are GeoNames cities500 keys, all are unambiguously UK.
+_UK_REGION_TO_COUNTRY: dict[str, str] = {
+    "greater london": "United Kingdom", "greater manchester": "United Kingdom",
+    "west Midlands": "United Kingdom", "east Midlands": "United Kingdom",
+    "west midlands": "United Kingdom", "east sussex": "United Kingdom",
+    "west sussex": "United Kingdom", "north yorkshire": "United Kingdom",
+    "south yorkshire": "United Kingdom", "west yorkshire": "United Kingdom",
+    "east riding of yorkshire": "United Kingdom",
+    "northamptonshire": "United Kingdom", "leicestershire": "United Kingdom",
+    "lincolnshire": "United Kingdom", "nottinghamshire": "United Kingdom",
+    "derbyshire": "United Kingdom", "staffordshire": "United Kingdom",
+    "worcestershire": "United Kingdom", "warwickshire": "United Kingdom",
+    "gloucestershire": "United Kingdom", "oxfordshire": "United Kingdom",
+    "buckinghamshire": "United Kingdom", "berkshire": "United Kingdom",
+    "hampshire": "United Kingdom", "dorset": "United Kingdom",
+    "wiltshire": "United Kingdom", "somerset": "United Kingdom",
+    "devon": "United Kingdom", "cornwall": "United Kingdom",
+    "kent": "United Kingdom", "essex": "United Kingdom",
+    "hertfordshire": "United Kingdom", "surrey": "United Kingdom",
+    "middlesex": "United Kingdom", "cheshire": "United Kingdom",
+    "lancashire": "United Kingdom", "merseyside": "United Kingdom",
+    "tyne and wear": "United Kingdom", "county durham": "United Kingdom",
+    "northumberland": "United Kingdom", "cumbria": "United Kingdom",
+    "norfolk": "United Kingdom", "suffolk": "United Kingdom",
+    "cambridgeshire": "United Kingdom", "bedfordshire": "United Kingdom",
+    "shropshire": "United Kingdom", "herefordshire": "United Kingdom",
+    "rutland": "United Kingdom", "isle of wight": "United Kingdom",
+}
+
 def country_from_location(location: str, fallback: str = "") -> str:
     """
     Derive the job's actual country from its raw ATS location string.
@@ -615,7 +652,12 @@ def country_from_location(location: str, fallback: str = "") -> str:
     # "Frankfurt am Main") are never split.
     parts: list[str] = []
     for chunk in work.split(","):
-        for sub in re.split(r"\s+(?:[-–]|/)\s+", chunk):
+        # 2026-11-16 (fix A): also split UNSPACED compounds -- "Lisbon/Porto"
+        # and pipe lists ("remote|koeln|darmstadt|berlin") never split on the
+        # spaced pattern, so their country was lost (VWDS rows in run
+        # 20261114T180547). The guarded GeoNames intersection below still
+        # decides: only a unique shared country resolves.
+        for sub in re.split(r"\s+(?:[-–]|/)\s+|\s*\|\s*|(?<=[a-z\u00e0-\u00ff])/(?=[a-z\u00e0-\u00ff])", chunk):
             s = _strip_postal(sub.strip())
             if s:
                 parts.append(s)
@@ -643,6 +685,39 @@ def country_from_location(location: str, fallback: str = "") -> str:
             # a known city, fall through to the ISO2 lookup below.
             if prev_city in CITY_TO_COUNTRY:
                 return CITY_TO_COUNTRY[prev_city]
+            # (2026-11-17) The curated dict is small; GeoNames is not.
+            # When the preceding segment is a place that exists ONLY in
+            # the US, the code is a US state, not the ISO country:
+            # "Mobile, AL" is Alabama, not Albania; "Rehoboth Beach,
+            # DE" is Delaware, not Germany; "Castle Rock, CO" is
+            # Colorado, not Colombia. A trailing generic suffix
+            # ("Mobile Area, AL") is stripped for the lookup. Genuinely
+            # multi-country places (Venice, Edinburgh) keep the ISO
+            # reading below.
+            try:
+                from packtoworkeu.core.place_index import (
+                    place_country_candidates as _pcc,
+                    explicit_country_name as _ecn)
+                _prev = re.sub(r"\s+(area|region|district|zone)$", "",
+                               prev_city).strip()
+                # Also drop trailing venue words: "Chicago Fashion
+                # Outlet, IL" is Chicago, not Israel.
+                _variants = [_prev, prev_city]
+                _words = _prev.split()
+                while len(_words) > 1:
+                    _words = _words[:-1]
+                    _variants.append(" ".join(_words))
+                for _cand in dict.fromkeys(_variants):
+                    # A country-named segment is not the city: in
+                    # "Berlin, Belgium, DE" the DE is Germany, even
+                    # though a US town happens to be named Belgium.
+                    if _ecn(_cand):
+                        continue
+                    _cands = _pcc(_cand)
+                    if len(_cands) == 1 and _cands[0] == "US":
+                        return "United States"
+            except Exception:
+                pass
             # Otherwise treat as ISO2 country
             if part_lower in ISO2_TO_COUNTRY:
                 return ISO2_TO_COUNTRY[part_lower]
@@ -671,7 +746,18 @@ def country_from_location(location: str, fallback: str = "") -> str:
         part_lower = part.lower().strip()
         # Strip "Hybrid -" prefix etc.
         cleaned = re.sub(r"^(hybrid|remote|onsite|flexible)\s*[-–/]\s*", "", part_lower).strip()
+        # (2026-11-17) "Greater Toronto" is Toronto: boards prefix
+        # metro areas with Greater, which no gazetteer entry carries
+        # (Agilent's Canada-remote row stayed country-Unknown).
+        _bare = re.sub(r"^greater\s+", "", cleaned)
+        if _bare != cleaned:
+            if _bare in CITY_TO_COUNTRY:
+                return CITY_TO_COUNTRY[_bare]
+            if _bare in COUNTRY_NAMES:
+                return COUNTRY_NAMES[_bare]
         for cand in (cleaned, part_lower):
+            if cand in _UK_REGION_TO_COUNTRY:
+                return _UK_REGION_TO_COUNTRY[cand]
             if cand in CITY_TO_COUNTRY:
                 return CITY_TO_COUNTRY[cand]
             if cand in COUNTRY_NAMES:
@@ -681,6 +767,12 @@ def country_from_location(location: str, fallback: str = "") -> str:
 
     # ── 7. Lookup on the whole stripped string ────────────────────────────────
     stripped = re.sub(r"^(hybrid|remote|onsite|flexible)\s*[-–/]\s*", "", work).strip()
+    if stripped.startswith("greater "):
+        _bare = stripped[len("greater "):]
+        if _bare in CITY_TO_COUNTRY:
+            return CITY_TO_COUNTRY[_bare]
+        if _bare in COUNTRY_NAMES:
+            return COUNTRY_NAMES[_bare]
     if stripped in CITY_TO_COUNTRY:
         return CITY_TO_COUNTRY[stripped]
     if stripped in COUNTRY_NAMES:

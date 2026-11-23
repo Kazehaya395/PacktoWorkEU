@@ -280,7 +280,10 @@ def test_existing_artifact_backfill_never_reopens_dismissed(database,tmp_path,mo
         writer=csv.DictWriter(fh,fieldnames=['Seed Name','Seed URL','Jobs Found','Error'])
         writer.writeheader()
         writer.writerows([{'Seed Name':name,'Seed URL':f'https://{name}.invalid/jobs',
-                           'Jobs Found':'10','Error':'blocked access: 1 unresolved response(s)'}
+                           # Bundle Q (2026-11-19): details-scope queueing
+                           # requires >= 2 unresolved responses; the 1-response
+                           # form no longer backfills (single-incident rule).
+                           'Jobs Found':'10','Error':'blocked access: 2 unresolved response(s)'}
                           for name in ('missing','dismissed')])
     db.enqueue_blocked_portals(database,[dict(seed_name='dismissed',url='https://dismissed.invalid/jobs',access_scope='details')],'OLD')
     db.update_blocked_portal(database,'https://dismissed.invalid/jobs',status='dismissed')

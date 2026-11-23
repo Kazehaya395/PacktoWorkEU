@@ -4,6 +4,7 @@ requests>=2.31.0,<3.0.0
 # Use the OS certificate store (Windows/macOS) for HTTPS, so sites whose
 # intermediate CA is only in the OS store (Spendesk, 2026-10-19) verify.
 truststore>=0.9.0
+regex>=2024.11.6
 # JS-rendered career-portal crawling / DOM fallback + per-job detail scan.
 playwright>=1.49.0,<2.0.0
 # PySide6 desktop GUI (QtCore/QtGui/QtWidgets). Use the Essentials package:
@@ -14,9 +15,3 @@ PySide6-Essentials>=6.5.0
 # produce the bundle.
 pyinstaller>=6.0.0
 
-# Dev/test-only deps (pytest) are NOT here — install them with:
-#   pip install ".[dev]"
-# Explicitly-removed runtime deps (verified unused by the shipped package):
-#   pandas, Pillow, beautifulsoup4, lxml, pytest
-# They were only used by legacy code under `extra_for_dev_purpose` (not bundled)
-# or by the test suite; keeping them grew the venv/bundle for no benefit.

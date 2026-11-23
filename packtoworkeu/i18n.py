@@ -1446,7 +1446,7 @@ _SCAN_WORK_PROGRESS = {
     'Portals settled: {done}/{total} · pending retries: {retry}': 'Portali conclusi: {done}/{total} · nuovi tentativi in attesa: {retry}',
     'Listing/provider workers: {listing} · JD workers: {jd}': 'Attività elenco/provider: {listing} · attività descrizioni: {jd}',
     'JD candidates classified: {checked}/{observed} currently observed': 'Candidati descrizioni classificati: {checked}/{observed} attualmente rilevati',
-    'Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · blocked: {blocked} · unattempted: {unattempted}': 'Leggibili: {readable} · brevi: {thin} · vuoti: {empty} · falliti: {failed} · bloccati: {blocked} · non tentati: {unattempted}',
+    'Readable: {readable} · thin: {thin} · empty: {empty} · failed: {failed} · rate limited: {rate_limited} · automatic check: {automatic_check} · blocked: {blocked} · unattempted: {unattempted}': 'Leggibili: {readable} · brevi: {thin} · vuoti: {empty} · falliti: {failed} · limite richieste: {rate_limited} · verifica automatica: {automatic_check} · bloccati: {blocked} · non tentati: {unattempted}',
     'Reading JDs': 'Lettura descrizioni',
     'Listing/provider collection (may include JD reads)': 'Raccolta elenco/provider (può includere letture descrizioni)',
     '{company} — {stage} · JD candidates: {checked}/{total}': '{company} — {stage} · candidati descrizioni: {checked}/{total}',
@@ -1564,7 +1564,7 @@ _ACCESS_OUTCOME_UI_IT = {
     'Final JD outcomes: {checked}/{observed} classified; {unattempted} not attempted. Readable full descriptions: {readable}/{observed} ({readable_percent}%). No JD workers are running.': 'Esiti JD finali: {checked}/{observed} classificati; {unattempted} non tentati. Descrizioni complete leggibili: {readable}/{observed} ({readable_percent}%). Nessun processo JD in esecuzione.',
     'Classification includes readable, thin, empty, failed and blocked outcomes. It is not the percentage of readable descriptions. Unattempted is not proof of blocked access. Saved jobs are retained.': 'La classificazione comprende esiti leggibili, brevi, vuoti, falliti e bloccati. Non indica la percentuale di descrizioni leggibili. Non tentato non prova un blocco di accesso. Le offerte salvate sono conservate.',
     'Select a queue row to read the full access reason and latest result.': 'Seleziona una riga per leggere il motivo completo e l’ultimo risultato.',
-    'Job descriptions: access unresolved. Saved records do not prove listing completeness. {reason}': 'Descrizioni: accesso non risolto. Le offerte salvate non provano la completezza dell’elenco. {reason}',
+    'Job details only: the scanner read the listing but could not read some descriptions. {reason}': 'Solo dettagli: lo scanner ha letto l’elenco, ma non alcune descrizioni. {reason}',
     'Listing access unresolved. This does not mean there are no vacancies. {reason}': 'Accesso all’elenco non risolto. Non significa che non ci siano offerte. {reason}',
 }
 for _key,_value in _ACCESS_OUTCOME_UI_IT.items():
@@ -1605,7 +1605,7 @@ _ITALIAN_TERMINOLOGY_REVIEW = {
 LANGUAGES['it'].update(_ITALIAN_TERMINOLOGY_REVIEW)
 
 # Repeat-scan policy: all new visible text has an explicit Italian translation.
-_INCREMENTAL_REFRESH_IT = {'Read saved descriptions again (next new run only)': 'Rileggi le descrizioni salvate (solo prossima nuova esecuzione)', 'Usually leave this off. Repeat scans revisit listings and reuse confirmed descriptions from the last 24 hours unless observed job details changed. This option requests new detail reads within the selected scope; access checks and limits still apply. Resume keeps the original campaign policy.': 'Normalmente lascia questa opzione disattivata. Le scansioni successive ricontrollano gli elenchi e riutilizzano le descrizioni confermate nelle ultime 24 ore, salvo modifiche osservate nell’offerta. Questa opzione richiede nuove letture per le aziende selezionate; restano validi controlli di accesso e limiti. Riprendi mantiene la regola della scansione originale.', 'Read saved descriptions again for this new run? This can take longer. Saved text is retained if a fresh read fails. Availability checks are separate.': 'Rileggere le descrizioni salvate per questa nuova esecuzione? Potrebbe richiedere più tempo. Se una nuova lettura non riesce, il testo salvato viene conservato. I controlli di disponibilità sono separati.', 'Read descriptions again?': 'Rileggere le descrizioni?', 'Counts cover observed jobs, not all jobs on inaccessible listings. Blocked and inconclusive are subsets of unread/unresolved; unattempted jobs are not called blocked.': 'I conteggi riguardano le offerte osservate, non tutte quelle di elenchi inaccessibili. Bloccate e inconcludenti sono comprese tra le non lette/irrisolte; le offerte non tentate non vengono indicate come bloccate.', 'Observed jobs — new: {new}; already saved: {existing}.': 'Offerte osservate — nuove: {new}; già salvate: {existing}.', 'Descriptions — reused: {reused}; read afresh: {fresh}; unread/unresolved: {pending} (blocked: {blocked}; inconclusive: {inconclusive}).': 'Descrizioni — riutilizzate: {reused}; lette nuovamente: {fresh}; non lette/irrisolte: {pending} (bloccate: {blocked}; inconcludenti: {inconclusive}).', 'Counts are partial: some observations could not be tracked.': 'Conteggi parziali: non è stato possibile registrare alcune osservazioni.', 'Job availability': 'Disponibilità delle offerte'}
+_INCREMENTAL_REFRESH_IT = {'Read saved descriptions again (next new run only)': 'Rileggi le descrizioni salvate (solo prossima nuova esecuzione)', 'Usually leave this off. Repeat scans revisit listings and reuse confirmed descriptions from the last 24 hours unless observed job details changed. This option requests new detail reads within the selected scope; access checks and limits still apply. Resume keeps the original campaign policy.': 'Normalmente lascia questa opzione disattivata. Le scansioni successive ricontrollano gli elenchi e riutilizzano le descrizioni confermate nelle ultime 24 ore, salvo modifiche osservate nell’offerta. Questa opzione richiede nuove letture per le aziende selezionate; restano validi controlli di accesso e limiti. Riprendi mantiene la regola della scansione originale.', 'Read saved descriptions again for this new run? This can take longer. Saved text is retained if a fresh read fails. Availability checks are separate.': 'Rileggere le descrizioni salvate per questa nuova esecuzione? Potrebbe richiedere più tempo. Se una nuova lettura non riesce, il testo salvato viene conservato. I controlli di disponibilità sono separati.', 'Read descriptions again?': 'Rileggere le descrizioni?', 'Counts cover observed jobs, not all jobs on inaccessible listings. Blocked and inconclusive are subsets of unread/unresolved; unattempted jobs are not called blocked.': 'I conteggi riguardano le offerte osservate, non tutte quelle di elenchi inaccessibili. Bloccate e inconcludenti sono comprese tra le non lette/irrisolte; le offerte non tentate non vengono indicate come bloccate.', 'Observed jobs — new: {new}; already saved: {existing}.': 'Offerte osservate — nuove: {new}; già salvate: {existing}.', 'Descriptions — reused: {reused}; read afresh: {fresh}; without confirmed reuse or fresh save: {pending} (blocked: {blocked}; rate limited: {rate_limited}; automatic check: {automatic_check}; inconclusive: {inconclusive}).': 'Descrizioni — riutilizzate: {reused}; lette nuovamente: {fresh}; senza riutilizzo o nuovo salvataggio confermato: {pending} (bloccate: {blocked}; limite richieste: {rate_limited}; verifica automatica: {automatic_check}; inconcludenti: {inconclusive}).', 'Counts are partial: some observations could not be tracked.': 'Conteggi parziali: non è stato possibile registrare alcune osservazioni.', 'Job availability': 'Disponibilità delle offerte'}
 for _key, _value in _INCREMENTAL_REFRESH_IT.items():
     LANGUAGES['en'][_key] = _key
     LANGUAGES['it'][_key] = _value
@@ -1644,3 +1644,48 @@ _BROWSER_SETUP_IT = {
 }
 LANGUAGES['it'].update(_BROWSER_SETUP_IT)
 LANGUAGES['en'].update({key:key for key in _BROWSER_SETUP_IT})
+
+_SCAN_ACTIONS_IT = {
+    'Only the listed ATS/career targets will run. The count is portals, not missing descriptions.': 'Verranno eseguite solo le fonti ATS/carriere elencate. Il conteggio indica i portali, non le descrizioni mancanti.',
+    'Review unresolved descriptions': 'Esamina le descrizioni mancanti',
+    'Listing complete. Some saved postings have no readable full description. No scan will start.': 'Elenco completo. Alcuni annunci salvati non hanno una descrizione completa leggibile. Non verrà avviata alcuna scansione.',
+    'Retry incomplete results': 'Riprova risultati incompleti',
+    'These are saved-description tracking counts. The results bar counts readable descriptions for portal observations; a readable result is not necessarily a confirmed fresh save.': 'Questi conteggi riguardano il salvataggio delle descrizioni. La barra conta le descrizioni leggibili per portale, non solo i nuovi salvataggi confermati.',
+    'Resume interrupted scan': 'Riprendi scansione interrotta',
+    'Retry unsuccessful portals': 'Riprova portali non completati',
+    'Start a new scan of {count} partial, unverified-empty or failed portals from {run}?': 'Avviare una nuova scansione dei {count} portali parziali, senza offerte confermate o con errori della scansione {run}?',
+}
+LANGUAGES['it'].update(_SCAN_ACTIONS_IT)
+LANGUAGES['en'].update({key:key for key in _SCAN_ACTIONS_IT})
+
+_SCAN_STOP_IT = {
+    'Action needed: job-detail verification at {url} — please solve the check in Chromium, close the detail tab to skip this posting, or stop.': 'Verifica richiesta per l’annuncio su {url}: completa la verifica in Chromium, chiudi la scheda per saltare questo annuncio oppure interrompi la scansione.',
+    'Force close?': 'Forzare la chiusura?',
+    'Still stopping ({0}s elapsed). Force close unlocks in about {1}s; saved jobs are kept.': 'Arresto in corso da {0} s. Puoi forzare la chiusura tra circa {1} s. Gli annunci salvati vengono conservati.',
+    'Stopping scan. In-flight work gets up to {0}s to finish; close again after that to force close.': 'Arresto della scansione in corso. Attendi fino a {0} s per il completamento delle operazioni, poi chiudi di nuovo per forzare la chiusura.',
+    "The scan is still stopping after {0}s.\n\nForce close now? Jobs already saved are kept; the in-flight company's unwritten tail will be picked up by Resume on the next run.": 'Arresto ancora in corso dopo {0} s.\n\nForzare la chiusura? Gli annunci già salvati vengono conservati. Con Riprendi, la prossima scansione riprenderà il lavoro non salvato per l’azienda in corso.',
+}
+LANGUAGES['it'].update(_SCAN_STOP_IT)
+LANGUAGES['en'].update({key:key for key in _SCAN_STOP_IT})
+
+_ROLE_SKILLS_IT = {
+    'Regex mode needs the regex package. Use Role match or Wildcard, or install it with the Python interpreter that launches the app.':'La modalità Regex richiede il pacchetto regex. Usa Corrispondenza ruolo o Caratteri jolly, oppure installalo con l’interprete Python che avvia l’app.',
+    'Skills by job title':'Competenze per titolo di lavoro',
+    'Enter a job title, e.g. Analyst or SDE':'Inserisci un titolo, ad es. Analyst o SDE',
+    'Role match':'Corrispondenza ruolo', 'Wildcard':'Caratteri jolly',
+    'Role: words or known aliases. Wildcard: * and ? across the whole title. Regex: search inside titles.':'Ruolo: parole o alias noti. Caratteri jolly: * e ? sull’intero titolo. Regex: cerca nei titoli.',
+    'Include unverified legacy descriptions (at least 200 characters)':'Includi descrizioni precedenti non verificate (almeno 200 caratteri)',
+    'Select a skill for up to five examples from saved descriptions.':'Seleziona una competenza per vedere fino a cinque esempi dalle descrizioni salvate.',
+    'Technical skills mentioned':'Competenze tecniche menzionate', 'Soft skills mentioned':'Competenze trasversali menzionate',
+    'Analyzing matching postings…':'Analisi degli annunci corrispondenti…',
+    'Search active, non-expired postings using the country and source above.':'Cerca negli annunci attivi e non scaduti usando il paese e la fonte selezionati sopra.',
+    'Invalid title pattern.':'Espressione per il titolo non valida.', 'Pattern took too long. Simplify it.':'Espressione troppo lenta. Semplificala.',
+    'Could not analyze saved postings: {reason}':'Impossibile analizzare gli annunci salvati: {reason}',
+    'No matching active job titles.':'Nessun titolo attivo corrispondente.',
+    '{matched} matched · {analyzed} analyzed · {excluded} excluded. Available: {proven} capture-verified, {legacy} unverified legacy.':'{matched} corrispondenti · {analyzed} analizzati · {excluded} esclusi. Disponibili: {proven} con acquisizione verificata, {legacy} precedenti non verificati.',
+    'Matched titles (up to 12): ':'Titoli corrispondenti (fino a 12): ',
+    'No eligible descriptions for this selection.':'Nessuna descrizione idonea per questa selezione.',
+    'No technical or soft skills recognized in the analyzed descriptions.':'Nessuna competenza tecnica o trasversale riconosciuta nelle descrizioni analizzate.',
+}
+LANGUAGES['it'].update(_ROLE_SKILLS_IT)
+LANGUAGES['en'].update({k:k for k in _ROLE_SKILLS_IT})

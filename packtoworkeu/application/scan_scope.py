@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -35,6 +36,118 @@ def read_targets(path, selected=None):
             seen.add(key)
             out.append(row)
     return out
+
+
+def share_career_targets(rows):
+    """Share exact equivalent routes after selection, before saving a new plan.
+
+    Include every non-display field: never let one alias donate another's
+    filters, employer type, scores, notes, or provider configuration.
+    """
+    out, groups = [], {}
+    for source in rows:
+        row = dict(source)
+        alias = row.get('seed_name') or row.get('name')
+        key = tuple(sorted((k,v) for k,v in row.items() if k not in ('name','seed_name')))
+        if not row.get('careers_url') or key not in groups:
+            out.append(row)
+            groups[key] = row
+            continue
+        first = groups[key]
+        aliases = json.loads(first.get('shared_seed_names') or '[]') or [first.get('seed_name') or first.get('name')]
+        if alias not in aliases:
+            first['shared_seed_names'] = json.dumps(aliases + [alias],ensure_ascii=False)
+    return out
+
+
+def _completed_listing_review(row):
+    """A reconciled search with missing descriptions is not a failed portal crawl."""
+    from packtoworkeu.scanning.common import completion_status
+    if row['status'] != 'partial' or row['error'] or row['scanner'] not in ('career','ats'):
+        return None
+    pieces = [p.strip() for p in (row['diagnostics'] or '').split(' | ')]
+    census = [m for p in pieces if (m := re.fullmatch(r'AMS search: (\d+) distinct posting IDs on (\d+) page\(s\)', p))]
+    coverage = [dict(re.findall(r'(\w+)=(\d+)', p)) for p in pieces if p.startswith('JD coverage:')]
+    if len(coverage)!=1:
+        return None
+    ats_source_short = False
+    if row['scanner'] == 'ats':
+        # Only direct nonempty Workday API descriptions with a reconciled
+        # listing census qualify. Failed/unattempted reads remain retryable.
+        listings = [re.fullmatch(r'Workday listing complete: observed=(\d+); total=(\d+)', p) for p in pieces]
+        listings = [m for m in listings if m]
+        captures = [re.fullmatch(r'Workday descriptions captured: nonempty=(\d+)', p) for p in pieces]
+        captures = [m for m in captures if m]
+        observed = int(coverage[0].get('observed',0))
+        if (len(listings)!=1 or listings[0][1]!=listings[0][2] or
+                len(captures)!=1 or int(captures[0][1])!=observed or
+                any(int(v) for k,v in coverage[0].items() if k not in ('observed','readable','thin'))):
+            return None
+        ats_source_short = True
+    elif len(census)!=1:
+        return None
+    counts = {k:int(v) for k,v in coverage[0].items()}
+    observed = counts.pop('observed',0); readable = counts.pop('readable',0)
+    if (not observed or (not ats_source_short and int(census[0][1]) != observed) or row['jobs_found'] != observed
+            or observed-readable != sum(counts.values()) or observed <= readable):
+        return None
+    if completion_status(observed, diagnostics=[p for p in pieces if not p.startswith('JD coverage incomplete:')]) != 'ok':
+        return None
+    # Keep explicit transport problems, access walls and unfinished work retryable.
+    if any(v for k,v in counts.items() if k not in ('thin','empty','failed')) or any(
+            re.search(r'timeout|timed out|connection reset|http_status=(?:429|5\d\d)\b',p,re.I)
+            for p in pieces if p.startswith('response evidence:')):
+        return None
+    return (row['seed_name'] or row['company'], observed, readable,
+            {k:v for k,v in counts.items() if v},
+            [p.partition(': ')[2] for p in pieces if p.startswith('response evidence:') or (ats_source_short and p.startswith('Workday descriptions captured:'))])
+
+
+def retry_plan(db_path, run_id, *, reasons=None, reviews=None):
+    """New campaign using only final unsuccessful routes of a finished run."""
+    run = db.get_scan_run(db_path, run_id)
+    if not run or run['status'] not in ('completed','partial','error'):
+        return None
+    plan = load_plan(db_path, run_id)
+    if plan is None:
+        return None
+    conn = db.get_connection(db_path)
+    try:
+        from packtoworkeu.scanning.common import contradicted_zero
+        import re
+        states = {}
+        for r in conn.execute('SELECT scanner,seed_name,company,target_country,seed_url,status,jobs_found,error,diagnostics FROM scan_log WHERE run_id=? ORDER BY id',(run_id,)):
+            key = (r['scanner'],target_key(dict(r)))
+            status = r['status']; diag = r['diagnostics'] or ''
+            conflict = not r['jobs_found'] and contradicted_zero(diag)
+            if conflict and status == 'empty': status = 'unverified_empty'
+            review = _completed_listing_review(r)
+            if reviews is not None:
+                reviews.pop(key, None)
+                if review: reviews[key] = review
+            states[key] = 'detail_review' if review else status
+            if reasons is not None:
+                coverage = re.findall(r'JD coverage: ([^|\n]+)',diag)
+                parts = dict(re.findall(r'(\w+)=(\d+)',coverage[-1])) if coverage else {}
+                if conflict: why = 'zero harvested; reported total is positive'
+                elif status=='unverified_empty': why = 'zero harvested; empty listing not verified'
+                elif r['error']: why = str(r['error']).splitlines()[0][:180]
+                elif parts and int(parts.get('observed',0))>int(parts.get('readable',0)):
+                    why = ', '.join(f'{k}: {v}' for k,v in parts.items() if k not in ('observed','readable') and int(v))
+                else: why = 'listing or detail coverage incomplete'
+                notes = []
+                if 'shared detail time budget exhausted' in diag: notes.append('detail time limit reached')
+                if 'LIST budget reached' in diag: notes.append('listing also stopped before its last page')
+                if parts.get('unattempted','0') != '0' and 'budget_skipped=' in diag: notes.append('previously unread postings remain')
+                if notes: why += ' — ' + '; '.join(notes)
+                reasons[key] = (status,why)
+
+    finally:
+        conn.close()
+    result = dict(plan, retry_of=run_id)
+    for phase in ('ats','career'):
+        result[phase] = [r for r in plan[phase] if states.get((phase,target_key(r))) in ('error','partial','unverified_empty')]
+    return result if result['ats'] or result['career'] else None
 
 
 def save_plan(db_path, run_id, plan):
@@ -97,7 +210,7 @@ def settled_targets(db_path, run_id):
                 db.reconcile_scan_log_from_artifacts(db_path, run_id)
             except Exception:
                 pass
-            for row in conn.execute("SELECT scanner,seed_name,company,target_country,seed_url,status,error FROM scan_log WHERE run_id=? AND status IN ('ok','partial','empty','error')", (run_id,)):
+            for row in conn.execute("SELECT scanner,seed_name,company,target_country,seed_url,status,error FROM scan_log WHERE run_id=? AND status IN ('ok','partial','empty','error','unverified_empty')", (run_id,)):
                 if (row['status'] or '').strip().casefold() == 'error' \
                         and is_transient_transport_failure(row['error'] or ''):
                     continue
