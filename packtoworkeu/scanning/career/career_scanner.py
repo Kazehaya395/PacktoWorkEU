@@ -797,6 +797,14 @@ class ProductionScannerConfig:
         r"responsable|second|cuisinier|chef de partie|gestionnaire|ing[ée]nieur|"
         r"technicien|conseiller|vendeur|pr[ée]parateur|commis|plongeur|"
         r"responsabile|cuoco|cameriere|addetto|tecnico|magazziniere|"
+        # Keep the Python title/location gate aligned with the Italian role
+        # nouns already recognized by JS_HELPERS. A city suffix must not turn
+        # "Farmacista - Firenze" into a location-only metadata line.
+        r"farmacist[ai]|infermier[ei]|fisioterapist[ai]|educator[ei]|insegnant[ei]|"
+        r"ingegner[ei]|sviluppator[ei]|programmator[ei]|progettist[ai]|"
+        r"cassier[ei]|commess[oaie]|scaffalist[ai]|macella[io]|panettier[ei]|"
+        r"pasticcer[ei]|salumier[ei]|pescivendol[oi]|elettricist[ai]|"
+        r"idraulic[oi]|meccanic[oi]|autist[ai]|carrellist[ai]|"
         # 2026-10-19 (round 10c, LOOP "Photographer" is a real Senior Photographer
         # posting, rejected as taxonomy because no role word matched its slug).
         r"photographer|videographer|cameraman|illustrator|copywriter|translator|"
@@ -1702,6 +1710,7 @@ from packtoworkeu.scanning.common import (
     check_cancelled,
     check_control,
     sleep_interruptible,
+    tls_context,
 )
 from packtoworkeu.scanning.jd_support import (
         JDSupportDetector,
@@ -2665,6 +2674,11 @@ def _static_accept_language(seed_url):
     """Local-language-first Accept-Language for the raw HTTP fast path."""
     host = (urlparse(seed_url or "").hostname or "").lower()
     path = (urlparse(seed_url or "").path or "").lower()
+    if host == 'careers.unicredit.eu' and path == '/':
+        # This root negotiates supported region tags: en-US followed by de
+        # redirected an English scan to German. Request its published English
+        # representation, without changing the saved URL or job filters.
+        return 'en-GB,en;q=0.92'
     pairs = []
     # A locale path identifies the requested representation, not the job country.
     path_locale = re.search(r'(?:^|/)(de|it|nl|sv|fr|en)(?:-[a-z]{2})?(?:/|$)', path)
@@ -2788,18 +2802,33 @@ def _static_fetch_html(url, timeout_sec, lang):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": lang,
         })
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec, context=tls_context(url)) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
-            if "html" not in ctype and "xml" not in ctype:
+            ikea_json = (urlparse(url).netloc == 'jobs.ikea.com' and urlparse(url).path == '/en/search-jobs/results' and 'application/json' in ctype)
+            if "html" not in ctype and "xml" not in ctype and not ikea_json:
                 return ""
             raw = resp.read(4_000_000)
         charset = "utf-8"
         m = re.search(r"charset=([\w-]+)", ctype)
         if m:
             charset = m.group(1)
-        return raw.decode(charset, "replace")
+        decoded = raw.decode(charset, "replace")
+        if ikea_json:
+            payload = json.loads(decoded)
+            return payload['results'] if payload.get('hasJobs') is True and isinstance(payload.get('results'), str) else ''
+        return decoded
+    except ScanCancelled:
+        raise
     except Exception as exc:
-        return ListingDiagnostic('',needs_dom=True,block_reason=http_error_reason(exc))
+        import ssl
+        reason = getattr(exc, 'reason', exc)
+        code = getattr(exc, 'code', None)
+        result = ListingDiagnostic('',needs_dom=True,block_reason=http_error_reason(exc))
+        result.fetch_error = f'{type(exc).__name__}: ' + ' '.join(str(exc).split())[:250]
+        result.retryable = (not result.block_reason and not isinstance(reason, ssl.SSLCertVerificationError)
+                            and (code in (500, 502, 503, 504) or
+                                 (code is None and isinstance(reason, (TimeoutError, ConnectionError, OSError)))))
+        return result
 _RAW_HTML_CHALLENGE_RE = re.compile(
     r"(?:<title[^>]*>\s*(?:just a moment\.{0,3}|even geduld\.{0,3}|access denied|"
     r"attention required!\s*\|\s*cloudflare|human verification|robot check|403 forbidden)\s*</title>"
@@ -2824,6 +2853,13 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
     to the browser path. That is what makes this safe: it changes how bytes
     are obtained, never what counts as a job.
     """
+    if checkpoint:
+        checkpoint()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return [], ListingDiagnostic('listing incomplete: static deadline exhausted before initial request',complete=False,needs_dom=False)
+        timeout_sec = min(timeout_sec, remaining)
     if min_jobs is None:
         min_jobs = _STATIC_MIN_JOBS
     host = (urlparse(seed_url).hostname or "").lower()
@@ -2838,7 +2874,7 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
             # serve localised markup, and the titles must survive.
             "Accept-Language": _static_accept_language(seed_url),
         })
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec, context=tls_context(seed_url)) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if "html" not in ctype and "xml" not in ctype:
                 return [], f"static: non-HTML content-type ({ctype[:40]})"
@@ -2859,11 +2895,40 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
     if _raw_html_is_bot_challenge(html):
         return [], ListingDiagnostic("static: blocked (bot challenge HTML); browser fallback will report what it sees",needs_dom=True,block_reason=challenge_reason(html))
     from packtoworkeu.scanning.career.large_boards import TABLE_HOSTS,result_range,lux_listing
+    from packtoworkeu.scanning.career.successfactors_tiles import matches as tile_matches, listing as tile_listing
+    from packtoworkeu.scanning.career.italian_paged import matches as paged_matches, listing as paged_listing
+    retries_left = [3]
+    def fetch_next(u):
+        # Retry a transient failure once at the same offset (at most three
+        # retries per listing); check the deadline before either attempt.
+        for attempt in range(2):
+            if checkpoint: checkpoint()
+            remaining = deadline - time.monotonic() if deadline is not None else timeout_sec
+            if remaining <= 0:
+                stopped = ListingDiagnostic('', needs_dom=False)
+                stopped.fetch_error = 'listing deadline exhausted'
+                return stopped
+            page = _static_fetch_html(u, min(timeout_sec, remaining), _static_accept_language(seed_url))
+            if page:
+                if not _raw_html_is_bot_challenge(page): return page
+                stopped = ListingDiagnostic('', needs_dom=True, block_reason=challenge_reason(page))
+                stopped.fetch_error = stopped.block_reason
+                return stopped
+            if not getattr(page, 'retryable', False) or attempt == 1 or retries_left[0] <= 0: return page
+            retries_left[0] -= 1
+        return page
+    if tile_matches(seed_url) and 'j2w.SearchResults.init' in html:
+        return tile_listing(seed_url, html, fetch_next, checkpoint or (lambda: None))
+    from packtoworkeu.scanning.career.italian_paged import angelini_empty
+    empty = angelini_empty(seed_url, html)
+    if empty is not None:
+        return empty
+    if paged_matches(seed_url):
+        return paged_listing(seed_url, html, fetch_next, checkpoint or (lambda: None))
+    from packtoworkeu.scanning.career.ikea_published import matches as ikea_matches, listing as ikea_listing
+    if ikea_matches(seed_url):
+        return ikea_listing(seed_url, html, fetch_next, checkpoint or (lambda: None))
     if host in TABLE_HOSTS and urlparse(seed_url).path == '/search/' and result_range(html):
-        def fetch_next(u):
-            if deadline is not None and time.monotonic() >= deadline: return ''
-            page=_static_fetch_html(u,timeout_sec,_static_accept_language(seed_url))
-            return page if page and not _raw_html_is_bot_challenge(page) else ''
         return lux_listing(seed_url,html,fetch_next,checkpoint or (lambda:None), **(cursor_io or {}))
     # Hydration shell. FIX P28: before handing the company to the browser,
     # read the hydration payload itself -- it is the job list, already
@@ -2900,6 +2965,11 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
             if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
                 continue
             absolute = urljoin(page_url, href)
+            # A link to the listing itself (including #content) is not a
+            # vacancy. Keep explicitly identified synthetic job fragments.
+            if '#job=' not in absolute.lower() and absolute.split('#')[0].rstrip('/') in {
+                    seed_url.split('#')[0].rstrip('/'), page_url.split('#')[0].rstrip('/')}:
+                continue
             if absolute in seen:
                 continue
             card_title, card_loc = _static_card_fields(inner_markup)
@@ -2937,13 +3007,18 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
     _static_block = ""
     while _pages < _STATIC_MAX_PAGES:
         _next = _static_next_page_url(_page_html, _page_url)
-        if not _next or _next in _visited:
+        if not _next:
+            break
+        if _next in _visited:
+            _interrupted='next static page repeats an already visited URL'
             break
         _visited.add(_next)
-        _page_html = _static_fetch_html(_next, timeout_sec, _lang)
+        _page_html = fetch_next(_next)
         if not _page_html or _raw_html_is_bot_challenge(_page_html):
             _static_block=getattr(_page_html,'block_reason','') or challenge_reason(_page_html)
             _interrupted='next static page was blocked' if _static_block else 'next static page could not be read'
+            if getattr(_page_html,'fetch_error',''):
+                _interrupted += ': ' + _page_html.fetch_error
             break
         _pages += 1
         if _collect(_page_html, _next) == 0:
@@ -2959,7 +3034,7 @@ def fetch_static_jobs(seed_url, timeout_sec=8, min_jobs=None,
         _more = f"; page cap {_STATIC_MAX_PAGES} reached, board has more pages"
         return jobs,ListingDiagnostic(f"static HTML: {len(jobs)} ({_pages} page(s){_more}); listing incomplete: observed forward page remains",needs_dom=True,complete=False,expected_total=stated_job_total(html))
     if _interrupted:
-        return jobs,ListingDiagnostic(f'static HTML: {len(jobs)} ({_pages} page(s)); listing incomplete: {_interrupted}',needs_dom=True,block_reason=_static_block,complete=False)
+        return jobs,ListingDiagnostic(f'static HTML: {len(jobs)} ({_pages} page(s)); listing incomplete: {_interrupted}',needs_dom=not (getattr(_page_html,'fetch_error','') and not _static_block),block_reason=_static_block,complete=False)
     continuation = listing_continuation(_page_html,len(jobs))
     if continuation:
         return jobs,ListingDiagnostic(f"static HTML: {len(jobs)} ({_pages} page(s){_more}); listing incomplete: {continuation}",needs_dom=True,complete=False,expected_total=stated_job_total(html))
@@ -4870,7 +4945,7 @@ class CareerPortalScanner:
             try:
                 req = urllib.request.Request(url, data=data, headers=headers,
                                              method="POST" if data is not None else "GET")
-                with urllib.request.urlopen(req, timeout=self.config.HTTP_TIMEOUT_SEC) as resp:
+                with urllib.request.urlopen(req, timeout=self.config.HTTP_TIMEOUT_SEC, context=tls_context(url)) as resp:
                     raw = resp.read().decode("utf-8", "replace")
                 _block=challenge_reason(raw,subject='detail')
                 if _block:
@@ -4980,7 +5055,7 @@ class CareerPortalScanner:
                 self._detail_state.results.pop(key, None)
                 self._detail_state.metadata.pop(key, None)
 
-    def store_captured_jd(self, url, text, *, authoritative=False):
+    def store_captured_jd(self, url, text, *, authoritative=False, primary_proven=False):
         """Persist captured full JD text in memory for SQLite ingestion."""
         if not url or not text:
             return
@@ -4996,13 +5071,18 @@ class CareerPortalScanner:
         store = getattr(self, "_captured_jds", None)
         if lock is None or store is None:
             return
+        from packtoworkeu.scanning.career.large_boards import SUCCESSFACTORS_DETAIL_HOSTS, detail_host
+        from packtoworkeu.scanning.career.italian_paged import unicredit_id
+        replace_proven = authoritative and (primary_proven or unicredit_id(url) or self._oracle_detail_route(url) or self._ams_uuid(url)
+            or emply_ad(url) or (urlparse(url).netloc in SUCCESSFACTORS_DETAIL_HOSTS and detail_host(url))
+            or (urlparse(url).netloc in ('www.ferrerocareers.com', 'jobs.ikea.com') and detail_host(url)))
         with lock:
             existing = store.get(key, "")
-            if (authoritative and (self._oracle_detail_route(url) or self._ams_uuid(url) or emply_ad(url))) or len(cleaned) > len(existing):
+            if replace_proven or len(cleaned) > len(existing):
                 store[key] = cleaned
             identity = posting_identity(key)
             aliases = getattr(self,'_captured_jd_identities',None)
-            if aliases is not None and ((authoritative and (self._oracle_detail_route(url) or self._ams_uuid(url) or emply_ad(url))) or len(cleaned)>len(aliases.get(identity,''))):
+            if aliases is not None and (replace_proven or len(cleaned)>len(aliases.get(identity,''))):
                 aliases[identity] = cleaned
         if authoritative:
             from packtoworkeu.core.saved_details import remember_capture
@@ -5020,6 +5100,13 @@ class CareerPortalScanner:
             alias = getattr(self,'_captured_jd_identities',{}).get(posting_identity(url),'')
             text = exact if len(exact)>=len(alias) else alias
         from packtoworkeu.core.saved_details import capture_proof
+        # A longer legacy URL variant must not hide the shorter, hash-proven
+        # authoritative body captured for this same posting identity.
+        if not capture_proof(self, url, text):
+            for candidate in (exact, alias):
+                if capture_proof(self, url, candidate):
+                    text = candidate
+                    break
         reader = getattr(self, '_saved_jd_reader', None)
         saved_urls = getattr(self, '_saved_capture_urls', {}).get(posting_identity(url), set())
         if (saved_urls and callable(getattr(reader, 'rejects_previous', None))
@@ -5090,8 +5177,10 @@ class CareerPortalScanner:
         last_notice = -100.0
         try:
             while True:
+                check_cancelled(self.cancel_event)
                 if self._browser_sem.acquire(timeout=1.0):
                     acquired = True
+                    check_cancelled(self.cancel_event)
                     break
                 check_cancelled(self.cancel_event)
                 waited = time.monotonic() - wait_t0
@@ -5238,7 +5327,7 @@ class CareerPortalScanner:
         slow retry wave held the whole shutdown. Returns None when no
         cancel is in flight (normal completion joins as before).
         """
-        if self.cancel_event is None or not self.cancel_event.is_set():
+        if getattr(self, "cancel_event", None) is None or not self.cancel_event.is_set():
             return None
         grace = getattr(self.config, "STOP_JOIN_GRACE_SEC", 75) or 75
         deadline = getattr(self, "_stop_join_deadline_at", None)
@@ -8831,7 +8920,7 @@ class CareerPortalScanner:
                 "Accept": "text/html,application/xhtml+xml,*/*",
             })
             with urllib.request.urlopen(
-                    req, timeout=self.config.PROVIDER_SNIFF_TIMEOUT_SEC) as resp:
+                    req, timeout=self.config.PROVIDER_SNIFF_TIMEOUT_SEC, context=tls_context(url)) as resp:
                 html = resp.read(400000).decode("utf-8", "replace")
                 final = resp.geturl() or url
         except Exception:
@@ -9316,11 +9405,28 @@ class CareerPortalScanner:
             return [], "oracle API skipped: no site code in careers_url"
         headers = {"User-Agent": "Mozilla/5.0 Chrome/126 Safari/537.36",
                    "Accept": "application/json"}
+        from packtoworkeu.scanning.career.oracle_public import VANITY_HOSTS, published_api
+        vanity = (p.hostname or '').lower() in VANITY_HOSTS
+        if vanity:
+            from urllib.parse import parse_qs
+            if p.query and parse_qs(p.query, keep_blank_values=True) != {'mode': ['location']}:
+                return [], 'listing incomplete: filtered Oracle vanity search requires DOM; filters not dropped'
+        origin = f'{p.scheme}://{p.netloc}'
+        total = None
+        if vanity and not check_control(self.cancel_event, self.pause_event):
+            try:
+                origin, site = published_api(self._http_fetch_with_retry(seed, {
+                    **headers, 'Accept': 'text/html'}))
+            except ScanCancelled:
+                raise
+            except Exception as exc:
+                return [], f'listing incomplete: Oracle public shell unavailable ({type(exc).__name__}); falling back to DOM'
         jobs, offset = [], 0
+        seen_ids = set()
         while offset < 2000:
             if check_control(self.cancel_event, self.pause_event):
                 break
-            api = (f"{p.scheme}://{p.netloc}/hcmRestApi/resources/latest/"
+            api = (f"{origin}/hcmRestApi/resources/latest/"
                    f"recruitingCEJobRequisitions?onlyData=true"
                    f"&expand=requisitionList.secondaryLocations"
                    f"&finder=findReqs;siteNumber={site},limit=200,offset={offset}")
@@ -9332,7 +9438,20 @@ class CareerPortalScanner:
             if not raw.lstrip().startswith(("{", "[")):
                 return [], "oracle API returned non-JSON; falling back to DOM"
             data = json.loads(raw)
-            items = (data.get("items") or [{}])[0].get("requisitionList") or []
+            feed = (data.get("items") or [{}])[0]
+            items = feed.get("requisitionList") or []
+            if vanity:
+                published = feed.get('TotalJobsCount')
+                if (type(published) is not int or published < 0 or feed.get('SiteNumber') != site
+                        or feed.get('Offset') != offset or (total is not None and total != published)
+                        or not isinstance(items, list)):
+                    return jobs, 'listing incomplete: Oracle public count/site/offset mismatch'
+                total = published
+                ids = [str(it.get('Id') or '') for it in items if isinstance(it, dict)]
+                if (len(ids) != len(items) or any(not re.fullmatch(r'(?:\d+|IRC\d+)', i) for i in ids)
+                        or len(set(ids)) != len(ids) or seen_ids.intersection(ids)):
+                    return jobs, 'listing incomplete: Oracle duplicate or invalid requisition IDs'
+                seen_ids.update(ids)
             if not items:
                 break
             for it in items:
@@ -9352,6 +9471,12 @@ class CareerPortalScanner:
             if len(items) < 200:
                 break
             offset += 200
+        if vanity:
+            if total is None or len(jobs) != total:
+                return jobs, f'listing incomplete: Oracle public API retained {len(jobs)} of {total} postings'
+            if total == 0:
+                return jobs, 'verified empty: Oracle public API reports zero requisitions'
+            return jobs, f'Oracle public API: {len(jobs)} distinct requisitions reconciled'
         return jobs, f"oracle API: {len(jobs)}"
     def _fetch_bamboohr_jobs(self, target_row):
         """BambooHR public board. Mirrors ats_scanner.scan_bamboohr exactly.
@@ -9904,6 +10029,20 @@ class CareerPortalScanner:
         # host so `provider=auto` seeds are covered without a seed edit.
         _host = urlparse((target_row.get("careers_url") or "")).netloc.lower()
         seed=target_row.get('careers_url') or ''
+        from packtoworkeu.scanning.career.generali import matches as generali_board, jobs as generali_jobs
+        if generali_board(seed):
+            def checkpoint():
+                check_cancelled(self.cancel_event)
+                if check_control(self.cancel_event,self.pause_event):raise ScanCancelled('stopped during Generali listing')
+            return generali_jobs(lambda u:self._http_fetch_with_retry(u,{'User-Agent':'Mozilla/5.0','Accept':'application/json'}),
+                                 checkpoint,time.monotonic()+self.config.LIST_TIME_BUDGET_SEC)
+        from packtoworkeu.scanning.career.bulgari import matches as bulgari_board, jobs as bulgari_jobs
+        if bulgari_board(seed):
+            def checkpoint():
+                check_cancelled(self.cancel_event)
+                if check_control(self.cancel_event,self.pause_event):raise ScanCancelled('stopped during Bulgari listing')
+            return bulgari_jobs(seed,lambda u,h,b:self._http_fetch_with_retry(u,h,post_body=b),
+                               checkpoint,time.monotonic()+self.config.LIST_TIME_BUDGET_SEC)
         if seed.rstrip('/')=='https://lavoro.lidl.it/annunci-di-lavoro':
             from packtoworkeu.scanning.career.large_boards import lidl_jobs
             def checkpoint():
@@ -12443,7 +12582,29 @@ class CareerPortalScanner:
                 return cleaned
         return ""
 
-    def _remember_detail_html(self,url,html,transport="parsed response",status=0):
+    def _remember_detail_html(self,url,html,transport="parsed response",status=0,final_url=None):
+        from packtoworkeu.scanning.career.italian_paged import unicredit_id, unicredit_detail
+        if unicredit_id(url):
+            proven = unicredit_detail(url, final_url or url, html)
+            if proven:
+                self.store_captured_jd(url, proven[0], authoritative=True)
+                self._detail_state.put(url, proven, metadata={'listing':False,'titles':[]})
+                self._detail_state.observe(url, proven[0], transport=transport, status=status)
+                return proven
+            self._detail_state.observe(url, kind='empty', transport=transport, status=status,
+                reason='UniCredit primary sections or requisition identity unproven')
+            return '', '', ''
+        from packtoworkeu.scanning.career.large_boards import SUCCESSFACTORS_DETAIL_HOSTS, proven_detail
+        if urlparse(url).netloc in SUCCESSFACTORS_DETAIL_HOSTS | {'www.ferrerocareers.com', 'jobs.ikea.com'}:
+            proven = proven_detail(url, final_url or url, html)
+            if proven:
+                self.store_captured_jd(url, proven[0], authoritative=True)
+                self._detail_state.put(url, proven, metadata={'listing':False,'titles':[]})
+                self._detail_state.observe(url, proven[0], transport=transport, status=status)
+                return proven
+            self._detail_state.observe(url, kind='empty', transport=transport, status=status,
+                reason='no complete canonical-matched SuccessFactors description container')
+            return '', '', ''
         if emply_ad(url):
             text = emply_description(url, html)
             self._detail_state.observe(url, text, transport=transport, status=status,
@@ -12451,6 +12612,13 @@ class CareerPortalScanner:
             if len(text) >= self.JD_BROWSER_THIN_CHARS:
                 self.store_captured_jd(url, text, authoritative=True)
             return text, '', ''
+        from packtoworkeu.scanning.career.primary_capture import primary_capture
+        primary = primary_capture(url, final_url or url, html)
+        if primary:
+            self.store_captured_jd(url, primary[0], authoritative=True, primary_proven=True)
+            self._detail_state.put(url, primary, metadata={'listing':False,'titles':[]})
+            self._detail_state.observe(url, primary[0], transport=transport, status=status)
+            return primary
         _parse_t0 = time.monotonic()
         result = self._parse_detail_html(html)
         listing = self._page_looks_like_listing(html,url) and not re.search(r'(?i)[\"\']JobPosting[\"\']',html)
@@ -13074,7 +13242,7 @@ class CareerPortalScanner:
             if _block:
                 self._note_detail_failure(url,_block,blocked=True,transport='browser',status=page._last_nav_status,title=str((getattr(page,'_ss_current_detail_snapshot',None)or{}).get('title')or''))
                 return None
-            result = self._remember_detail_html(url,page.content() or '',transport='browser',status=page._last_nav_status)
+            result = self._remember_detail_html(url,page.content() or '',transport='browser',status=page._last_nav_status,final_url=getattr(page, 'url', url))
             if result and result[0]:
                 self._forget_saved_capture(url)
                 self.store_captured_jd(url,result[0])
@@ -13097,23 +13265,50 @@ class CareerPortalScanner:
         except ScanCancelled:
             raise
         except Exception as exc:
-            self._note_detail_failure(url,f'{stage} failed ({type(exc).__name__})', transport='browser')
+            self._note_detail_failure(url,f'browser detail read failed ({type(exc).__name__}): {str(exc)[:350]}', transport='browser')
             return None
     @staticmethod
     def _oracle_detail_route(url):
-        if '.oraclecloud.com/' not in str(url).lower():
+        p = urlparse(str(url))
+        if p.scheme != 'https' or p.username or p.password or p.port not in (None,443):
             return None
-        p = urlparse(url)
-        m = re.fullmatch(r'/hcmUI/CandidateExperience/[\w-]+/sites/([\w-]+)/job/(\d+)/?', p.path, re.I)
-        if not m or p.scheme != 'https' or not (p.hostname or '').endswith('.oraclecloud.com') or p.username or p.password:
+        host = (p.hostname or '').lower()
+        if host.endswith('.oraclecloud.com'):
+            pattern = r'/hcmUI/CandidateExperience/[\w-]+/sites/([\w-]+)/job/((?:\d+|IRC\d+))/?'
+        elif host in {'jobs.eni.com','carriere.posteitaliane.it'}:
+            # These official vanity domains publish Oracle Candidate Experience
+            # routes. Keep the same HTTPS origin and exact requisition ID.
+            pattern = r'/[\w-]+/sites/([\w-]+)/job/((?:\d+|IRC\d+))/?'
+        else:
+            return None
+        m = re.fullmatch(pattern, p.path, re.I)
+        if not m:
             return None
         site, rid = m.groups()
-        return (f'https://{p.hostname}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails'
+        return (f'https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails'
                 f'?finder=ById;Id={rid},siteNumber={site}', rid)
 
     def _oracle_jd(self, url, route):
         api, rid = route
         try:
+            from packtoworkeu.scanning.career.oracle_public import VANITY_HOSTS, published_api
+            if (urlparse(url).hostname or '').lower() in VANITY_HOSTS:
+                # A vanity server need not proxy /hcmRestApi. Read its public
+                # shell rather than guessing a tenant or accepting a 200 HTML 404.
+                # Cache only successful public base resolution within this scan.
+                key = urlparse(url).netloc + urlparse(url).path.rsplit('/job/', 1)[0]
+                with self._detail_host_lock:
+                    cache = getattr(self, '_oracle_public_bases', {})
+                    base = cache.get(key)
+                if base is None:
+                    base = published_api(self._cxs_fetch(url))
+                    with self._detail_host_lock:
+                        if not hasattr(self, '_oracle_public_bases'):
+                            self._oracle_public_bases = {}
+                        self._oracle_public_bases[key] = base
+                origin, site = base
+                api = (f'{origin}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails'
+                       f'?finder=ById;Id={rid},siteNumber={site}')
             payload = json.loads(self._cxs_fetch(api))
             matches = [item for item in payload.get('items', []) if isinstance(item, dict)
                        and str(item.get('Id', '')) == rid]
@@ -13194,7 +13389,7 @@ class CareerPortalScanner:
                           "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
             "Accept": "application/json",
         })
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=12, context=tls_context(url)) as resp:
             text=resp.read().decode("utf-8", "replace")
         reason=challenge_reason(text,subject='detail')
         if reason:raise BlockedResponseError(reason,**response_metadata(text,status=getattr(resp,"status",0)))
@@ -13216,7 +13411,7 @@ class CareerPortalScanner:
                                "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"),
                 "Accept": "text/html,application/xhtml+xml,*/*",
             })
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=8, context=tls_context(url)) as resp:
                 final_url = resp.geturl() if callable(getattr(resp,'geturl',None)) else ''
                 html = resp.read(2_000_000).decode("utf-8", "replace")
                 _http_status=getattr(resp,"status",0) or 0
@@ -13230,7 +13425,7 @@ class CareerPortalScanner:
             if _block:
                 self._note_detail_failure(url,_block,blocked=True,**getattr(exc,'response_evidence',{}))
             else:
-                self._note_detail_failure(url, f"HTTP fetch failed ({_code or type(exc).__name__})",
+                self._note_detail_failure(url, f"HTTP fetch failed ({_code or type(exc).__name__}): {str(exc)[:350]}",
                     transport='http', status=_code or 0)
             return "", "", ""
         finally:
@@ -13251,7 +13446,7 @@ class CareerPortalScanner:
             self.store_captured_jd(url,result[0],authoritative=True)
             self._detail_state.put(url,result,metadata={'listing':False,'titles':[]})
             return result
-        return self._remember_detail_html(url,html,transport="http",status=_http_status)
+        return self._remember_detail_html(url,html,transport="http",status=_http_status,final_url=final_url)
     _WORKABLE_JOB_RE = re.compile(
         r"^https?://(?:apply\.)?workable\.com/(?:([A-Za-z0-9_.-]+)/)?j/([A-Za-z0-9]+)", re.I)
     def _workable_jd(self, url):
@@ -13270,13 +13465,13 @@ class CareerPortalScanner:
         try:
             if not account:
                 # Short /j/<code> links redirect to /<account>/j/<code>.
-                with urllib.request.urlopen(urllib.request.Request(url, headers=ua), timeout=12) as resp:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=ua), timeout=12, context=tls_context(url)) as resp:
                     fm = self._WORKABLE_JOB_RE.match(resp.geturl() or "")
                     account = fm.group(1) if fm else None
                 if not account:
                     return ("", "", "")
             api = f"https://apply.workable.com/api/v2/accounts/{account}/jobs/{shortcode}"
-            with urllib.request.urlopen(urllib.request.Request(api, headers=ua), timeout=12) as resp:
+            with urllib.request.urlopen(urllib.request.Request(api, headers=ua), timeout=12, context=tls_context(api)) as resp:
                 text=resp.read().decode("utf-8", "replace")
             reason=challenge_reason(text,subject='detail')
             if reason:raise BlockedResponseError(reason,**response_metadata(text,status=getattr(resp,"status",0)))
@@ -14024,7 +14219,7 @@ class CareerPortalScanner:
             # target's diagnostics so any exported artifact can be tied
             # to the exact code that produced it (audits of runs
             # 20261117-19 could not prove which fixes were installed).
-            diagnostics = ['build: verification-fixes-2026-11-19 (F-S/F-T/F-L/F-B/F-J/F-ST) + queue-transport-2026-11-19 (Q/T/F/W) + interactive-admission-v2 + posting-geography-v1 + native-boards-214749']
+            diagnostics = ['build: verification-fixes-2026-11-19 (F-S/F-T/F-L/F-B/F-J/F-ST) + queue-transport-2026-11-19 (Q/T/F/W) + interactive-admission-v2 + posting-geography-v1 + native-boards-214749 + italian-run-191847-v1 + installed-223903-v1 + italian-remaining-v3 + career-reliability-v1']
             if target_row.get('shared_seed_names'):
                 diagnostics.append('shared seed names: ' + target_row['shared_seed_names'])
             diagnostics.append('effective budgets: '+json.dumps({key:getattr(self.config,key,None) for key in (
@@ -14415,6 +14610,8 @@ class CareerPortalScanner:
                 rec = base_record(raw_title, clean_title, raw_location, clean_url)
                 if method == "ams_search_api" and job.get("ams_employer"):
                     rec["Hiring Company"] = job["ams_employer"]
+                if job.get('observed_hiring_company'):
+                    rec['Hiring Company'] = job['observed_hiring_company']
                 _policy = (target_row.get("scope_policy") or "global").lower()
                 _tc = (target_row.get("target_country") or "Global").strip()
                 if _policy == "seed_url" and _tc.casefold() != "global":
@@ -14535,7 +14732,7 @@ class CareerPortalScanner:
                         _static_jobs, _static_diag = fetch_static_jobs(
                             seed_url,
                             url_validator=self.is_valid_job_url,
-                            title_validator=self.is_valid_job_title, checkpoint=static_checkpoint,
+                            title_validator=lambda title,url:self.is_valid_job_title(title,name,url), checkpoint=static_checkpoint,
                             cursor_io=cursor_io(self.output_csv,self.run_id,getattr(self,"_parent_scan",None),seed_url),
                             deadline=started+min(self.config.LIST_TIME_BUDGET_SEC,self.config.MAX_COMPANY_TIME_SEC),
                         )
@@ -14559,13 +14756,24 @@ class CareerPortalScanner:
                         # server-rendered listing AND shows no sign of a
                         # client-rendered job list.
                         _kept = sum(1 for j in _static_jobs if process_job(j))
-                        if _kept >= _STATIC_MIN_JOBS and not getattr(_static_diag,"needs_dom",False):
+                        _proven_census = getattr(_static_diag, 'complete', None) is True
+                        _transport_partial = (getattr(_static_diag, 'complete', None) is False
+                                              and not getattr(_static_diag, 'needs_dom', True))
+                        if (_kept >= _STATIC_MIN_JOBS or _proven_census or (_kept and _transport_partial)) and not getattr(_static_diag,"needs_dom",False):
                             provider_success = True
-                            diagnostics.append(f"static accepted: {_kept} kept")
+                            diagnostics.append(
+                                f"static retained without DOM restart: {_kept} kept; listing remains incomplete"
+                                if getattr(_static_diag, 'complete', None) is False
+                                else f"static accepted: {_kept} kept")
                         else:
                             diagnostics.append(
                                 f"static retained {_kept} accepted observation(s); "
                                 f"continuing with normal DOM traversal")
+                    elif (getattr(_static_diag, 'complete', None) is True
+                          and getattr(_static_diag, 'expected_total', None) == 0
+                          and not getattr(_static_diag, 'needs_dom', False)):
+                        provider_success = True
+                        diagnostics.append('verified empty: explicit static publisher zero; no DOM restart')
                 # Browser fallback only when no provider data was available.
                 if not provider_success:
                     if sync_playwright is None:

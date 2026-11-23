@@ -129,13 +129,12 @@
 "Billie GmbH","https://www.billie.io/en/jobs","auto",0,"direct_employer","Germany","seed_url","Professional Services",70,90,50,
 "BioMed X GmbH","https://bio.mx/apply/","auto",0,"direct_employer","Germany","seed_url","Technology / Automotive",70,90,50,
 "Klarna AG","https://www.klarna.com/careers/","auto",0,"direct_employer","Germany","seed_url","Energy",70,85,45,"Canonical Klarna row (own careers site, browser crawl). ATS-seed deel row removed 2026-11-10 - deel has no ATS adapter."
-"Siemens AG","https://jobs.siemens.com/","auto",0,"direct_employer","Germany","seed_url","Automotive",70,90,45,
 "SAP SE","https://jobs.sap.com/search/","auto",0,"direct_employer","Germany","seed_url","Insurance",70,90,50,
 "BMW AG","https://www.bmwgroup.jobs/en.html","auto",0,"direct_employer","Germany","seed_url","Banking",70,90,50,
 "Microsoft Deutschland GmbH","https://careers.microsoft.com/us/en","auto",0,"direct_employer","Germany","seed_url","Automotive",70,85,40,
 "Mimacom Deutschland GmbH","https://www.mimacom.com/en/","auto",0,"direct_employer","Germany","seed_url","Pharmaceutical / Chemical",70,90,45,
 "Mondu GmbH","https://www.mondu.ai/careers","auto",0,"direct_employer","Germany","seed_url","Sporting Goods",70,90,50,
-"Novartis AG","https://www.novartis.com/careers/career-search","auto",0,"direct_employer","Germany","seed_url","Aviation",70,85,40,
+"Novartis AG","https://www.novartis.com/careers/career-search?search_api_fulltext=&op=Submit&field_job_posted_date=All","auto",0,"direct_employer","Germany","seed_url","Aviation",70,85,40,
 "Robert Bosch GmbH","https://www.bosch.com/de/en/websites-worldwide/","auto",0,"direct_employer","Germany","seed_url","Automotive",70,90,45,
 "Tesla Germany","https://www.tesla.com/careers","auto",0,"direct_employer","Germany","seed_url","Consumer Goods",70,85,45,
 "Delivery Hero Holding GmbH","https://careers.deliveryhero.com/","auto",0,"direct_employer","Germany","seed_url","Automotive",70,85,45,
@@ -148,7 +147,7 @@
 "Deloitte","https://jobs2.deloitte.com/de/de","auto",0,"direct_employer","Germany","seed_url","Chemical / Flavor",70,85,45,
 "PwC","https://jobs.pwc.de/de/de/search-results","auto",0,"direct_employer","Germany","seed_url","Consumer Goods",70,85,45,
 "KPMG","https://jobs.kpmg.de/?currentPage=1&pageSize=10","auto",0,"direct_employer","Germany","seed_url","Chemical",70,85,45,
-"Bosch","https://www.bosch-career.com/de/","auto",0,"direct_employer","Germany","seed_url","Construction Materials",70,80,40,
+"Bosch","https://jobs.bosch.com/en?country=de&pages=2#","auto",0,"direct_employer","Germany","seed_url","Construction Materials",70,80,40,
 "BMW","https://www.bmwgroup.jobs/de/en.html","auto",0,"direct_employer","Germany","seed_url","Media",70,90,50,
 "Allianz","https://careers.allianz.com/global/en/search-results","auto",0,"direct_employer","Germany","seed_url","Industrial / Logistics",70,85,45,
 "Volkswagen","https://jobs.volkswagen-group.com/search/?searchby=location&createNewAlert=false&q=&locationsearch=&geolocation=&optionsFacetsDD_city=&optionsFacetsDD_facility=&optionsFacetsDD_department=&optionsFacetsDD_customfield2=&optionsFacetsDD_shifttype=&optionsFacetsDD_customfield3=","auto",0,"direct_employer","Germany","seed_url","Renewable Energy",70,85,45,
@@ -227,18 +226,15 @@
 "Cancom","https://career.cancom.com/jobs/","auto",0,"direct_employer","Germany","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Roche Pharma AG","https://careers.roche.com/global/en/search-results","auto",0,"direct_employer","Germany","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Merck","https://www.merckgroup.com/en/careers/","auto",0,"direct_employer","Germany","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
-"MorphoSys AG","https://www.novartis.com/careers/career-search?search_api_fulltext=&op=Submit&field_job_posted_date=All","auto",0,"direct_employer","Germany","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Sartorius","https://www.sartorius.com/en/company/careers/vacancies-job-opportunities#list=19820","auto",0,"direct_employer","Germany","seed_url","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "MOIA GmbH","https://www.moia.io/en/career/moia-gmbh","auto",0,"direct_employer","Germany","seed_url","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "# ----- IRELAND (18) -----",,"auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Adobe","https://careers.adobe.com/us/en/search-results","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
-"Amazon","https://www.amazon.jobs/en/search?base_query=&loc_query=Ireland&latitude=&longitude=&loc_group_id=&invalid_location=false&country=IRL&city=&region=&county=","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Atos","https://atos.net/en/careers","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Cisco","https://careers.cisco.com/global/en/search-results","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "DocuSign","https://careers.docusign.com/careers-home/jobs","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Dropbox","https://jobs.dropbox.com/all-jobs","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Fujitsu","https://www.fujitsu.com/global/about/careers/","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
-"Google","https://www.google.com/about/careers/applications/jobs/results","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Mastercard","https://careers.mastercard.com/us/en/search-results","auto",0,"recruiter","Ireland","seed_url","Recruitment",70,80,35,0
 "NTT Data","https://nttdata.jobs/vacancies","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
 "Robert Walters Ireland","https://www.robertwalters.ie/jobs.html?q=","auto",0,"direct_employer","Ireland","job_location","Unknown",0,0,0,"added 2026-09 batch; scores unset"
@@ -527,9 +523,19 @@
 "Shopify","https://www.shopify.com/careers","auto",0,"direct_employer","Global","global","E-Commerce",85,95,95,0
 "# ----- EUROPE / regional (1) -----",,,,,,,,,,,
 "Ikea Italia","https://jobs.ikea.com/en/search-jobs?k=&l=&orgIds=22908","auto",0,"direct_employer","Europe","job_location","Retail/Furniture",25,70,60,0
-"# ----- ADDED 2026-11-14 - EU Job Portals sheet (new portals only; duplicates skipped) -----",,,,,,,,,,,
-"VP","https://www.pflegehilfe.org/karriere","auto",0,"direct_employer","Germany","seed_url","Healthcare / Care Services",70,85,45,"Added 2026-11-14 (EU portals sheet)"
-"wearedevelopers","https://www.wearedevelopers.com/en/jobs","auto",0,"recruiter","Global","global","Developer Jobs / Tech Community",70,85,40,"Added 2026-11-14 (EU portals sheet)"
-"Avigna Sweden","https://careers.avigna.se/","auto",0,"direct_employer","Sweden","seed_url","IT Consulting",70,85,45,"Added 2026-11-14 (EU portals sheet); Dover ATS iframe - no ATS adapter - career crawl"
-"GMV","https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US","auto",0,"direct_employer","Global","global","Aerospace / Tech",70,85,45,"Added 2026-11-14 (EU portals sheet); Cornerstone CSOD - no ATS adapter - career crawl"
-"Dynatrace","https://careers.dynatrace.com/jobs/","auto",0,"direct_employer","Global","global","Software / Observability",70,85,45,"Added 2026-11-14 (EU portals sheet)"
+"# ----- Newly ADDED EU Job Portals sheet  -----",,,,,,,,,,,
+"VP","https://www.pflegehilfe.org/karriere","auto",,"direct_employer","Germany","seed_url","Healthcare / Care Services",70,85,45,"Added 2026-11-14 (EU portals sheet)"
+"wearedevelopers","https://www.wearedevelopers.com/en/jobs","auto",,"recruiter","Global","global","Developer Jobs / Tech Community",70,85,40,"Added 2026-11-14 (EU portals sheet)"
+"Avigna Sweden","https://careers.avigna.se/","auto",,"direct_employer","Sweden","seed_url","IT Consulting",70,85,45,"Added 2026-11-14 (EU portals sheet); Dover ATS iframe - no ATS adapter - career crawl"
+"GMV","https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US","auto",,"direct_employer","Global","global","Aerospace / Tech",70,85,45,"Added 2026-11-14 (EU portals sheet); Cornerstone CSOD - no ATS adapter - career crawl"
+"Dynatrace","https://careers.dynatrace.com/jobs/","auto",,"direct_employer","Global","global","Software / Observability",70,85,45,"Added 2026-11-14 (EU portals sheet)"
+"Amazon","https://www.amazon.jobs/en/search?base_query=&loc_query=&latitude=&longitude=&loc_group_id=&invalid_location=false&country=&city=&region=&county=","auto",,"direct_employer","Global","global","E-commerce and cloud computing",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Google","https://www.google.com/about/careers/applications/jobs/results/","auto",,"direct_employer","Global","global","Technology",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Schneider Electric","https://careers.se.com/Defaultlandingpage/jobs","auto",,"direct_employer","Global","global","Energy management and automation",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Procter & Gamble (P&G)","https://www.pgcareers.com/global/en/search-results?m=3","auto",,"direct_employer","Global","global","Consumer goods",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Johnson & Johnson","https://www.careers.jnj.com/en/jobs/","auto",,"direct_employer","Global","global","Healthcare, pharmaceuticals and medical technology",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). Official listing URL assistant-selected with user approval."
+"DHL Group","https://careers.dhl.com/global/en/search-results","auto",,"direct_employer","Global","global","Logistics",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Maersk","https://www.maersk.com/careers/vacancies?searchText=&city=","auto",,"direct_employer","Global","global","Shipping and logistics",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"TotalEnergies","https://jobs.totalenergies.com/en_US/careers/SearchJobs/?listFilterMode=1&jobSort=schemaField_474_17_3&jobSortDirection=DESC&jobRecordsPerPage=20&#","auto",,"direct_employer","Global","global","Energy",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Toyota","https://careers.toyota-europe.com/jobs","auto",,"direct_employer","Global","global","Automotive",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded)."
+"Hilton","https://efet.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1009/jobs","auto",,"direct_employer","Global","global","Hospitality",0,0,0,"Global portal requested 2026-11-19; scores unset (not assessed). User-supplied listing URL preserved (message HTML entities decoded). Oracle Candidate Experience; kept in Career because ATS scanner has no dedicated Oracle route."

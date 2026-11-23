@@ -20,6 +20,19 @@ Insights to reach lower controls and charts.*
 
 # 🇬🇧 English
 
+## Latest Career reliability update
+
+The current source includes safer identity-matched description capture, deadline and pagination handling, explicit empty-result checks, and Italian role-title validation. **These repairs do not certify 90–95% portal reliability.** Seed URLs were not changed by this repair patch.
+
+- **Coverage:** 516 enabled Career rows represent 501 literal URLs and **512 configurations** when provider, board, country and scope are included. Aliases do not justify merging different scopes.
+- **Completed application evidence:** Lavazza saved all 14 proven descriptions exactly; Angelini returned an explicitly verified empty listing. Esselunga accepted 43/45 before the title fix; its live rerun is not certified. TIM remained incomplete. The later 17-configuration cohort stopped without final results and is not counted.
+- **Interpretation:** 2/512 configurations have completed positive evidence in the consolidated scorecard (**0.39% verified coverage**, not an estimate that the remaining portals fail).
+- **Tests:** 55 new focused tests pass. The full suite records **2,624 passed, 182 skipped, 12 failed**; all 12 failures also reproduce against the saved pre-repair scanner/common modules. The suite is not fully green.
+
+A saved job, a readable description, a complete listing and a description stored with capture proof are separate outcomes. A blocked page or unknown zero-row result is not a verified empty listing. This update does not certify an installed application or a Windows installer.
+
+See the [repair and evidence report](docs/CAREER_RELIABILITY_V1.md), [configuration scorecard](seed-review/career-reliability/career-reliability-scorecard.csv), and [technical guide](PacktoWorkEU_codebase_guide.md). Existing installations retain their own seed copies; do not overwrite custom seeds to apply a runtime repair.
+
 ## Insights: Skills by job title
 
 Enter `Analyst`, `SDE`, `Project Manager`, or another title in **Insights → Skills by job title**. Role match finds words in titles, including seniority variants and selected software-engineering aliases. For broader roles use a wildcard (`*sales*manager*`); choose Regex for patterns such as `\b(project|programme?)\s+manager\b`. Country and source apply, but clicking a chart elsewhere does not change this panel.
@@ -37,7 +50,7 @@ The two lists show the top 25 technical and soft skills **mentioned** in saved d
 
 **Read the counts separately.** A posting can be listed and saved without a readable description. A readable description may have been reused rather than freshly saved. “Unattempted” means no read was made; it does not mean blocked, expired, or no sponsorship. An HTTP refusal is not proof that the employer has no openings.
 
-**Seeds:** The bundled defaults contain 96 ATS rows and 502 active Career rows (plus 48 comments). The checked import preserved every manually supplied careers URL and its order. Four routes have the same URL, country and scope in both files; they were retained. The scanner does not automatically suppress such cross-file overlaps. Existing installations use their own seed copies; review changes in Data Management rather than overwriting your files.
+**Seeds:** The bundled defaults contain 99 ATS rows and 516 active Career rows (plus 48 comments). The checked import preserved every manually supplied careers URL and its order. An earlier cross-file audit found four routes with the same URL, country and scope; those overlaps were retained. The scanner does not automatically suppress such cross-file overlaps. Existing installations use their own seed copies; review changes in Data Management rather than overwriting your files.
 
 **Build status:** These instructions describe the working source, not every installer labelled 0.3.0. The Linux package was tested on individual routes; a final improvement across the entire 150-route campaign has not been established. See the [change log](CHANGELOG.md) for the measured results and open items.
 
@@ -848,6 +861,16 @@ Source and attribution details are included in `packtoworkeu/data/location_place
 
 # 🇮🇹 Italiano
 
+## Ultimo aggiornamento: affidabilità dei portali Career
+
+Il sorgente attuale migliora l’acquisizione delle descrizioni associate all’annuncio corretto, le scadenze delle richieste, la paginazione, i risultati vuoti verificati e il riconoscimento dei titoli professionali italiani. **Non certifica un’affidabilità del 90–95%.** La patch non modifica gli URL dei seed.
+
+Le 516 righe Career attive corrispondono a 501 URL letterali e **512 configurazioni** considerando provider, board, paese e ambito. Le verifiche applicative completate confermano Lavazza (14 descrizioni salvate integralmente con prova) e Angelini (elenco esplicitamente vuoto). Esselunga aveva accettato 43/45 annunci prima della correzione dei titoli; la nuova esecuzione completa non è certificata. TIM rimane incompleto. Il successivo gruppo di 17 configurazioni si è interrotto senza risultati finali e non viene conteggiato.
+
+La copertura verificata è quindi **2/512 (0,39%)**, non una stima della percentuale di portali funzionanti. I 55 nuovi test mirati passano; la suite completa registra **2.624 superati, 182 saltati e 12 falliti**. Tutti i 12 fallimenti si riproducono anche con i moduli scanner/common precedenti alla riparazione. Nessuna certificazione dell’installer Windows o dell’app installata è implicita.
+
+Consulta il [rapporto con limiti e risultati](docs/CAREER_RELIABILITY_V1.md) e la [tabella delle configurazioni](seed-review/career-reliability/career-reliability-scorecard.csv). Un rifiuto HTTP o zero annunci senza prova non equivalgono a un elenco vuoto verificato. Conserva i seed personalizzati delle installazioni esistenti.
+
 ## Approfondimenti: competenze per titolo di lavoro
 
 Cerca un titolo, ad esempio `Analyst` o `SDE`, oppure usa caratteri jolly (`*sales*manager*`) o una regex. Paese e fonte delimitano gli annunci attivi e non scaduti. Le due classifiche contano una volta per annuncio le competenze tecniche e trasversali menzionate nelle descrizioni analizzate. I testi precedenti senza prova di acquisizione sono facoltativi. Passa il puntatore su una competenza per leggere esempi. Non serve una nuova scansione.
@@ -860,7 +883,7 @@ Cerca un titolo, ad esempio `Analyst` o `SDE`, oppure usa caratteri jolly (`*sal
 
 Annunci trovati, annunci salvati, descrizioni leggibili e descrizioni appena salvate sono conteggi diversi. Una lettura non tentata non indica un blocco né l’assenza di sponsorizzazione. Un rifiuto HTTP non dimostra che non ci siano posti disponibili.
 
-I file predefiniti contengono 96 righe ATS e 502 righe Career attive, più 48 commenti. Gli URL verificati manualmente sono rimasti invariati e nello stesso ordine. Quattro percorsi con lo stesso URL, paese e ambito compaiono in entrambi i file: non vengono eliminati automaticamente. Le installazioni esistenti usano le proprie copie. La verifica su singoli portali non certifica l’intera campagna di 150 percorsi; consulta il [registro delle modifiche](CHANGELOG.md).
+I file predefiniti contengono 99 righe ATS e 516 righe Career attive, più 48 commenti. Gli URL verificati manualmente sono rimasti invariati e nello stesso ordine. Una precedente verifica aveva individuato quattro percorsi con lo stesso URL, paese e ambito in entrambi i file; tali sovrapposizioni sono state conservate. Le installazioni esistenti usano le proprie copie. La verifica su singoli portali non certifica l’intera campagna di 150 percorsi; consulta il [registro delle modifiche](CHANGELOG.md).
 
 ## 📖 Indice
 

@@ -56,11 +56,21 @@ def lux_listing(seed,first,fetch,check,cap=250,*,cursor=None,save=None):
                 p.path==urlsplit(seed).path and not p.fragment and len(v)==1 and v[0].isdigit() and
                 all(q.get(k)==vs for k,vs in filters.items())):return None
         return int(v[0])
+    stop_reason = 'page cap reached'
+    transport_stop = False
     for page in range(cap):
         check();rg=result_range(html)
-        if not rg or rg[0]!=expected or (total is not None and rg[2]!=total):break
+        if not rg:
+            stop_reason = 'missing or unrecognized result range';break
+        if rg[0]!=expected:
+            stop_reason = f'expected range start {expected}, received {rg[0]}';break
+        if total is not None and rg[2]!=total:
+            stop_reason = f'published total changed from {total} to {rg[2]} during pagination';break
         start,end,total=rg;rows,links=lux_page(html,url)
-        if len(rows)!=end-start+1 or end>total or start in pages_seen or records.keys() & rows.keys():break
+        if len(rows)!=end-start+1 or end>total:
+            stop_reason = f'range/card count mismatch at {start}-{end}';break
+        if start in pages_seen or records.keys() & rows.keys():
+            stop_reason = f'repeated range or posting URL at {start}-{end}';break
         pages_seen.add(start);records.update(rows);positions.update(range(start,end+1))
         if len(records)==total and len(positions)==total:
             if save:save(None)
@@ -73,17 +83,23 @@ def lux_listing(seed,first,fetch,check,cap=250,*,cursor=None,save=None):
                 frontier=nxt;nxt=cur['next']
         if end==total and frontier:
             nxt=frontier;frontier=None
-        if not nxt or offset(nxt)+1 in pages_seen:break
+        if not nxt:
+            stop_reason = f'no observed next link after {end}';break
+        if offset(nxt)+1 in pages_seen:
+            stop_reason = f'next link repeats an already read range after {end}';break
         if save:save(dict(seed=seed,total=total,first=first_digest,next=nxt))
         if page+1>=cap:break
         check();url=nxt;expected=offset(url)+1;html=fetch(url)
-        if not html:break
-    return list(records.values()),ListingDiagnostic(f'listing incomplete: SuccessFactors range stopped; {len(records)} distinct URLs, stated total {total}',needs_dom=True,complete=False,expected_total=total)
+        if not html:
+            transport_stop = bool(getattr(html, 'fetch_error', '')) and not getattr(html, 'block_reason', '')
+            detail = getattr(html, 'fetch_error', '')
+            stop_reason = f'next page unavailable at offset {expected-1}' + (f': {detail}' if detail else '');break
+    return list(records.values()),ListingDiagnostic(f'listing incomplete: SuccessFactors range stopped ({stop_reason}); {len(records)} distinct URLs, stated total {total}',needs_dom=not transport_stop,complete=False,expected_total=total)
 
 
 def detail_host(url):
     p=urlsplit(url)
-    return (p.scheme=='https' and ((p.netloc==LUX and re.fullmatch(r'/job/[^/]+/\d+/?',p.path)) or
+    return (p.scheme=='https' and ((p.netloc in TABLE_HOSTS and re.fullmatch(r'/job/[^/]+/\d+/?',p.path)) or
             (p.netloc=='www.hamilton-barnes.com' and p.path.startswith('/candidates/job/')) or
             (p.netloc=='ic-resources.com' and re.fullmatch(r'/[a-z]{2}/jobs/[^/]+-\d+/?',p.path))))
 
@@ -95,7 +111,7 @@ class _Detail(HTMLParser):
         a=dict(attrs)
         if tag=='link' and 'canonical' in (a.get('rel') or '').split():self.canon.append(a.get('href') or '')
         if tag=='script' and a.get('type')=='application/ld+json':self.ld=[]
-        if tag=='meta' and a.get('itemprop') in ('addressCountry','addressLocality'):self.place[a['itemprop']]=a.get('content') or ''
+        if tag=='meta' and a.get('itemprop') in ('addressCountry','addressLocality','streetAddress','hiringOrganization'):self.place[a['itemprop']]=a.get('content') or ''
         if self.depth:
             if tag=='span':self.depth+=1
             if tag in ('script','style'):self.hidden=tag
@@ -116,9 +132,9 @@ def proven_detail(url,final,html):
     if not detail_host(url) or final.rstrip('/')!=url.rstrip('/'):return None
     p=_Detail();p.feed(html);p.close()
     if not p.canon or any(urljoin(final,u).rstrip('/')!=url.rstrip('/') for u in p.canon):return None
-    if urlsplit(url).netloc==LUX:
+    if urlsplit(url).netloc in TABLE_HOSTS:
         if p.started!=1 or p.depth:return None
-        desc='\n'.join(' '.join(x.split()) for x in ''.join(p.text).splitlines() if x.strip());loc=', '.join(filter(None,(p.place.get('addressLocality'),p.place.get('addressCountry'))));org=''
+        desc='\n'.join(' '.join(x.split()) for x in ''.join(p.text).splitlines() if x.strip());loc=', '.join(filter(None,(p.place.get('addressLocality'),p.place.get('addressCountry')))) or p.place.get('streetAddress','');org=p.place.get('hiringOrganization','')
     else:
         from packtoworkeu.core.job_metadata import load_job_json,structured_job_locations
         from packtoworkeu.scanning.career.career_scanner import normalize_jd_text

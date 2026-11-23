@@ -323,7 +323,7 @@ def test_known_dead_board_is_skipped_without_error(tmp_path, monkeypatch):
     log = list(_csv.DictReader((tmp_path / 'jobs_scan_log.csv').open(encoding='utf-8-sig')))
     errors = list(_csv.DictReader((tmp_path / 'jobs_errors.csv').open(encoding='utf-8-sig')))
     assert called == []  # never scanned
-    assert log[0]['Status'] == 'empty' and errors == []
+    assert log[0]['Status'] == 'unverified_empty' and errors == []
     assert 'known-dead' in log[0]['Diagnostics']
 
 

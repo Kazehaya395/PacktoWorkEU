@@ -73,7 +73,7 @@ def test_actual_semantic_http_read_has_capture_proof_and_can_be_reused(saved):
 
 def test_card_and_clipped_detail_do_not_get_full_jd_proof(saved):
     path,c=saved;s=scanner();s._saved_jd_reader=SavedDetailReader(path)
-    text=TEXT*20
+    text=TEXT*60  # beyond the32000-char capture bound, not a safe full body
     html='<script type="application/ld+json">'+json.dumps({'@type':'JobPosting','description':text,'url':URL})+'</script>'
     result=s._remember_detail_html(URL,html,transport='HTTP',status=200)
     assert len(text)>8000 and len(result[0])==8000

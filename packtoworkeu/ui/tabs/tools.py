@@ -1230,12 +1230,20 @@ class ToolsTab(QWidget):
                                     lines.append(f"[{phase.upper()}] {row.get('seed_name') or row.get('name')} — {state}: {why}")
                             offer = (rid,len(lines),plan['method'],lines)
             except Exception as exc:  # defensive: marshal, never crash
-                self._resume_lookup_done.emit((seq, "error", str(exc)))
+                self._publish_resume_lookup((seq, "error", str(exc)))
             else:
-                self._resume_lookup_done.emit((seq, "ok", checkpoint, offer, list(reviews.values())))
+                self._publish_resume_lookup((seq, "ok", checkpoint, offer, list(reviews.values())))
 
         threading.Thread(target=worker, name="ResumeLookup",
                          daemon=True).start()
+
+    def _publish_resume_lookup(self, payload):
+        """A late lookup after the tab closes has no live UI recipient."""
+        try:
+            self._resume_lookup_done.emit(payload)
+        except RuntimeError as exc:
+            if 'deleted' not in str(exc).casefold():
+                raise
 
     def _on_resume_lookup_done(self, payload: object):
         """Apply the newest resume lookup; drop superseded slow replies."""

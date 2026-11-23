@@ -29,7 +29,7 @@ def observed_geography(location='',raw_location='',source=''):
             loc=loc.rsplit(',',1)[0].strip()
         else:loc=''
     country=country_from_location(loc) if loc else ''
-    if not country and raw and raw!=loc and not is_location_hint(source):
+    if not country and raw and raw!=loc and source not in ('', 'none') and not is_location_hint(source):
         country=country_from_location(raw) or ''
     return loc,str(country or '')
 

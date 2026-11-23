@@ -5,6 +5,54 @@ It describes the current working tree, including incremental JD refresh,
 Assisted continuation, the simplified EN/IT UI and contextual Insights.
 It is not a release announcement or a promise that every portal is accessible.
 
+## Current repair baseline: Career reliability v1
+
+This section supersedes historical counts and validation snapshots below. The repair is source-level, not an installer release. See [CAREER_RELIABILITY_V1.md](docs/CAREER_RELIABILITY_V1.md) for the measured scope and open outcomes.
+
+### Implementation map and invariants
+
+| Module | Responsibility / invariant |
+|---|---|
+| `packtoworkeu/scanning/career/primary_capture.py` | Parse identity-bound primary JobPosting bodies and tightly matched SuccessFactors containers. Reject ambiguous/mismatched identity, challenge content, truncation and oversized bodies. Readable fallback text alone is not fresh capture proof. |
+| `packtoworkeu/scanning/career/career_scanner.py` | Integrate proven capture with detail state and persistence lookup; respect an expired deadline before initial static HTTP; reject listing self-links; classify repeat pagination as incomplete; admit complete small censuses and explicit zero results without unnecessary DOM restart. Python role nouns align with Italian JS roles. |
+| `packtoworkeu/scanning/common.py` | Unknown zero-row outcomes are `unverified_empty`. Positive verified-empty diagnostics and exact `API returned 0 jobs` diagnostics may retain `empty`; do not equate an inaccessible board with zero openings. |
+| `packtoworkeu/scanning/career/reliability.py` | Offline inventory and conservative evidence assessment; no network calls, seed rewriting or extrapolation from sampled JDs. |
+| `packtoworkeu/tests/test_career_reliability_v1.py` | 55 capture, identity, title, deadline, pagination, empty-result and scorecard regression tests. |
+
+Safe primary descriptions beyond the old 8,000-character clip can be preserved up to the 32,000-character capture bound. Text beyond the bound must not receive full-capture proof. The saved-details identity/hash checks and SQLite ingestion remain separate verification gates. No schema, TLS policy, dependency manifest, per-company budget or concurrency change is part of this patch.
+
+### Evidence model and denominator
+
+Current defaults: **99 ATS rows; 516 enabled Career rows plus 48 comment rows**. Career has **501 literal URLs and 512 distinct configurations**. `configuration_key` uses literal `careers_url`, `provider`, `board_slug`, `target_country`, and `scope_policy`; aliases merge only for exact configuration matches. Original URL query strings remain significant.
+
+`assess` accepts supplied completed-run observations, not arbitrary live-site guesses. A working result requires completed scan/listing, `ok` status, scope accounted, positive accepted count equal to observed count, proven readable description count and confirmed persistence count equal to accepted count, and no ingestion errors. Verified empty requires explicit publisher-zero evidence and completed listing/scan. The assessor trusts its observation inputs; it does not itself recrawl or independently hash database rows.
+
+The scorecard includes unaudited and blocked configurations in the denominator. Current completed evidence: 1 verified working (Lavazza), 1 verified empty (Angelini), 1 needs review (Esselunga before title fix), 1 incomplete (TIM), 508 not fully audited. **2/512 = 0.39% verified coverage**, not an estimated portal success rate. Ninety percent requires 461 verified configurations; 95% requires 487. Neither target is established.
+
+The completed four-target application/SQLite check ingested 65 rows with zero duplicates or ingestion errors. Esselunga accepted 43/45 before the tested title fix; TIM accepted 8, with 7 proven/exact descriptions and an incomplete listing. The subsequent 17-configuration live cohort stopped without final results/ingestion certification. Partial exports from that cohort are not positive evidence.
+
+### Reproduce the offline scorecard
+
+Run from the repository root using the normal project environment:
+
+```sh
+python -m packtoworkeu.scanning.career.reliability \
+  --seed packtoworkeu/data/seeds/company_Career_seed.csv \
+  --observations seed-review/career-reliability/observations.json \
+  --output-dir seed-review/career-reliability
+```
+
+Outputs: `career-reliability-scorecard.csv` and `career-reliability-summary.json`. Exit 0 indicates the supplied evidence reaches 90%; **exit 2** means it does not. The included observations are historical snapshots. The CLI uses the scanner’s seed reader but does not launch a live scan. Review changed seeds/configuration IDs and input evidence before interpreting regenerated counts.
+
+### Regression status and delivery boundaries
+
+- Focused new tests: **55 passed**.
+- Final broad suite: **2,624 passed, 182 skipped, 12 failed**.
+- Same-environment comparison with the saved pre-repair scanner/common modules reproduced all 12 failures: **213 passed, 14 skipped, 12 failed** across the selected comparison files. This does not make the full suite green.
+- Four existing test contracts were updated intentionally: unknown zero, known-dead ATS board, pre-expired deadline, and an oversized clipping fixture. The new tests also preserve ambiguity/identity/clipping guards.
+- Evidence logs and a file-hash manifest are in `docs/career-reliability-evidence/`. No browser binaries, isolated audit databases or raw job bodies are shipped.
+- `patches/PacktoWorkEU-Career-reliability-v1.zip` is a changed-files-only source patch, not a full app distribution. It preserves seed files and does not certify installed GUI/Windows/installer behavior. These subsequently refreshed README/guide files are delivered separately.
+
 ## Current implementation: where to trace a scan
 
 Start with the path for the symptom rather than the portal name. Earlier dated sections describe historical changes; for the differences from the imported source, see [CHANGELOG.md](CHANGELOG.md).
@@ -17,7 +65,7 @@ Start with the path for the symptom rather than the portal name. Earlier dated s
 | Known listing, missing description | `scanning/career/large_boards.py`, `career_scanner.py`, `scanning/detail_backlog.py` | Lidl Italia uses its public search response; AnyMind uses the publisher’s Greenhouse board and retains historical query permalinks. A parent Career export can prioritize still-listed unattempted URLs; it is not a universal per-posting checkpoint. |
 | Readable in export, not counted as fresh | `core/saved_details.py`, `core/run_ledger.py`, `scanning/pipeline.py` | Trace the posting identity, capture proof and database write separately. The spill ledger stores run-local metadata, not descriptions or a durable resume plan. |
 
-**Seed maintenance.** Production defaults are under `packtoworkeu/data/seeds/`. The latest checked import (96 ATS, 502 active Career) supersedes earlier seed snapshots. Cross-phase equivalence was audited but not implemented as a scheduling policy. Do not deduplicate by company name or ATS hostname. Tests of earlier catalog values can describe pre-import fixtures: compare the current CSV and the effective adapter before diagnosing a scanner failure.
+**Seed maintenance.** Production defaults are under `packtoworkeu/data/seeds/`. The latest checked import (99 ATS, 516 active Career; 48 Career comment rows) supersedes earlier seed snapshots. Cross-phase equivalence was audited but not implemented as a scheduling policy. Do not deduplicate by company name or ATS hostname. Tests of earlier catalog values can describe pre-import fixtures: compare the current CSV and the effective adapter before diagnosing a scanner failure.
 
 ### Role-scoped skills explorer
 

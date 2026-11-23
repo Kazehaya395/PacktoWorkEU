@@ -51,9 +51,9 @@ def test_blocks_from_both_phases_are_queued_but_dns_is_not(tmp_path):
     from packtoworkeu.core.blocked_portals import blocked_portals_from_summary
     fields = ['Seed Name', 'Message', 'Seed URL']
     a, c = tmp_path / 'ats.csv', tmp_path / 'career.csv'
-    _write_csv(a, [{'Seed Name': 'ATS Board', 'Message': 'blocked by bot protection: CAPTCHA',
+    _write_csv(a, [{'Seed Name': 'ATS Board', 'Message': 'blocked by bot protection: CAPTCHA (interactive action requested) challenge page served instead of the job list',
                     'Seed URL': 'https://boards.example/tenant/jobs?country=BR'}], fields)
-    _write_csv(c, [{'Seed Name': 'Career', 'Message': 'blocked by bot protection: AWS WAF',
+    _write_csv(c, [{'Seed Name': 'Career', 'Message': 'blocked by bot protection: AWS WAF (interactive action requested) challenge page served instead of the job list',
                     'Seed URL': 'https://careers.example/jobs'},
                    {'Seed Name': 'Network', 'Message': 'net::ERR_NAME_NOT_RESOLVED',
                     'Seed URL': 'https://network.example/jobs'}], fields)
@@ -346,7 +346,7 @@ def test_cap_and_repeat_stop_are_partial_not_ok():
     assert completion_status(20,'',['static HTML: 20 (12 page(s); page cap 12 reached, board has more pages)'])=='partial'
     assert completion_status(20,'',['pagination STOPPED: 2 pages of repeats after page 17'])=='partial'
     assert completion_status(20,'',['pagination complete: no next-page control after page 20'])=='ok'
-    assert completion_status(0,'',[])=='empty'
+    assert completion_status(0,'',[])=='unverified_empty'
     assert completion_status(0,'blocked by bot protection',[])=='error'
 
 
